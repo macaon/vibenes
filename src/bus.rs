@@ -18,6 +18,17 @@ pub struct Bus {
     pub nmi_pending: bool,
     pub irq_line: bool,
 
+    /// `irq_line` as of the end of the *previous* CPU cycle. The CPU
+    /// polls this at the end of every instruction so the interrupt is
+    /// recognised based on state at end of the penultimate cycle, as
+    /// on real 6502 hardware. Without this snapshot the polling would
+    /// use state at the end of the *last* cycle, which breaks CLI/SEI/
+    /// PLP delayed-interrupt semantics and branch-IRQ timing.
+    pub prev_irq_line: bool,
+    /// `nmi_pending` as of the end of the previous CPU cycle. Same
+    /// rationale as `prev_irq_line`.
+    pub prev_nmi_pending: bool,
+
     open_bus: u8,
     /// True while we're servicing a DMC DMA fetch. Prevents re-entering
     /// the DMA service from `tick_cycle` inside the stall cycles.
@@ -60,6 +71,8 @@ impl Bus {
             controllers: [Controller::default(); 2],
             nmi_pending: false,
             irq_line: false,
+            prev_irq_line: false,
+            prev_nmi_pending: false,
             open_bus: 0,
             dmc_dma_active: false,
         }
@@ -134,6 +147,13 @@ impl Bus {
     }
 
     fn tick_cycle(&mut self) {
+        // Snapshot state at the END of the previous cycle before we
+        // run this one. CPU polls these at the end of each instruction
+        // to get "end-of-penultimate-cycle" interrupt state (real 6502
+        // behavior).
+        self.prev_irq_line = self.irq_line;
+        self.prev_nmi_pending = self.nmi_pending;
+
         let ppu_ticks = self.clock.advance_cpu_cycle();
         for _ in 0..ppu_ticks {
             self.ppu.tick(&mut *self.mapper);

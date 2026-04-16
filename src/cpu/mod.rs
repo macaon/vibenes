@@ -85,38 +85,70 @@ impl Cpu {
     }
 
     /// Run one instruction (or service a pending interrupt).
-    /// Returns Ok(()) on success, Err with a description on an unhandled
-    /// opcode so the caller can shut down gracefully.
+    ///
+    /// Interrupt polling model: interrupts are sampled at the end of
+    /// the **penultimate** CPU cycle of the instruction (real 6502),
+    /// not between instructions. We approximate this by:
+    /// - Reading `bus.prev_irq_line` / `bus.prev_nmi_pending` at the
+    ///   end of each instruction — those fields capture end-of-previous-
+    ///   cycle state, which after an N-cycle instruction equals the
+    ///   end of cycle N-1 (the penultimate).
+    /// - Using the I-flag value that was active during the penultimate
+    ///   cycle. For most instructions this equals the current I flag.
+    ///   CLI/SEI/PLP modify I in their **last** cycle, so penultimate-I
+    ///   is the *old* value; we snapshot it before `ops::execute`. RTI
+    ///   modifies I in cycle 4 of 6, so penultimate is post-change and
+    ///   the current (new) I flag is correct.
+    ///
+    /// The pending interrupt is stored on the CPU and serviced at the
+    /// top of the next `step()`, matching the hardware "fetch the
+    /// interrupt vector in place of the next opcode" sequence.
     pub fn step(&mut self, bus: &mut Bus) -> Result<(), String> {
         if self.halted {
             return Ok(());
         }
-        self.poll_interrupts(bus);
         if let Some(kind) = self.pending_interrupt.take() {
             self.service_interrupt(bus, kind);
+            self.cycles = bus.clock.cpu_cycles();
             return Ok(());
         }
+        let i_flag_before = self.p.interrupt();
         let op = self.fetch_byte(bus);
         ops::execute(self, bus, op).map_err(|msg| {
             self.halted = true;
             self.halt_reason = Some(msg.clone());
             msg
         })?;
+        self.poll_interrupts_at_end(bus, op, i_flag_before);
         self.cycles = bus.clock.cpu_cycles();
         Ok(())
     }
 
-    fn poll_interrupts(&mut self, bus: &mut Bus) {
-        if bus.nmi_pending && !self.nmi_seen {
+    /// Poll the NMI/IRQ lines using state captured at the end of the
+    /// penultimate cycle. `op` and `i_flag_before` pick the correct I
+    /// flag value for instructions that mutate it (see `step` docs).
+    fn poll_interrupts_at_end(&mut self, bus: &mut Bus, op: u8, i_flag_before: bool) {
+        // Edge-detect NMI using the previous cycle's latch state.
+        let nmi_latched = bus.prev_nmi_pending;
+        if nmi_latched && !self.nmi_seen {
             self.pending_interrupt = Some(Interrupt::Nmi);
             bus.nmi_pending = false;
             self.nmi_seen = true;
             return;
         }
-        if !bus.nmi_pending {
+        if !bus.nmi_pending && !bus.prev_nmi_pending {
             self.nmi_seen = false;
         }
-        if bus.irq_line && !self.p.interrupt() {
+
+        let i_for_poll = match op {
+            // CLI / SEI / PLP modify I in their last cycle → polling
+            // at penultimate sees the OLD value.
+            0x58 | 0x78 | 0x28 => i_flag_before,
+            // Everything else (including RTI, whose I change lands at
+            // cycle 4 with cycles 5+6 following): current I is correct.
+            _ => self.p.interrupt(),
+        };
+        if bus.prev_irq_line && !i_for_poll {
             self.pending_interrupt = Some(Interrupt::Irq);
         }
     }
