@@ -34,6 +34,15 @@ opcodes and mapper quirks) but not for source.
   cleanly. Interrupts (NMI/IRQ/BRK/Reset) and the JMP indirect wrap
   bug implemented. Reset is the full 7-cycle sequence (5 dummy bus
   cycles + 2 vector reads) so APU/PPU see the correct cycle counts.
+  **Penultimate-cycle IRQ/NMI polling** with CLI/SEI/PLP delayed-I
+  and RTI immediate-I semantics. **BRK / IRQ → NMI vector hijack**
+  when NMI is asserted during the service sequence; late NMIs are
+  deferred to after the handler's first instruction (matches the
+  `_prevNeedNmi = false` suppression in Mesen2's BRK).
+- **Bus cycle split** into `tick_pre_access` (PPU + NMI edge latch)
+  and `tick_post_access` (APU + mapper + IRQ line). PPU register
+  reads see mid-cycle PPU state, needed for `cpu_interrupts_v2`
+  iterations that sync to specific VBlank dots.
 - **Mappers** — NROM (0), MMC1/SxROM (1) with serial shift and the
   consecutive-write filter, CNROM (3).
 - **PPU stub** — register window at $2000-$2007, VBlank flag + NMI
@@ -88,10 +97,28 @@ opcodes and mapper quirks) but not for source.
 | `apu_reset/len_ctrs_enabled.nes` | PASS |
 | `apu_reset/works_immediately.nes` | PASS |
 
+### CPU interrupt test results (`cpu_interrupts_v2/rom_singles/`)
+
+| Suite | Result |
+|---|---|
+| `1-cli_latency.nes` | PASS |
+| `2-nmi_and_brk.nes` | PASS (NMI-hijack-BRK fully working) |
+| `3-nmi_and_irq.nes` | FAIL — hijack fires on ~half of iterations, alternating-pattern artifact under investigation |
+| `4-irq_and_dma.nes` | FAIL — needs DMC-DMA ↔ IRQ interaction (Phase 5 Sub-C) |
+| `5-branch_delays_irq.nes` | FAIL — needs taken-no-cross branch IRQ suppression (Phase 5 Sub-B) |
+
 ### Not yet
 
-- **Penultimate-cycle IRQ/NMI polling** in the CPU core — needed for
-  `cpu_interrupts_v2` singles 3–5 and for future mapper IRQs.
+- **Test 3 `3-nmi_and_irq` alternating failure** — hijack mechanism
+  is correct but rows 4–10 alternate between "NMI hijacks IRQ
+  correctly" and anomalous "NMI fires early" outputs. Suspect race
+  between APU frame-counter IRQ assertion and NMI edge relative to
+  the new mid-cycle PPU tick boundary.
+- **Branch-delays-IRQ quirk** (`5-branch_delays_irq`) — on a taken
+  branch with no page cross, the IRQ poll on the final cycle is
+  suppressed. Needs an opcode-specific guard inside `branch()`.
+- **DMC DMA ↔ IRQ interaction** (`4-irq_and_dma`) — stall cycles
+  need to participate correctly in IRQ recognition timing.
 - **`$4016/$4017` DMC double-read bug** — the halt/dummy cycles of a
   DMC DMA don't replay the CPU's pending read address yet, so the
   controller-bit-deletion behavior checked by `dmc_dma_during_read4`
