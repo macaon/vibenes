@@ -28,6 +28,20 @@ impl Nes {
         self.bus.region()
     }
 
+    /// Warm reset — the user pressing the Reset button on the console.
+    /// RAM, PRG-RAM and cartridge state are preserved; the CPU reloads
+    /// PC from the reset vector, the APU silences channels and keeps the
+    /// DMC output level (so long samples don't pop), and the PPU resets
+    /// its rendering state. This is the hook blargg's reset-protocol
+    /// ($81 at $6000) relies on.
+    pub fn reset(&mut self) {
+        self.bus.apu.reset();
+        self.bus.ppu.reset();
+        self.bus.nmi_pending = false;
+        self.bus.irq_line = false;
+        self.cpu.reset(&mut self.bus);
+    }
+
     pub fn step(&mut self) -> Result<(), String> {
         self.cpu.step(&mut self.bus)
     }

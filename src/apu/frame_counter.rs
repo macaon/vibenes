@@ -44,21 +44,35 @@ struct PendingWrite {
 
 impl FrameCounter {
     pub fn new(region: Region) -> Self {
+        // Nesdev: "After reset or power-up, APU acts as if $4017 were
+        // written with $00 from 9 to 12 clocks before the first
+        // instruction begins." Mesen2 models this as a pending $4017
+        // write with a 3-cycle apply delay scheduled at cycle 3.
+        // Without this, the first frame IRQ on power fires 3 cycles
+        // too early and blargg's 4017_timing measures count=5 instead
+        // of count≈8.
+        let pending_write = Some(PendingWrite {
+            value: 0x00,
+            apply_at: 3,
+        });
         Self {
             region,
             mode: Mode::FourStep,
             irq_inhibit: false,
             counter: 0,
-            pending_write: None,
+            pending_write,
             block_ticks_until: 0,
         }
     }
 
-    /// Restart the divider as if `$4017` were rewritten with the current
-    /// mode/inhibit — used by the CPU warm-reset path.
+    /// Restart the divider on warm reset. Mesen2 model: the stored mode
+    /// (5-step vs 4-step) is preserved, but IRQ-inhibit is forced off
+    /// (the test ROM `apu_reset/4017_written` relies on this behavior
+    /// — "At reset, $4017 mode is unchanged, but IRQ inhibit flag is
+    /// sometimes cleared"). The 3-cycle apply delay kicks in as for a
+    /// normal $4017 write.
     pub fn reset_on_cpu_reset(&mut self, cycle: u64) {
-        let value = (if self.mode == Mode::FiveStep { 0x80 } else { 0 })
-            | (if self.irq_inhibit { 0x40 } else { 0 });
+        let value = if self.mode == Mode::FiveStep { 0x80 } else { 0 };
         let parity_odd = (cycle & 1) == 1;
         self.write_4017(value, cycle, parity_odd);
     }

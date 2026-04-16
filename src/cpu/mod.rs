@@ -62,9 +62,17 @@ impl Cpu {
     }
 
     pub fn reset(&mut self, bus: &mut Bus) {
-        // On reset: SP decremented by 3 (push ops that don't write), I=1,
-        // PC loaded from reset vector at $FFFC/$FFFD. Real hardware also
-        // performs 7 cycles of dummy reads before PC is valid.
+        // Real 6502 reset = 7 cycles: 2 dummy opcode/operand fetches,
+        // 3 dummy stack "pushes" (reads because write is suppressed on
+        // RESET), then the low and high vector reads from $FFFC/$FFFD.
+        // We reproduce the 5 dummy cycles as bus reads so the APU /
+        // PPU see the correct cycle count. The read addresses don't
+        // matter (side effects fall through open bus / RAM), but we
+        // stick to $00FF which is the post-decrement stack slot on
+        // real hardware — lets future stack-watching tests agree.
+        for _ in 0..5 {
+            let _ = bus.read(0x00FF);
+        }
         let lo = bus.read(0xFFFC);
         let hi = bus.read(0xFFFD);
         self.pc = u16::from_le_bytes([lo, hi]);

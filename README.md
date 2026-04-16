@@ -32,7 +32,8 @@ opcodes and mapper quirks) but not for source.
   ARR, AXS, LXA, SHX, SHY, LAS, TAS, AHX). Dummy reads/writes are
   emitted so the bus charges the right cycle count. JAM opcodes halt
   cleanly. Interrupts (NMI/IRQ/BRK/Reset) and the JMP indirect wrap
-  bug implemented.
+  bug implemented. Reset is the full 7-cycle sequence (5 dummy bus
+  cycles + 2 vector reads) so APU/PPU see the correct cycle counts.
 - **Mappers** — NROM (0), MMC1/SxROM (1) with serial shift and the
   consecutive-write filter, CNROM (3).
 - **PPU stub** — register window at $2000-$2007, VBlank flag + NMI
@@ -41,14 +42,18 @@ opcodes and mapper quirks) but not for source.
 - **APU** — pulse ×2, triangle, noise, DMC channels with shared length
   counter, envelope, sweep, and linear counter. Frame counter sequencer
   in both 4-step and 5-step modes with the $4017 write-delay quirk
-  (`W+3` odd / `W+2` even) and IRQ window. $4015 read/write semantics
-  wired (frame-IRQ acknowledge on read, DMC IRQ clear on write, mid-
-  sample disable drops the pending DMA). $4010 IRQ-disable path clears
-  latched DMC IRQ. DMC shift register, rate table, and bus-level DMA
-  stall (4 CPU cycles, non-reentrant) are all in place — the DMC fetches
-  sample bytes through the mapper and IRQs on non-looping completion.
-  12 unit tests cover the $4015 / $4010 / DMC edge cases. No audio
-  output device yet — mixer samples are computed and dropped.
+  (`W+3` odd / `W+2` even) and IRQ window. Power-on and warm-reset
+  behavior match nesdev: power simulates a `$4017=$00` write with a
+  3-cycle delay (first frame IRQ at cycle ~29831, not 29828); warm
+  reset preserves mode bit, forces IRQ-inhibit off, preserves DMC
+  output level, and clears the `$4015` enable latches *without* zeroing
+  length counter values. `$4015` read/write semantics wired (frame-IRQ
+  acknowledge on read, DMC IRQ clear on write, mid-sample disable
+  drops the pending DMA). `$4010` IRQ-disable path clears latched DMC
+  IRQ. DMC shift register, rate table, and bus-level DMA stall
+  (4 CPU cycles, non-reentrant) fetch sample bytes through the mapper
+  and IRQ on non-looping completion. 14 unit tests cover the edges.
+  No audio output device yet — mixer samples are computed and dropped.
 - **Headless blargg test runner** (`cargo run --bin test_runner ROM`) —
   polls $6000 for the standard signature/status/message protocol.
 
@@ -76,6 +81,12 @@ opcodes and mapper quirks) but not for source.
 | `apu_test/rom_singles/6-irq_flag_timing.nes` | PASS |
 | `apu_test/rom_singles/7-dmc_basics.nes` | PASS |
 | `apu_test/rom_singles/8-dmc_rates.nes` | PASS |
+| `apu_reset/4015_cleared.nes` | PASS |
+| `apu_reset/4017_timing.nes` | PASS (delay = 6 cycles, within 6–12) |
+| `apu_reset/4017_written.nes` | PASS |
+| `apu_reset/irq_flag_cleared.nes` | PASS |
+| `apu_reset/len_ctrs_enabled.nes` | PASS |
+| `apu_reset/works_immediately.nes` | PASS |
 
 ### Not yet
 
@@ -111,7 +122,8 @@ exits — no window yet):
 ./target/release/vibenes path/to/rom.nes
 ```
 
-Test runner (headless blargg protocol):
+Test runner (headless blargg protocol, supports the `$81` reset
+request sent by `apu_reset`, `cpu_reset`, etc.):
 
 ```
 ./target/release/test_runner path/to/rom.nes [more.nes ...]

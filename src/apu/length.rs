@@ -18,11 +18,22 @@ impl LengthCounter {
         self.halt = halt;
     }
 
+    /// `$4015` write of the channel-enable bit. Clearing enable forces
+    /// the counter to 0 and prevents reloads; setting enable just opens
+    /// the gate (the counter keeps its current value).
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
         if !enabled {
             self.counter = 0;
         }
+    }
+
+    /// Warm-reset equivalent of clearing the `$4015` enable latch without
+    /// triggering the "force counter to 0" side effect. On real hardware,
+    /// a /RES pulse clears the latch directly — the counter value is
+    /// retained (see blargg `apu_reset/len_ctrs_enabled`).
+    pub fn clear_enable_latch_only(&mut self) {
+        self.enabled = false;
     }
 
     pub fn enabled(&self) -> bool {

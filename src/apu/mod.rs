@@ -73,11 +73,25 @@ impl Apu {
         }
     }
 
-    /// Warm reset — matches what the 2A03 does on /RES low: silence all
-    /// channels, clear frame IRQ, restart the frame-counter divider, keep
-    /// the DMC output level so it doesn't pop.
+    /// Warm reset — user pressing the Reset button (/RES low).
+    ///
+    /// Per nesdev "APU Power up and reset":
+    /// - `$4015` enable latches clear — but unlike an actual `$4015=0`
+    ///   write, the length counters are NOT forced to 0. Their values
+    ///   persist (blargg `apu_reset/len_ctrs_enabled` relies on this).
+    /// - DMC bytes_remaining = 0 and any pending DMA is dropped, but
+    ///   the DMC output level is PRESERVED (next `$4011` write may pop).
+    /// - Frame IRQ + DMC IRQ are cleared.
+    /// - `$4017` mode / IRQ-inhibit bits are retained; the frame-counter
+    ///   divider restarts as if `$4017` were rewritten with those bits
+    ///   (3/4-cycle parity delay applies just like a real write).
+    /// - All other APU registers retain their values.
     pub fn reset(&mut self) {
-        self.write_reg(0x4015, 0);
+        self.pulse1.on_warm_reset();
+        self.pulse2.on_warm_reset();
+        self.triangle.on_warm_reset();
+        self.noise.on_warm_reset();
+        self.dmc.on_warm_reset();
         self.frame_irq = false;
         self.dmc_irq = false;
         self.frame_counter.reset_on_cpu_reset(self.cycle);

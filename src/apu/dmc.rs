@@ -111,6 +111,17 @@ impl Dmc {
         }
     }
 
+    /// Warm-reset: behaves like `set_enabled(false)` (channel silenced,
+    /// pending DMA dropped) but explicitly documents the nesdev-mandated
+    /// preservation of `output` — a DC offset the next $4011 write may
+    /// pop against, matching hardware behavior.
+    pub fn on_warm_reset(&mut self) {
+        self.enabled = false;
+        self.bytes_remaining = 0;
+        self.dma_pending = None;
+        // `output` intentionally preserved.
+    }
+
     fn restart_sample(&mut self) {
         self.current_addr = self.sample_addr_start;
         self.bytes_remaining = self.sample_length_cfg;

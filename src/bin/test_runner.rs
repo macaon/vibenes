@@ -58,8 +58,18 @@ fn run_one(rom_path: &Path, cycle_limit: u64) -> Result<Outcome> {
     let mut nes = Nes::from_cartridge(cart)?;
 
     let mut signature_seen = false;
-    let mut reset_requested = false;
     let start_cycles = nes.bus.clock.cpu_cycles();
+    // Blargg's reset protocol: when the test writes $81 to $6000, the
+    // emulator should wait ~100ms and then toggle the Reset button. We
+    // approximate 100ms of emulated time with ~180k CPU cycles on NTSC.
+    const RESET_DELAY_CYCLES: u64 = 180_000;
+    // After dispatching a reset, $6000 still holds the pre-reset $81
+    // because RAM/PRG-RAM is preserved — this is real hardware
+    // behavior. The test's reset handler only writes a fresh status
+    // once its own pre-measurement delay finishes (often tens of
+    // thousands of cycles), so ignore $81 until we observe either
+    // $80 (running again) or a new result code.
+    let mut ignore_reset_until_running = false;
     loop {
         let elapsed = nes.bus.clock.cpu_cycles() - start_cycles;
         if elapsed > cycle_limit {
@@ -104,16 +114,33 @@ fn run_one(rom_path: &Path, cycle_limit: u64) -> Result<Outcome> {
 
         let status = nes.bus.peek(0x6000);
         match status {
-            0x80 => continue,
+            0x80 => {
+                ignore_reset_until_running = false;
+                continue;
+            }
+            0x81 if ignore_reset_until_running => continue,
             0x81 => {
-                if !reset_requested {
-                    reset_requested = true;
-                    eprintln!(
-                        "{}: test requested reset (not yet implemented)",
-                        rom_path.display()
-                    );
+                eprintln!(
+                    "{}: test requested reset at cycle {}",
+                    rom_path.display(),
+                    elapsed
+                );
+                // Run ~100 ms of emulated time first so pre-reset code
+                // (length-counter drains, frame IRQ assertions, etc.)
+                // actually happens before we yank the Reset line.
+                if let Err(msg) = nes.run_cycles(RESET_DELAY_CYCLES) {
+                    return Ok(Outcome {
+                        passed: false,
+                        summary: format!("HALT during reset delay ({})", msg),
+                    });
                 }
-                // For now we just keep running; proper reset support comes next.
+                nes.reset();
+                ignore_reset_until_running = true;
+                eprintln!(
+                    "{}: reset dispatched, resuming at cycle {}",
+                    rom_path.display(),
+                    nes.bus.clock.cpu_cycles()
+                );
                 continue;
             }
             code => {

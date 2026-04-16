@@ -49,6 +49,12 @@ impl Noise {
         self.length.set_enabled(enabled);
     }
 
+    /// Warm-reset handler: drop the `$4015` enable latch but keep the
+    /// length counter value (see `LengthCounter::clear_enable_latch_only`).
+    pub fn on_warm_reset(&mut self) {
+        self.length.clear_enable_latch_only();
+    }
+
     pub fn length_nonzero(&self) -> bool {
         self.length.is_nonzero()
     }
