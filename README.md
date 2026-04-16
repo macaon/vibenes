@@ -25,7 +25,8 @@ opcodes and mapper quirks) but not for source.
   PAL CPU÷16, PPU÷5). Every CPU bus access advances the master clock
   by one CPU cycle; the clock then runs the PPU for the right number
   of dots (3 on NTSC, 3 or 4 per cycle on PAL's 1:3.2 ratio) and ticks
-  the APU. No batching.
+  the APU. No batching. OAM DMA charges 513 or 514 cycles based on
+  the CPU-cycle parity at DMA start.
 - **6502 CPU core** — all 151 official opcodes plus the stable
   unofficial set (LAX, SAX, SLO, RLA, SRE, RRA, DCP, ISB, ALR, ANC,
   ARR, AXS, LXA, SHX, SHY, LAS, TAS, AHX). Dummy reads/writes are
@@ -80,8 +81,6 @@ opcodes and mapper quirks) but not for source.
 
 - **Penultimate-cycle IRQ/NMI polling** in the CPU core — needed for
   `cpu_interrupts_v2` singles 3–5 and for future mapper IRQs.
-- **OAM DMA alignment** — currently charges 513 cycles unconditionally;
-  hardware charges 514 when the DMA begins on an odd CPU cycle.
 - **`$4016/$4017` DMC double-read bug** — the halt/dummy cycles of a
   DMC DMA don't replay the CPU's pending read address yet, so the
   controller-bit-deletion behavior checked by `dmc_dma_during_read4`

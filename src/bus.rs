@@ -101,8 +101,15 @@ impl Bus {
             0x2000..=0x3FFF => self.ppu.cpu_write(addr, data, &mut *self.mapper),
             0x4000..=0x4013 | 0x4015 | 0x4017 => self.apu.write_reg(addr, data),
             0x4014 => {
+                // STA $4014's final write cycle.
                 self.tick_cycle();
-                self.run_oam_dma(data);
+                // Nesdev "OAM DMA": 513 CPU cycles total, plus one more
+                // if the DMA begins on an odd CPU cycle. We capture the
+                // parity at the moment the DMA starts (immediately after
+                // STA's write) and pass it on so `run_oam_dma` can add
+                // the alignment idle when needed.
+                let extra_idle = (self.clock.cpu_cycles() & 1) != 0;
+                self.run_oam_dma(data, extra_idle);
                 return;
             }
             0x4016 => {
@@ -139,11 +146,15 @@ impl Bus {
         self.irq_line = self.apu.irq_line();
     }
 
-    fn run_oam_dma(&mut self, page: u8) {
-        // 513 or 514 cycles: 1 idle (+1 if on odd cycle) then 256 read/write pairs.
-        // We charge 1 idle cycle now (a 2nd will come naturally from the
-        // write parity mismatch in real hardware; omitted for the stub).
+    fn run_oam_dma(&mut self, page: u8, extra_idle: bool) {
+        // 513 or 514 cycles beyond STA $4014's own 4 cycles:
+        //   - 1 alignment idle (always)
+        //   - 1 extra idle if the DMA began on an odd CPU cycle
+        //   - 256 read/write pairs = 512 cycles
         self.tick_cycle();
+        if extra_idle {
+            self.tick_cycle();
+        }
         let base = (page as u16) << 8;
         for i in 0..=0xFFu16 {
             let byte = self.read(base | i);
@@ -182,5 +193,62 @@ impl Bus {
         self.tick_cycle();
         self.apu.dmc_dma_complete(byte);
         self.dmc_dma_active = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mapper::nrom::Nrom;
+    use crate::rom::{Cartridge, Mirroring, TvSystem};
+
+    fn build_bus() -> Bus {
+        let cart = Cartridge {
+            prg_rom: vec![0u8; 0x8000],
+            chr_rom: vec![0u8; 0x2000],
+            chr_ram: false,
+            mapper_id: 0,
+            submapper: 0,
+            mirroring: Mirroring::Vertical,
+            battery_backed: false,
+            prg_ram_size: 0x2000,
+            tv_system: TvSystem::Ntsc,
+            is_nes2: false,
+        };
+        Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc)
+    }
+
+    #[test]
+    fn oam_dma_even_parity_is_513_cycles() {
+        let mut bus = build_bus();
+        // Tick once so cpu_cycles becomes 1 (odd). STA's write cycle
+        // will then put cpu_cycles at 2 (even) — the "no extra idle"
+        // case, total DMA = 513.
+        bus.tick_cycle();
+        let before = bus.clock.cpu_cycles();
+        bus.write(0x4014, 0x00);
+        let dma_cycles = bus.clock.cpu_cycles() - before;
+        // 1 (STA write) + 1 (idle) + 512 (256 read/write pairs) = 514.
+        // The spec's "513" is measured from DMA start, not counting the
+        // STA write itself, so we expect 514 ticks in our `write()`.
+        assert_eq!(
+            dma_cycles, 514,
+            "even-parity entry: STA + 1 idle + 512 pairs = 514 ticks"
+        );
+    }
+
+    #[test]
+    fn oam_dma_odd_parity_is_514_cycles() {
+        let mut bus = build_bus();
+        // cpu_cycles starts at 0. STA's write cycle ticks once → 1 (odd)
+        // → needs extra idle.
+        let before = bus.clock.cpu_cycles();
+        bus.write(0x4014, 0x00);
+        let dma_cycles = bus.clock.cpu_cycles() - before;
+        // 1 (STA write) + 2 idles + 512 pairs = 515.
+        assert_eq!(
+            dma_cycles, 515,
+            "odd-parity entry: STA + 2 idles + 512 pairs = 515 ticks"
+        );
     }
 }
