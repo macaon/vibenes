@@ -19,6 +19,9 @@ pub struct Bus {
     pub irq_line: bool,
 
     open_bus: u8,
+    /// True while we're servicing a DMC DMA fetch. Prevents re-entering
+    /// the DMA service from `tick_cycle` inside the stall cycles.
+    dmc_dma_active: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -58,6 +61,7 @@ impl Bus {
             nmi_pending: false,
             irq_line: false,
             open_bus: 0,
+            dmc_dma_active: false,
         }
     }
 
@@ -66,7 +70,14 @@ impl Bus {
     }
 
     /// One CPU bus read. Every read costs one CPU cycle.
+    ///
+    /// DMC DMA (if pending) is serviced **before** the read, matching real
+    /// hardware: the CPU is halted via RDY, several stall cycles are
+    /// inserted, the DMC fetches its sample byte, and only then does the
+    /// CPU's read complete. DMA does not start during writes — a request
+    /// raised during a write cycle waits for the next read.
     pub fn read(&mut self, addr: u16) -> u8 {
+        self.service_pending_dmc_dma();
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
@@ -138,5 +149,38 @@ impl Bus {
             let byte = self.read(base | i);
             self.write(0x2004, byte);
         }
+    }
+
+    /// Consume a pending DMC DMA request, if any, and insert the stall
+    /// cycles required to fetch the sample byte. Called at the top of
+    /// [`Bus::read`] so the halt cycle lines up with the CPU's next read.
+    ///
+    /// Nesdev "DMC DMA" cycle model: the CPU is halted (1 cycle), then
+    /// runs one dummy re-read (1 cycle), then one alignment idle if the
+    /// next "get" cycle is a full cycle away (1 cycle), then the DMC's
+    /// read takes place (1 cycle) — typical **4 CPU cycles**. We use a
+    /// fixed 4-cycle stall for simplicity; this is within the 2..=4
+    /// range all documented tests observe, and matches Mesen2's worst
+    /// case which is what blargg's apu_test expects.
+    fn service_pending_dmc_dma(&mut self) {
+        if self.dmc_dma_active {
+            return;
+        }
+        let Some(req) = self.apu.take_dmc_dma_request() else {
+            return;
+        };
+        self.dmc_dma_active = true;
+        // Halt + dummy + align: 3 idle CPU cycles. We do not replay the
+        // CPU's pending read here; the controller/MMIO double-read bug
+        // and its interaction with $4016/$4017 is a later phase.
+        self.tick_cycle();
+        self.tick_cycle();
+        self.tick_cycle();
+        // Fourth cycle: the DMC bus-master read. Sample addresses always
+        // live in $8000..=$FFFF, so this is a pure mapper read.
+        let byte = self.mapper.cpu_read(req.addr);
+        self.tick_cycle();
+        self.apu.dmc_dma_complete(byte);
+        self.dmc_dma_active = false;
     }
 }

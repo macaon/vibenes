@@ -50,9 +50,14 @@ pub struct DmcStepResult {
 
 impl Dmc {
     pub fn new(region: Region) -> Self {
+        // Rate tables are published in CPU cycles per bit. The timer below
+        // counts down in the `P, P-1, ..., 0, reload` pattern where the
+        // reload cycle is the one that shifts — so period must be stored
+        // as `table_value - 1` to make one full cycle equal exactly
+        // `table_value` CPU cycles. (Mesen2 does the same subtraction.)
         let period = match region {
-            Region::Ntsc => DMC_RATES_NTSC[0],
-            Region::Pal => DMC_RATES_PAL[0],
+            Region::Ntsc => DMC_RATES_NTSC[0] - 1,
+            Region::Pal => DMC_RATES_PAL[0] - 1,
         };
         Self {
             region,
@@ -110,7 +115,8 @@ impl Dmc {
         self.irq_enabled = (data & 0x80) != 0;
         self.loop_flag = (data & 0x40) != 0;
         let idx = (data & 0x0F) as usize;
-        self.period = self.rates()[idx];
+        // See `new`: stored period is the published rate minus one.
+        self.period = self.rates()[idx] - 1;
     }
 
     pub fn write_output(&mut self, data: u8) {
