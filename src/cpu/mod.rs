@@ -34,7 +34,6 @@ pub struct Cpu {
     pub halted: bool,
     pub halt_reason: Option<String>,
 
-    nmi_seen: bool,
     pending_interrupt: Option<Interrupt>,
 }
 
@@ -56,7 +55,6 @@ impl Cpu {
             cycles: 0,
             halted: false,
             halt_reason: None,
-            nmi_seen: false,
             pending_interrupt: None,
         }
     }
@@ -78,7 +76,6 @@ impl Cpu {
         self.pc = u16::from_le_bytes([lo, hi]);
         self.sp = self.sp.wrapping_sub(3);
         self.p.set_interrupt(true);
-        self.nmi_seen = false;
         self.pending_interrupt = None;
         self.halted = false;
         self.halt_reason = None;
@@ -128,16 +125,15 @@ impl Cpu {
     /// penultimate cycle. `op` and `i_flag_before` pick the correct I
     /// flag value for instructions that mutate it (see `step` docs).
     fn poll_interrupts_at_end(&mut self, bus: &mut Bus, op: u8, i_flag_before: bool) {
-        // Edge-detect NMI using the previous cycle's latch state.
-        let nmi_latched = bus.prev_nmi_pending;
-        if nmi_latched && !self.nmi_seen {
+        // NMI uses an edge-triggered latch: `bus.nmi_pending` is set
+        // once per rising edge by the PPU and cleared on service. Like
+        // Mesen2's `_needNmi`, we just consume it on latch — the line
+        // being held asserted won't produce a new edge, so we don't
+        // need a separate "already serviced" flag.
+        if bus.prev_nmi_pending {
             self.pending_interrupt = Some(Interrupt::Nmi);
             bus.nmi_pending = false;
-            self.nmi_seen = true;
             return;
-        }
-        if !bus.nmi_pending && !bus.prev_nmi_pending {
-            self.nmi_seen = false;
         }
 
         let i_for_poll = match op {
@@ -154,7 +150,7 @@ impl Cpu {
     }
 
     fn service_interrupt(&mut self, bus: &mut Bus, kind: Interrupt) {
-        let vector = match kind {
+        let mut vector = match kind {
             Interrupt::Nmi => 0xFFFA,
             Interrupt::Reset => 0xFFFC,
             Interrupt::Irq | Interrupt::Brk => 0xFFFE,
@@ -175,9 +171,28 @@ impl Cpu {
         }
         self.push(bus, status);
         self.p.set_interrupt(true);
+        // NMI hijack: real 6502 latches the vector choice during the
+        // push phase of a BRK/IRQ sequence. We sample at the boundary
+        // between cycle 5 (push P) and cycle 6 (vector-low fetch), using
+        // `prev_nmi_pending` so the window caps at end-of-cycle-4 state.
+        // On hijack the pushed P is unchanged (B flag already reflects
+        // BRK=1 / IRQ=0) and the NMI latch is consumed. NMI cannot
+        // hijack its own service (already consumed at poll time).
+        if matches!(kind, Interrupt::Brk | Interrupt::Irq) && bus.prev_nmi_pending {
+            vector = 0xFFFA;
+            bus.nmi_pending = false;
+        }
         let lo = bus.read(vector);
         let hi = bus.read(vector.wrapping_add(1));
         self.pc = u16::from_le_bytes([lo, hi]);
+        // Suppress post-service NMI latch: an NMI that arrived too
+        // late to hijack this sequence is deferred to *after* the
+        // handler's first instruction, not serviced back-to-back.
+        // Matches Mesen2's `_prevNeedNmi = false` at end of BRK
+        // (NesCpu.cpp:238) and implicitly after IRQ service.
+        if matches!(kind, Interrupt::Brk | Interrupt::Irq) {
+            bus.prev_nmi_pending = false;
+        }
     }
 
     #[inline]

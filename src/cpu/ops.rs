@@ -970,9 +970,25 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             let status = cpu.p.to_u8() | 0x30; // B + U set on push
             cpu.push(bus, status);
             cpu.p.set_interrupt(true);
-            let lo = bus.read(0xFFFE);
-            let hi = bus.read(0xFFFF);
+            // NMI hijack: if NMI was pending at end-of-push-P, redirect
+            // vector to $FFFA. Pushed P keeps B=1 (BRK) — hijack only
+            // retargets the vector. NMI latch consumed.
+            let vector: u16 = if bus.prev_nmi_pending {
+                bus.nmi_pending = false;
+                0xFFFA
+            } else {
+                0xFFFE
+            };
+            let lo = bus.read(vector);
+            let hi = bus.read(vector.wrapping_add(1));
             cpu.pc = u16::from_le_bytes([lo, hi]);
+            // Suppress BRK's own poll at end-of-instruction. Any NMI
+            // that arrived too late to hijack (cycles 6–7 of BRK) is
+            // deferred to after the handler's first instruction, not
+            // recognized immediately — matches Mesen2's explicit
+            // `_prevNeedNmi = false` at end of BRK (NesCpu.cpp:238),
+            // required by cpu_interrupts_v2/2-nmi_and_brk.
+            bus.prev_nmi_pending = false;
         }
         0xEA => {
             bus.read(cpu.pc);

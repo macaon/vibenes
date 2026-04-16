@@ -91,6 +91,7 @@ impl Bus {
     /// raised during a write cycle waits for the next read.
     pub fn read(&mut self, addr: u16) -> u8 {
         self.service_pending_dmc_dma();
+        self.tick_pre_access();
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
@@ -102,20 +103,21 @@ impl Bus {
             _ => self.open_bus,
         };
         self.open_bus = value;
-        self.tick_cycle();
+        self.tick_post_access();
         value
     }
 
     /// One CPU bus write. Every write costs one CPU cycle.
     pub fn write(&mut self, addr: u16, data: u8) {
         self.open_bus = data;
+        self.tick_pre_access();
         match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize] = data,
             0x2000..=0x3FFF => self.ppu.cpu_write(addr, data, &mut *self.mapper),
             0x4000..=0x4013 | 0x4015 | 0x4017 => self.apu.write_reg(addr, data),
             0x4014 => {
                 // STA $4014's final write cycle.
-                self.tick_cycle();
+                self.tick_post_access();
                 // Nesdev "OAM DMA": 513 CPU cycles total, plus one more
                 // if the DMA begins on an odd CPU cycle. We capture the
                 // parity at the moment the DMA starts (immediately after
@@ -133,7 +135,7 @@ impl Bus {
             0x4018..=0x401F => {}
             0x4020..=0xFFFF => self.mapper.cpu_write(addr, data),
         }
-        self.tick_cycle();
+        self.tick_post_access();
     }
 
     /// Peek without ticking — for debuggers/tracers only. Does not have
@@ -146,11 +148,15 @@ impl Bus {
         }
     }
 
-    fn tick_cycle(&mut self) {
-        // Snapshot state at the END of the previous cycle before we
-        // run this one. CPU polls these at the end of each instruction
-        // to get "end-of-penultimate-cycle" interrupt state (real 6502
-        // behavior).
+    /// First half of a CPU cycle — runs before the bus access.
+    ///
+    /// Advances the master clock and ticks the PPU so register accesses
+    /// see PPU state as-of the middle of the cycle (matching real 6502
+    /// ↔ 2C02 interactions). Also captures the penultimate-cycle
+    /// interrupt snapshot the CPU polls at end-of-instruction. Critical
+    /// for blargg CPU-interrupt tests (`2-nmi_and_brk`, `3-nmi_and_irq`)
+    /// that time NMI recognition to specific PPU dots.
+    fn tick_pre_access(&mut self) {
         self.prev_irq_line = self.irq_line;
         self.prev_nmi_pending = self.nmi_pending;
 
@@ -158,12 +164,29 @@ impl Bus {
         for _ in 0..ppu_ticks {
             self.ppu.tick(&mut *self.mapper);
         }
-        self.apu.tick_cpu_cycle();
-        self.mapper.on_cpu_cycle();
         if self.ppu.poll_nmi() {
             self.nmi_pending = true;
         }
+    }
+
+    /// Second half of a CPU cycle — runs after the bus access.
+    ///
+    /// APU + mapper tick here so writes to $4000–$4017 that trigger
+    /// them (length loads, frame-counter reset, MMC3 A12 filter) land
+    /// on the same cycle as the write. Re-samples the IRQ line after
+    /// APU updates.
+    fn tick_post_access(&mut self) {
+        self.apu.tick_cpu_cycle();
+        self.mapper.on_cpu_cycle();
         self.irq_line = self.apu.irq_line();
+    }
+
+    /// Old combined tick entry — kept for stall cycles inside OAM/DMC
+    /// DMA that have no CPU-side access. These idle cycles still must
+    /// advance clock/PPU/APU and refresh interrupt lines.
+    fn tick_cycle(&mut self) {
+        self.tick_pre_access();
+        self.tick_post_access();
     }
 
     fn run_oam_dma(&mut self, page: u8, extra_idle: bool) {
