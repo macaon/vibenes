@@ -37,8 +37,14 @@ opcodes and mapper quirks) but not for source.
 - **PPU stub** — register window at $2000-$2007, VBlank flag + NMI
   edge, scroll latch (t/v/x/w), palette and nametable mirroring,
   region-aware scanline count. No rendering yet.
-- **APU stub** — register file at $4000-$4017; accepts writes so the
-  bus stays quiet. No audio output, no frame counter IRQ yet.
+- **APU** — pulse ×2, triangle, noise, DMC channels with shared length
+  counter, envelope, sweep, and linear counter. Frame counter sequencer
+  in both 4-step and 5-step modes with the $4017 write-delay quirk
+  (`W+3` odd / `W+2` even) and IRQ window. $4015 status read/write
+  semantics wired (including frame-IRQ acknowledge). DMC shift register
+  + rate table drive the timer and request DMA (bus stall not wired yet,
+  see below). No audio output device — mixer samples are computed but
+  dropped.
 - **Headless blargg test runner** (`cargo run --bin test_runner ROM`) —
   polls $6000 for the standard signature/status/message protocol.
 
@@ -54,9 +60,24 @@ opcodes and mapper quirks) but not for source.
 | `cpu_dummy_writes_ppumem.nes` | PASS |
 | `instr_misc.nes` | 3/4 (4th needs APU frame IRQ) |
 
+### APU test results
+
+| Suite | Result |
+|---|---|
+| `apu_test/rom_singles/1-len_ctr.nes` | PASS |
+| `apu_test/rom_singles/2-len_table.nes` | PASS |
+| `apu_test/rom_singles/3-irq_flag.nes` | PASS |
+| `apu_test/rom_singles/4-jitter.nes` | PASS |
+| `apu_test/rom_singles/5-len_timing.nes` | PASS |
+| `apu_test/rom_singles/6-irq_flag_timing.nes` | PASS |
+| `apu_test/rom_singles/7-dmc_basics.nes` | FAIL (needs DMA stall) |
+| `apu_test/rom_singles/8-dmc_rates.nes` | FAIL (needs DMA stall) |
+
 ### Not yet
 
-- APU frame counter + audio mixing
+- DMC DMA bus stall (inserts 1-4 CPU cycles depending on alignment;
+  both remaining APU failures are gated on this)
+- Audio output device (samples are mixed but not delivered)
 - PPU rendering (pattern/nametable/sprite pipeline)
 - wgpu window + wgsl shaders
 - Controllers (wiring beyond the shifter)
@@ -100,7 +121,16 @@ src/
     flags.rs          status register
     ops.rs            151 official + unofficial opcodes
   ppu.rs              2C02 register window + VBlank/NMI
-  apu.rs              2A03 APU register stub
+  apu/
+    mod.rs            2A03 APU top-level: mix, tick, $4015, IRQ line
+    frame_counter.rs  4-step/5-step sequencer, $4017 delay, IRQ window
+    length.rs         shared length counter
+    envelope.rs       envelope unit (pulse + noise)
+    sweep.rs          pulse sweep (ones' vs two's complement)
+    pulse.rs          pulse channel
+    triangle.rs       triangle + linear counter
+    noise.rs          noise + LFSR + region period table
+    dmc.rs            DMC shift register, rate table, DMA request
   mapper/
     mod.rs            trait + factory
     nrom.rs           mapper 0
