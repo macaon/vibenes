@@ -58,7 +58,7 @@ opcodes and mapper quirks) but not for source.
 | `nes_instr_test/rom_singles/` (11 files) | 11/11 PASS |
 | `cpu_dummy_writes_oam.nes` | PASS |
 | `cpu_dummy_writes_ppumem.nes` | PASS |
-| `instr_misc.nes` | 3/4 (4th needs APU frame IRQ) |
+| `instr_misc.nes` | 4/4 PASS (`04-dummy_reads_apu` now covered) |
 
 ### APU test results
 
@@ -70,13 +70,16 @@ opcodes and mapper quirks) but not for source.
 | `apu_test/rom_singles/4-jitter.nes` | PASS |
 | `apu_test/rom_singles/5-len_timing.nes` | PASS |
 | `apu_test/rom_singles/6-irq_flag_timing.nes` | PASS |
-| `apu_test/rom_singles/7-dmc_basics.nes` | FAIL (needs DMA stall) |
-| `apu_test/rom_singles/8-dmc_rates.nes` | FAIL (needs DMA stall) |
+| `apu_test/rom_singles/7-dmc_basics.nes` | PASS |
+| `apu_test/rom_singles/8-dmc_rates.nes` | PASS |
 
 ### Not yet
 
-- DMC DMA bus stall (inserts 1-4 CPU cycles depending on alignment;
-  both remaining APU failures are gated on this)
+- `$4016/$4017` double-read bug during DMC DMA halt cycles (blocks
+  `dmc_dma_during_read4`; halt/dummy reads don't replay the CPU's
+  pending address yet)
+- `cpu_interrupts_v2` singles 3–5 (need penultimate-cycle IRQ/NMI
+  polling in the CPU core)
 - Audio output device (samples are mixed but not delivered)
 - PPU rendering (pattern/nametable/sprite pipeline)
 - wgpu window + wgsl shaders
