@@ -40,11 +40,14 @@ opcodes and mapper quirks) but not for source.
 - **APU** — pulse ×2, triangle, noise, DMC channels with shared length
   counter, envelope, sweep, and linear counter. Frame counter sequencer
   in both 4-step and 5-step modes with the $4017 write-delay quirk
-  (`W+3` odd / `W+2` even) and IRQ window. $4015 status read/write
-  semantics wired (including frame-IRQ acknowledge). DMC shift register
-  + rate table drive the timer and request DMA (bus stall not wired yet,
-  see below). No audio output device — mixer samples are computed but
-  dropped.
+  (`W+3` odd / `W+2` even) and IRQ window. $4015 read/write semantics
+  wired (frame-IRQ acknowledge on read, DMC IRQ clear on write, mid-
+  sample disable drops the pending DMA). $4010 IRQ-disable path clears
+  latched DMC IRQ. DMC shift register, rate table, and bus-level DMA
+  stall (4 CPU cycles, non-reentrant) are all in place — the DMC fetches
+  sample bytes through the mapper and IRQs on non-looping completion.
+  12 unit tests cover the $4015 / $4010 / DMC edge cases. No audio
+  output device yet — mixer samples are computed and dropped.
 - **Headless blargg test runner** (`cargo run --bin test_runner ROM`) —
   polls $6000 for the standard signature/status/message protocol.
 
@@ -75,20 +78,24 @@ opcodes and mapper quirks) but not for source.
 
 ### Not yet
 
-- `$4016/$4017` double-read bug during DMC DMA halt cycles (blocks
-  `dmc_dma_during_read4`; halt/dummy reads don't replay the CPU's
-  pending address yet)
-- `cpu_interrupts_v2` singles 3–5 (need penultimate-cycle IRQ/NMI
-  polling in the CPU core)
-- Audio output device (samples are mixed but not delivered)
-- PPU rendering (pattern/nametable/sprite pipeline)
-- wgpu window + wgsl shaders
-- Controllers (wiring beyond the shifter)
-- OAMDMA timing refinements (extra alignment cycle)
-- Precise interrupt polling (penultimate-cycle latching)
-- Additional mappers (UxROM 2, MMC3 4, AxROM 7, …)
+- **Penultimate-cycle IRQ/NMI polling** in the CPU core — needed for
+  `cpu_interrupts_v2` singles 3–5 and for future mapper IRQs.
+- **OAM DMA alignment** — currently charges 513 cycles unconditionally;
+  hardware charges 514 when the DMA begins on an odd CPU cycle.
+- **`$4016/$4017` DMC double-read bug** — the halt/dummy cycles of a
+  DMC DMA don't replay the CPU's pending read address yet, so the
+  controller-bit-deletion behavior checked by `dmc_dma_during_read4`
+  is not modeled.
+- **Audio output** — `Apu::output_sample()` produces a value every
+  CPU cycle but nothing drains it; cpal + ring-buffered resampler is
+  planned as a dedicated phase once CPU-side timing is locked down.
+- **PPU rendering** (pattern/nametable/sprite pipeline) and the wgpu
+  window + wgsl shaders.
+- **Controllers** (beyond the shifter).
+- **Additional mappers** (UxROM 2, MMC3 4, AxROM 7, …).
 - Test suites that report via PPU screen instead of $6000
-  (`branch_timing_tests`, `cpu_timing_test6`, `cpu_dummy_reads`)
+  (`branch_timing_tests`, `cpu_timing_test6`, `cpu_dummy_reads`, most
+  of `apu_reset/*` and all of `dmc_tests/*`).
 
 ## Build
 
