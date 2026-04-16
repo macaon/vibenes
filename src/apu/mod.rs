@@ -140,6 +140,18 @@ impl Apu {
     }
 
     /// `$4015` read: returns channel-status bits, clears frame IRQ.
+    ///
+    /// Same-cycle race (nesdev "Frame IRQ flag"): if the frame counter
+    /// sets `frame_irq` on the same CPU cycle as a $4015 read, hardware
+    /// must return the bit set and clear it after. Our bus ticks the
+    /// APU at the *end* of every bus access (see `Bus::tick_cycle`), so
+    /// in practice `read_status` observes the frame_irq state as of the
+    /// previous cycle — any setting event on "this" cycle is deferred
+    /// to the next read. Frame IRQ stays level-asserted for 3 CPU
+    /// cycles (29828..=29830), so this off-by-one does not drop the
+    /// flag and `apu_test/6-irq_flag_timing` passes. If a future test
+    /// catches the race we must move the APU tick to the start of the
+    /// bus op (or split it into pre/post halves).
     pub fn read_status(&mut self) -> u8 {
         let mut status = 0u8;
         if self.pulse1.length_nonzero() {
@@ -257,5 +269,90 @@ fn tnd_out(n: u32) -> f32 {
         0.0
     } else {
         159.79 / (1.0 / (n as f32 / 100.0) + 100.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ntsc() -> Apu {
+        Apu::new(Region::Ntsc)
+    }
+
+    #[test]
+    fn read_status_clears_frame_irq_not_dmc_irq() {
+        let mut apu = ntsc();
+        apu.frame_irq = true;
+        apu.dmc_irq = true;
+
+        let s = apu.read_status();
+
+        assert_eq!(s & 0x40, 0x40, "frame IRQ bit must be set in returned value");
+        assert_eq!(s & 0x80, 0x80, "DMC IRQ bit must be set in returned value");
+        assert!(!apu.frame_irq, "frame IRQ cleared after read");
+        assert!(apu.dmc_irq, "DMC IRQ preserved across $4015 read");
+    }
+
+    #[test]
+    fn write_4015_clears_dmc_irq_not_frame_irq() {
+        let mut apu = ntsc();
+        apu.frame_irq = true;
+        apu.dmc_irq = true;
+
+        apu.write_reg(0x4015, 0x00);
+
+        assert!(apu.frame_irq, "frame IRQ survives $4015 write");
+        assert!(!apu.dmc_irq, "DMC IRQ cleared by any $4015 write");
+    }
+
+    #[test]
+    fn write_4010_with_irq_disabled_clears_dmc_irq() {
+        let mut apu = ntsc();
+        apu.dmc_irq = true;
+
+        // Bit 7 = 0 → IRQ disabled; must also clear any latched DMC IRQ.
+        apu.write_reg(0x4010, 0x00);
+
+        assert!(!apu.dmc_irq, "$4010 with I=0 must clear DMC IRQ");
+    }
+
+    #[test]
+    fn write_4010_with_irq_enabled_preserves_dmc_irq() {
+        let mut apu = ntsc();
+        apu.dmc_irq = true;
+
+        // Bit 7 = 1 → IRQ stays enabled; DMC IRQ latch must not be cleared.
+        apu.write_reg(0x4010, 0x80);
+
+        assert!(apu.dmc_irq, "$4010 with I=1 leaves latched DMC IRQ intact");
+    }
+
+    #[test]
+    fn dmc_enable_via_4015_arms_dma_request() {
+        let mut apu = ntsc();
+        // $4013: sample length = 1 byte; $4012: start addr $C000.
+        apu.write_reg(0x4013, 0x00);
+        apu.write_reg(0x4012, 0x00);
+        apu.write_reg(0x4015, 0x10); // enable DMC
+
+        assert!(
+            apu.take_dmc_dma_request().is_some(),
+            "enabling DMC with bytes_remaining==0 must arm a DMA fetch"
+        );
+    }
+
+    #[test]
+    fn dmc_disable_via_4015_mid_sample_discards_pending_dma() {
+        let mut apu = ntsc();
+        apu.write_reg(0x4013, 0x01); // 17 bytes
+        apu.write_reg(0x4015, 0x10); // enable — arms DMA
+
+        apu.write_reg(0x4015, 0x00); // disable before bus services the DMA
+
+        assert!(
+            apu.take_dmc_dma_request().is_none(),
+            "pending DMA must be dropped when DMC is disabled"
+        );
     }
 }

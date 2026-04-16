@@ -97,7 +97,15 @@ impl Dmc {
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
         if !enabled {
+            // `$4015` bit 4 = 0: drop the remaining sample and discard any
+            // outstanding DMA fetch. Without clearing `dma_pending`, a
+            // fetch armed just before the disable would still be serviced
+            // by the bus and the byte would land in `buffer`, which the
+            // next enable would then shift out — an extra stray sample.
+            // The currently-buffered / mid-shift byte is *kept* (hardware
+            // lets the current shift register finish naturally).
             self.bytes_remaining = 0;
+            self.dma_pending = None;
         } else if self.bytes_remaining == 0 {
             self.restart_sample();
         }
@@ -201,5 +209,103 @@ impl Dmc {
 
     pub fn output(&self) -> u8 {
         self.output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ntsc() -> Dmc {
+        Dmc::new(Region::Ntsc)
+    }
+
+    #[test]
+    fn period_is_stored_as_table_value_minus_one() {
+        let mut d = ntsc();
+        // Rate index 0: published 428 CPU cycles/bit → stored 427.
+        d.write_ctrl(0x00);
+        assert_eq!(d.period, 427);
+        // Rate index 15: published 54 → stored 53.
+        d.write_ctrl(0x0F);
+        assert_eq!(d.period, 53);
+    }
+
+    #[test]
+    fn enable_on_empty_arms_dma() {
+        let mut d = ntsc();
+        d.write_sample_len(0x01); // 1*16 + 1 = 17 bytes
+        d.write_sample_addr(0x00); // $C000
+        assert!(d.take_dma_request().is_none());
+
+        d.set_enabled(true);
+
+        let req = d.take_dma_request().expect("DMA armed on enable");
+        assert_eq!(req.addr, 0xC000);
+        assert_eq!(d.bytes_remaining(), 17);
+    }
+
+    #[test]
+    fn disable_clears_bytes_and_pending_dma() {
+        let mut d = ntsc();
+        d.write_sample_len(0x01);
+        d.set_enabled(true);
+        assert!(d.dma_pending.is_some(), "DMA was armed");
+
+        d.set_enabled(false);
+
+        assert_eq!(d.bytes_remaining(), 0);
+        assert!(
+            d.dma_pending.is_none(),
+            "disable must discard the pending DMA fetch"
+        );
+    }
+
+    #[test]
+    fn dma_complete_raises_irq_on_last_byte_when_enabled() {
+        let mut d = ntsc();
+        d.write_ctrl(0x80); // IRQ enabled, no loop
+        d.write_sample_len(0x00); // length = 1 byte
+        d.set_enabled(true);
+        let _ = d.take_dma_request();
+
+        let fire = d.dma_complete(0xAA);
+
+        assert!(fire, "last byte must report IRQ");
+        assert_eq!(d.bytes_remaining(), 0);
+    }
+
+    #[test]
+    fn dma_complete_does_not_raise_irq_when_looping() {
+        let mut d = ntsc();
+        d.write_ctrl(0xC0); // IRQ enabled, loop set — loop wins, no IRQ
+        d.write_sample_len(0x00);
+        d.set_enabled(true);
+        let _ = d.take_dma_request();
+
+        let fire = d.dma_complete(0xAA);
+
+        assert!(!fire, "looped sample must not fire IRQ");
+        // restart_sample re-initialised the byte count.
+        assert!(d.bytes_remaining() > 0);
+    }
+
+    #[test]
+    fn sample_addr_wraps_ffff_to_8000() {
+        // Drive `dma_complete` directly so we don't need to tick the
+        // shift register — the wrap only depends on `current_addr`
+        // advancing once per completed DMA.
+        let mut d = ntsc();
+        d.write_ctrl(0x00);
+        d.write_sample_len(0xFF); // 0xFF*16 + 1 = 4081 bytes, plenty
+        d.write_sample_addr(0xFF); // start at $C000 + 0xFF*64 = $FFC0
+        d.set_enabled(true);
+        let _ = d.take_dma_request();
+
+        // The 64th completion writes to $FFFF; the 65th must wrap to $8000.
+        for _ in 0..64 {
+            d.dma_complete(0x55);
+        }
+        assert_eq!(d.current_addr, 0x8000, "expected wrap to $8000");
     }
 }
