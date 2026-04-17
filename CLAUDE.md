@@ -13,7 +13,7 @@ freely for timings, edge cases, and stall tables, but describe the
 model in our own words:
 
 - `~/Git/Mesen2/Core/NES/` — APU, CPU, PPU, memory manager.
-- `~/Git/puNES/src/core/` — `cpu_inline.h`, `apu.c`.
+- `~/Git/punes/src/core/` — `cpu_inline.h`, `apu.c`.
 - `~/Git/nestopia/source/core/` — `NstApu.cpp`.
 
 The `nes-expert` skill at `~/.claude/skills/nes-expert/reference/{apu,cpu,timing,mappers,ppu}.md`
