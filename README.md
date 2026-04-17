@@ -45,7 +45,9 @@ opcodes and mapper quirks) but not for source.
   iterations that sync to specific VBlank dots.
 - **Mappers** — NROM (0), MMC1/SxROM (1) with serial shift and the
   consecutive-write filter, UxROM (2) with `$8000-$BFFF` switchable /
-  `$C000-$FFFF` fixed-to-last split and CHR-RAM, CNROM (3).
+  `$C000-$FFFF` fixed-to-last split and CHR-RAM, CNROM (3), AxROM (7)
+  with 32KB PRG banks and single-screen mirroring toggled by bit 4 of
+  the bank-select write.
 - **PPU stub** — register window at $2000-$2007, VBlank flag + NMI
   edge, scroll latch (t/v/x/w), palette and nametable mirroring,
   region-aware scanline count. No rendering yet.
@@ -186,6 +188,7 @@ src/
     mmc1.rs           mapper 1 (SxROM)
     uxrom.rs          mapper 2 (UNROM/UOROM)
     cnrom.rs          mapper 3
+    axrom.rs          mapper 7 (AOROM/AMROM)
   nes.rs              system glue
   main.rs             CLI entry (stub runtime)
   bin/
