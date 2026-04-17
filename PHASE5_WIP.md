@@ -1,7 +1,7 @@
 # Phase 5 — In-flight state (interrupt polling)
 
 **Branch:** `phase5-interrupt-polling`
-**Latest commit:** `3fecaef` (NMI hijack + bus cycle split + post-service defer).
+**Latest commit:** Sub-B landed — branch-delays-IRQ quirk with unit tests.
 **Base commit:** `07ddbee` on `main`.
 
 Verify with `git log --oneline main..HEAD` before resuming — if the
@@ -25,10 +25,21 @@ tip has moved, trust the git log over this file.
 |---|---|---|
 | A | `2-nmi_and_brk` | ✅ PASS (commit `3fecaef`) |
 | A | `3-nmi_and_irq` | ❌ FAIL — hijack mechanism lands, alternating rows |
-| B | `5-branch_delays_irq` | ⏳ not started |
+| B | `5-branch_delays_irq` | 🔶 logic landed + unit-tested; ROM still FAIL |
 | C | `4-irq_and_dma` | ⏳ not started |
 
 `1-cli_latency` passes from the baseline commit `1093d67`.
+
+**Sub-B note.** The branch-delays-IRQ quirk (taken-no-cross suppresses
+IRQ latch when IRQ was newly asserted during the branch) is implemented
+in [src/cpu/ops.rs](src/cpu/ops.rs) `branch()` + [src/cpu/mod.rs](src/cpu/mod.rs)
+`poll_interrupts_at_end`, and verified by two unit tests
+(`taken_no_cross_branch_delays_irq_by_one_instruction`,
+`branch_not_taken_does_not_delay_irq`). The ROM test `5-branch_delays_irq`
+still FAILs, but the failure is in the `test_jmp` subtest which uses
+pure JMP — no branches at all. That's the same baseline IRQ timing
+issue as test 3 (anomalous IRQ/NMI recognition on specific iteration
+phases) and must be fixed before test 5 can pass end-to-end.
 
 ## What's in the branch
 
@@ -79,32 +90,7 @@ Proceed through the remaining sub-items per the plan. Each commit:
 4. Commit message format: `feat(cpu): phase 5 sub-X — <what>` (no AI
    attribution, no co-author trailer).
 
-### Sub-B — branch-delays-IRQ (`5-branch_delays_irq`)
-
-**Spec.** On a taken branch with no page cross (3-cycle taken branch),
-the IRQ poll at the final cycle is suppressed — IRQ is deferred by one
-instruction. This is a Visual6502-documented 6502 quirk.
-
-**Plan.**
-
-- Snapshot `irq_line_at_start = bus.irq_line` in `Cpu::step` before
-  `fetch_byte`. Store on `Cpu` as a one-shot.
-- Add `branch_taken_no_cross: bool` on `Cpu`; `branch()` in
-  [src/cpu/ops.rs](src/cpu/ops.rs) (~line 291) sets it when the branch
-  is taken AND `(base_pc & 0xFF00) == (target & 0xFF00)`.
-- In `poll_interrupts_at_end`: if `branch_taken_no_cross` is set AND
-  IRQ was newly asserted during this branch (`!irq_line_at_start &&
-  bus.prev_irq_line`), skip the IRQ latch. Clear the flag either way.
-- Taken-page-cross (4-cycle) uses no suppression — penultimate returns
-  to cycle 3, normal rules apply.
-
-**References.**
-- puNES `BRC` macro at `cpu.c:114-144` — explicit `irq.delay = TRUE`
-  on taken-no-cross.
-- Mesen2 `NesCpu.h:432-448` — suppresses when IRQ newly-asserted
-  during the first dummy-read.
-
-### Investigate test 3 `3-nmi_and_irq`
+### Investigate test 3 `3-nmi_and_irq` (and `5-branch_delays_irq` test_jmp)
 
 **Current output (last seen):**
 ```
@@ -125,6 +111,12 @@ The `21` pattern is specifically "NMI fires before `lda #1` executed"
 which is VERY early. That's not a hijack-boundary issue — something
 is latching NMI at a completely wrong time on those iterations.
 
+**Test 5 `test_jmp` has the same class of bug.** Pure JMP loop, no
+branches — our CK column is 0 on every row where expected CK is ≥2,
+meaning the IRQ is recognized 1–2 frames earlier than it should be on
+specific iteration phases. Same "anomalous early recognition on some
+iterations" shape as test 3.
+
 Suspects:
 - APU frame-counter IRQ latches on one half of the APU get/put
   phase but the PPU VBlank-set lands on the other half; our new
@@ -133,9 +125,14 @@ Suspects:
   that `i_flag_before` is captured at the right moment.
 - A separate NMI edge firing on `sta PPUCTRL` when VBlank is already
   set (the $2000-write-with-VBlank-set edge case).
+- `bus.irq_line` is refreshed in `tick_post_access` only — if an APU
+  event in `tick_pre_access` (e.g. PPU-tick-driven state that feeds
+  back into APU phase) needs to be visible *before* the CPU's read,
+  the current ordering may miss it by one cycle.
 
 Instrument before coding: log `(cycle, pending_interrupt, op, pc)`
-around iterations 4–6 of test 3 and compare good vs bad iterations.
+around iterations 4–6 of test 3 AND compare the `test_jmp` phase of
+test 5 (both should diverge on the same arithmetic boundary).
 
 ### Sub-C — DMC DMA ↔ IRQ (`4-irq_and_dma`)
 

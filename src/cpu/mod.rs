@@ -35,6 +35,18 @@ pub struct Cpu {
     pub halt_reason: Option<String>,
 
     pending_interrupt: Option<Interrupt>,
+
+    /// IRQ line level captured at the start of the current instruction
+    /// (before the opcode fetch). Used by the branch-delays-IRQ quirk:
+    /// a taken-no-cross branch suppresses its own IRQ poll only when
+    /// the line was low at entry and high at the penultimate — i.e.
+    /// the IRQ was newly asserted *during* the branch.
+    irq_line_at_start: bool,
+
+    /// Set by `branch()` when the current instruction is a taken
+    /// branch with no page cross (3-cycle form). Consumed and cleared
+    /// by `poll_interrupts_at_end`.
+    branch_taken_no_cross: bool,
 }
 
 impl Default for Cpu {
@@ -56,7 +68,16 @@ impl Cpu {
             halted: false,
             halt_reason: None,
             pending_interrupt: None,
+            irq_line_at_start: false,
+            branch_taken_no_cross: false,
         }
+    }
+
+    /// Mark the current instruction as a taken branch with no page
+    /// cross. Called from `ops::branch`. Only consumed by the next
+    /// `poll_interrupts_at_end`.
+    pub(crate) fn mark_branch_taken_no_cross(&mut self) {
+        self.branch_taken_no_cross = true;
     }
 
     pub fn reset(&mut self, bus: &mut Bus) {
@@ -79,6 +100,8 @@ impl Cpu {
         self.pending_interrupt = None;
         self.halted = false;
         self.halt_reason = None;
+        self.branch_taken_no_cross = false;
+        self.irq_line_at_start = false;
     }
 
     /// Run one instruction (or service a pending interrupt).
@@ -110,6 +133,11 @@ impl Cpu {
             return Ok(());
         }
         let i_flag_before = self.p.interrupt();
+        // Snapshot IRQ line at instruction entry — needed by the
+        // branch-delays-IRQ quirk (taken-no-cross branch suppresses
+        // its own IRQ poll only when IRQ was newly asserted during
+        // the branch, not before it started).
+        self.irq_line_at_start = bus.irq_line;
         let op = self.fetch_byte(bus);
         ops::execute(self, bus, op).map_err(|msg| {
             self.halted = true;
@@ -144,7 +172,22 @@ impl Cpu {
             // cycle 4 with cycles 5+6 following): current I is correct.
             _ => self.p.interrupt(),
         };
-        if bus.prev_irq_line && !i_for_poll {
+
+        // Branch-delays-IRQ quirk: on a taken branch with no page
+        // cross (3-cycle form), if IRQ was low at instruction entry
+        // but is set at the penultimate, the IRQ was newly asserted
+        // during the branch and the 6502 skips the poll for this
+        // instruction. IRQ is level-held by the APU so the next
+        // instruction's penultimate poll will still see it and fire.
+        // References:
+        //   Mesen2 NesCpu.h:432-448 (BranchRelative)
+        //   puNES cpu.c:114-144 (BRC macro)
+        let suppress_by_branch = self.branch_taken_no_cross
+            && !self.irq_line_at_start
+            && bus.prev_irq_line;
+        self.branch_taken_no_cross = false;
+
+        if bus.prev_irq_line && !i_for_poll && !suppress_by_branch {
             self.pending_interrupt = Some(Interrupt::Irq);
         }
     }
@@ -225,5 +268,130 @@ impl Cpu {
     pub fn set_zn(&mut self, value: u8) {
         self.p.set_zero(value == 0);
         self.p.set_negative((value & 0x80) != 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::Bus;
+    use crate::clock::Region;
+    use crate::mapper::nrom::Nrom;
+    use crate::rom::{Cartridge, Mirroring, TvSystem};
+
+    /// Build a 32 KiB PRG-ROM with the given program at the start of
+    /// the bank, reset vector → `$8000`, IRQ/BRK vector → `$9000`,
+    /// NMI vector → `$A000`. Rest filled with NOP so runaway PC lands
+    /// on something harmless.
+    fn cart_with_program(program: &[u8]) -> Cartridge {
+        let mut prg = vec![0xEAu8; 0x8000];
+        prg[..program.len()].copy_from_slice(program);
+        // Vectors live at the end of the 32 KiB image ($FFFA..$FFFF).
+        prg[0x7FFA] = 0x00; // NMI lo
+        prg[0x7FFB] = 0xA0; // NMI hi → $A000
+        prg[0x7FFC] = 0x00; // RESET lo
+        prg[0x7FFD] = 0x80; // RESET hi → $8000
+        prg[0x7FFE] = 0x00; // IRQ/BRK lo
+        prg[0x7FFF] = 0x90; // IRQ/BRK hi → $9000
+        Cartridge {
+            prg_rom: prg,
+            chr_rom: vec![0u8; 0x2000],
+            chr_ram: false,
+            mapper_id: 0,
+            submapper: 0,
+            mirroring: Mirroring::Vertical,
+            battery_backed: false,
+            prg_ram_size: 0x2000,
+            tv_system: TvSystem::Ntsc,
+            is_nes2: false,
+        }
+    }
+
+    fn build_cpu_and_bus(program: &[u8]) -> (Cpu, Bus) {
+        let cart = cart_with_program(program);
+        let mut bus = Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc);
+        let mut cpu = Cpu::new();
+        cpu.reset(&mut bus);
+        (cpu, bus)
+    }
+
+    /// Taken branch with no page cross: the 6502 suppresses IRQ
+    /// recognition on the branch's final cycle when IRQ is newly
+    /// asserted during the branch. The IRQ then fires one instruction
+    /// later. Reference: puNES cpu.c BRC macro; Mesen2 NesCpu.h
+    /// BranchRelative.
+    #[test]
+    fn taken_no_cross_branch_delays_irq_by_one_instruction() {
+        // $8000: CLC          (2 cycles)
+        // $8001: BCC +$02     (3 cycles taken, no page cross → $8005)
+        // $8003..$8004: NOP   (skipped by branch)
+        // $8005..: NOP        (branch target)
+        let (mut cpu, mut bus) = build_cpu_and_bus(&[
+            0x18, // CLC
+            0x90, 0x02, // BCC +$02
+            0xEA, 0xEA, // NOPs (skipped)
+            0xEA, 0xEA, // NOP (target), NOP
+        ]);
+        // Reset leaves I=1; clear it so IRQ can fire.
+        cpu.p.set_interrupt(false);
+
+        // CLC — IRQ line is low throughout.
+        cpu.step(&mut bus).expect("CLC");
+        assert_eq!(cpu.pc, 0x8001);
+        assert!(cpu.pending_interrupt.is_none());
+        assert!(!bus.irq_line, "no IRQ after CLC");
+
+        // Assert frame IRQ between CLC and BCC. bus.irq_line still
+        // reads false (last tick_post_access ran with frame_irq=false)
+        // — so `cpu.irq_line_at_start` captured inside BCC's step()
+        // will also be false, then the line goes high during BCC.
+        bus.apu.set_frame_irq_for_test(true);
+
+        // BCC — taken, no page cross. IRQ newly asserted → suppressed.
+        cpu.step(&mut bus).expect("BCC");
+        assert_eq!(cpu.pc, 0x8005, "BCC taken to $8005");
+        assert!(
+            cpu.pending_interrupt.is_none(),
+            "branch-delays-IRQ quirk: IRQ must not latch on a taken \
+             no-cross branch when it was newly asserted during the branch"
+        );
+
+        // NOP at $8005 — IRQ stays asserted (level-held); normal poll
+        // at the penultimate cycle should now latch.
+        cpu.step(&mut bus).expect("NOP");
+        assert_eq!(cpu.pc, 0x8006, "NOP ran before IRQ service");
+        assert!(
+            matches!(cpu.pending_interrupt, Some(Interrupt::Irq)),
+            "IRQ should latch on the instruction after the branch"
+        );
+
+        // Service the IRQ — vector at $9000.
+        cpu.step(&mut bus).expect("IRQ service");
+        assert_eq!(cpu.pc, 0x9000);
+    }
+
+    /// A not-taken branch is 2 cycles; no quirk applies. IRQ asserted
+    /// before the branch must fire at the branch's penultimate.
+    #[test]
+    fn branch_not_taken_does_not_delay_irq() {
+        // $8000: CLC
+        // $8001: BCS +$02    (not taken — carry is clear)
+        // $8003..: NOP
+        let (mut cpu, mut bus) = build_cpu_and_bus(&[
+            0x18, // CLC
+            0xB0, 0x02, // BCS +$02 — not taken
+            0xEA, 0xEA, 0xEA, 0xEA,
+        ]);
+        cpu.p.set_interrupt(false);
+
+        cpu.step(&mut bus).expect("CLC");
+        bus.apu.set_frame_irq_for_test(true);
+
+        cpu.step(&mut bus).expect("BCS not taken");
+        assert_eq!(cpu.pc, 0x8003, "not-taken branch skipped operand");
+        assert!(
+            matches!(cpu.pending_interrupt, Some(Interrupt::Irq)),
+            "not-taken branch: IRQ should latch normally at penultimate"
+        );
     }
 }

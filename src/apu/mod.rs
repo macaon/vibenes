@@ -105,6 +105,14 @@ impl Apu {
         self.frame_irq || self.dmc_irq
     }
 
+    /// Test hook — force the frame IRQ flag so a unit test can drive
+    /// the interrupt line without arranging ~29830 cycles of frame
+    /// counter timing. Not exposed outside cfg(test).
+    #[cfg(test)]
+    pub(crate) fn set_frame_irq_for_test(&mut self, v: bool) {
+        self.frame_irq = v;
+    }
+
     /// Advance one CPU cycle. Must be called after every CPU bus access.
     pub fn tick_cpu_cycle(&mut self) {
         self.length_clocked = false;

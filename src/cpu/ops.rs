@@ -293,12 +293,18 @@ fn branch(cpu: &mut Cpu, bus: &mut Bus, condition: bool) {
     if condition {
         bus.read(cpu.pc); // dummy read before branching
         let new_pc = (cpu.pc as i32).wrapping_add(offset as i32) as u16;
-        if (cpu.pc & 0xFF00) != (new_pc & 0xFF00) {
+        let page_crossed = (cpu.pc & 0xFF00) != (new_pc & 0xFF00);
+        if page_crossed {
             // Page cross: extra dummy read at the un-carried high byte.
             let bad = (cpu.pc & 0xFF00) | (new_pc & 0x00FF);
             bus.read(bad);
         }
         cpu.pc = new_pc;
+        if !page_crossed {
+            // 3-cycle taken branch form — flag the branch-delays-IRQ
+            // quirk for end-of-instruction polling.
+            cpu.mark_branch_taken_no_cross();
+        }
     }
 }
 
