@@ -413,10 +413,15 @@ impl Ppu {
         }
 
         // --- (3) Shift. Per-dot shift-by-1 during rendering dots
-        // 1..=256 and pre-fetch dots 322..=337.
+        // 1..=256 and pre-fetch dots 322..=336. NOT at dot 337:
+        // shifting there would run 9 bits between the dot-329 reload
+        // and dot-1 render of the next scanline, dropping the MSB of
+        // every "tile 0" and producing a thin vertical line at x=7.
+        // Mesen2 uses two shift-by-8 bursts at dots 328/336 for the
+        // same 16-bit net advance across the prefetch window.
         if rendering && (visible || is_pre) {
             let shift_now = (self.dot >= 1 && self.dot <= 256)
-                || (self.dot >= 322 && self.dot <= 337);
+                || (self.dot >= 322 && self.dot <= 336);
             if shift_now {
                 self.shift_bg();
             }
@@ -651,7 +656,15 @@ impl Ppu {
 
         // Even cycle (66..=256): process the latched byte.
         let height: i16 = if (self.ctrl & 0x20) != 0 { 16 } else { 8 };
-        let sl = self.scanline;
+        // Eval treats the pre-render scanline as -1 (matches Mesen2's
+        // convention). Our internal `scanline` stores pre-render as
+        // 261 / 311; map it back to -1 for the range check so sprites
+        // on scanline 0 are never wrongly selected during pre-render.
+        let sl = if self.scanline == self.region.pre_render_scanline() {
+            -1
+        } else {
+            self.scanline
+        };
         let y = self.oam_copy_buffer as i16;
 
         if self.oam_copy_done {

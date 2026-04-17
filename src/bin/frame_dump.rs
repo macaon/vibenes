@@ -74,14 +74,17 @@ fn main() {
         }
         eprintln!();
     }
-    // Probe CHR at a few tiles via the mapper.
+    // Probe CHR at a few tiles via the mapper, across BOTH pattern
+    // tables (\$0000 and \$1000) since ctrl bit 4 / 3 select between.
     for tile in [0u16, 0x40, 0x41, 0x42, 0xE0, 0xEC, 0xF4] {
-        let base = tile * 16;
-        eprint!("CHR tile ${:03X} pat @${:04X}:", tile, base);
-        for off in 0..16 {
-            eprint!(" {:02X}", nes.bus.mapper.ppu_read(base + off));
+        for table_base in [0x0000u16, 0x1000] {
+            let base = table_base + tile * 16;
+            eprint!("CHR tile ${:03X} pat @${:04X}:", tile, base);
+            for off in 0..16 {
+                eprint!(" {:02X}", nes.bus.mapper.ppu_read(base + off));
+            }
+            eprintln!();
         }
-        eprintln!();
     }
     // Count non-zero OAM entries.
     let oam = nes.bus.ppu.debug_oam();
