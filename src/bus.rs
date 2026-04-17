@@ -150,12 +150,15 @@ impl Bus {
 
     /// First half of a CPU cycle — runs before the bus access.
     ///
-    /// Advances the master clock and ticks the PPU so register accesses
-    /// see PPU state as-of the middle of the cycle (matching real 6502
-    /// ↔ 2C02 interactions). Also captures the penultimate-cycle
-    /// interrupt snapshot the CPU polls at end-of-instruction. Critical
-    /// for blargg CPU-interrupt tests (`2-nmi_and_brk`, `3-nmi_and_irq`)
-    /// that time NMI recognition to specific PPU dots.
+    /// Advances the master clock, ticks the PPU (so register accesses
+    /// see mid-cycle PPU state), AND ticks the APU. Ticking the APU
+    /// here mirrors Mesen2's `StartCpuCycle` / `ProcessCpuClock`
+    /// ordering (`NesCpu.cpp:317-323`). This makes same-cycle `$4015`
+    /// reads observe the just-asserted frame IRQ — the subtle race
+    /// that previously broke blargg `cpu_interrupts_v2` tests 3 and 5.
+    /// Captures the penultimate-cycle interrupt snapshot before either
+    /// subsystem ticks, so `prev_*` reflects end-of-previous-cycle
+    /// state exactly.
     fn tick_pre_access(&mut self) {
         self.prev_irq_line = self.irq_line;
         self.prev_nmi_pending = self.nmi_pending;
@@ -167,16 +170,17 @@ impl Bus {
         if self.ppu.poll_nmi() {
             self.nmi_pending = true;
         }
+        self.apu.tick_cpu_cycle();
     }
 
     /// Second half of a CPU cycle — runs after the bus access.
     ///
-    /// APU + mapper tick here so writes to $4000–$4017 that trigger
-    /// them (length loads, frame-counter reset, MMC3 A12 filter) land
-    /// on the same cycle as the write. Re-samples the IRQ line after
-    /// APU updates.
+    /// Refreshes `irq_line` from the APU so that same-cycle
+    /// acknowledgement writes (e.g. `$4015` read clearing frame IRQ,
+    /// `$4015` write clearing DMC IRQ) are reflected at end-of-cycle.
+    /// Mapper hook also runs here — MMC3's A12 filter wants PPU-A12
+    /// state observed after the CPU's bus access completes.
     fn tick_post_access(&mut self) {
-        self.apu.tick_cpu_cycle();
         self.mapper.on_cpu_cycle();
         self.irq_line = self.apu.irq_line();
     }
@@ -292,6 +296,79 @@ mod tests {
         assert_eq!(
             dma_cycles, 515,
             "odd-parity entry: STA + 2 idles + 512 pairs = 515 ticks"
+        );
+    }
+
+    /// Hardware semantic (nesdev APU, `$4015` register): the frame IRQ
+    /// flag stays set for 3 consecutive CPU cycles (29828–29830 in NTSC
+    /// 4-step mode). If the CPU reads `$4015` on the *exact* cycle the
+    /// flag is first asserted, the read must return bit 6 set and clear
+    /// it. For this to work the APU's cycle-N tick must execute BEFORE
+    /// the CPU's cycle-N bus access (Mesen2 `StartCpuCycle`/
+    /// `ProcessCpuClock` ordering — `NesCpu.cpp:317-323`).
+    ///
+    /// This test is the RED half of a TDD pair: it FAILS with the
+    /// pre-Stage-2 ordering (APU tick lives in `tick_post_access`, so
+    /// the $4015 read observes the pre-tick state), and PASSES once
+    /// the APU tick moves into `tick_pre_access`.
+    #[test]
+    fn frame_irq_asserted_this_cycle_is_visible_to_same_cycle_4015_read() {
+        let mut bus = build_bus();
+        // Drive APU to exactly 1 tick BEFORE the first frame IRQ
+        // assertion. Power-on: the frame counter has a pending
+        // `$4017=$00` apply at cycle 3, and a 2-cycle block window
+        // after that (src/apu/frame_counter.rs:54-57,106). Counter
+        // reaches 29828 on the 29832nd APU tick — so we need 29831
+        // pre-read ticks.
+        for _ in 0..29831 {
+            bus.tick_cycle();
+        }
+        assert!(
+            !bus.irq_line,
+            "setup invariant: frame IRQ must still be low after 29831 ticks"
+        );
+
+        // Read $4015 on the assertion cycle. Bit 6 must be set because
+        // the APU tick that asserts frame_irq happens BEFORE this read.
+        let status = bus.read(0x4015);
+        assert_eq!(
+            status & 0x40,
+            0x40,
+            "frame IRQ asserted by the APU tick of this CPU cycle must be \
+             observable to the same-cycle $4015 read"
+        );
+        assert!(
+            !bus.irq_line,
+            "the $4015 read acknowledges the frame IRQ; post-access irq_line \
+             must reflect the cleared state"
+        );
+    }
+
+    /// Regression guard: once the frame IRQ is set and nothing clears
+    /// it, `bus.prev_irq_line` captured at the start of a subsequent
+    /// cycle must be true. This is the invariant the CPU's end-of-
+    /// instruction IRQ poll depends on for penultimate-cycle semantics.
+    /// Must hold in BOTH the pre-Stage-2 and post-Stage-2 orderings.
+    #[test]
+    fn prev_irq_line_reflects_persistent_frame_irq() {
+        let mut bus = build_bus();
+        // Tick through the 29832nd APU tick — first frame IRQ assertion
+        // (see the power-on delay reasoning on the $4015 test above).
+        for _ in 0..29832 {
+            bus.tick_cycle();
+        }
+        assert!(
+            bus.irq_line,
+            "setup invariant: frame IRQ must be asserted by the 29832nd APU tick"
+        );
+
+        // Do a benign RAM read — this executes one more tick cycle and
+        // snapshots prev_irq_line at the start.
+        let _ = bus.read(0x0000);
+        assert!(
+            bus.prev_irq_line,
+            "prev_irq_line captured at start of this cycle must reflect the \
+             end-of-previous-cycle state (frame IRQ asserted, unchanged)"
         );
     }
 }
