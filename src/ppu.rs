@@ -96,17 +96,19 @@ pub struct Ppu {
     bg_attr_lo: u16,
     bg_attr_hi: u16,
 
-    // --- Sprite-0 hit detection shortcut. Real hardware folds the
-    //     sprite-0 hit test into full sprite evaluation + pixel mux;
-    //     we pre-fetch just OAM[0]'s pattern at dot 257 for the NEXT
-    //     scanline and check per-pixel overlap in `render_pixel`. This
-    //     is enough for SMB's status-bar split and Golf's scroll split
-    //     without waiting for Phase 6B's full sprite pipeline.
-    sprite0_active: bool,
-    sprite0_x: u8,
-    sprite0_hflip: bool,
-    sprite0_pat_lo: u8,
-    sprite0_pat_hi: u8,
+    // --- Sprite pipeline. Secondary OAM holds the 8 sprites selected
+    //     for the current scanline's rendering; the per-slot shifter
+    //     arrays hold their pattern bytes + attribute + X + an
+    //     "is original OAM[0]" flag needed for sprite-0 hit. Populated
+    //     at dot 257 of the *previous* scanline (+ pre-render for
+    //     scanline 0) by `evaluate_sprites` and `fetch_sprite_patterns`.
+    secondary_oam: [u8; 32],
+    sprite_count: u8,
+    sprite_pat_lo: [u8; 8],
+    sprite_pat_hi: [u8; 8],
+    sprite_attr: [u8; 8],
+    sprite_x: [u8; 8],
+    sprite_is_zero: [bool; 8],
 
     pub frame_buffer: Vec<u8>,
     open_bus: u8,
@@ -143,11 +145,13 @@ impl Ppu {
             bg_pat_hi: 0,
             bg_attr_lo: 0,
             bg_attr_hi: 0,
-            sprite0_active: false,
-            sprite0_x: 0,
-            sprite0_hflip: false,
-            sprite0_pat_lo: 0,
-            sprite0_pat_hi: 0,
+            secondary_oam: [0xFF; 32],
+            sprite_count: 0,
+            sprite_pat_lo: [0; 8],
+            sprite_pat_hi: [0; 8],
+            sprite_attr: [0; 8],
+            sprite_x: [0; 8],
+            sprite_is_zero: [false; 8],
             frame_buffer: vec![0; FRAME_WIDTH * FRAME_HEIGHT * 4],
             open_bus: 0,
         }
@@ -180,6 +184,22 @@ impl Ppu {
 
     pub fn dot(&self) -> u16 {
         self.dot
+    }
+
+    /// Read-only accessors for debug / diagnostic tooling (frame_dump
+    /// binary). Not used by the emulation loop — the `tick` pipeline
+    /// mutates these directly.
+    pub fn debug_mask(&self) -> u8 {
+        self.mask
+    }
+    pub fn debug_ctrl(&self) -> u8 {
+        self.ctrl
+    }
+    pub fn debug_status(&self) -> u8 {
+        self.status
+    }
+    pub fn debug_scroll(&self) -> (u16, u16, u8) {
+        (self.v, self.t, self.fine_x)
     }
 
     /// Advance one PPU dot. On NTSC the bus calls this 3× per CPU cycle;
@@ -275,14 +295,25 @@ impl Ppu {
             if self.dot == 257 {
                 // Horizontal v ← t copy (coarse X + NT-select bit 10).
                 self.v = (self.v & !0x041F) | (self.t & 0x041F);
-                // Also reload the shifter with the final fetch of this
+                // Reload the shifter with the final fetch of this
                 // scanline so dot 321+ pre-fetch cycles start clean.
                 self.reload_bg_shifters();
-                // Pre-fetch sprite-0's pattern for the next scanline.
-                // On real hardware sprite pattern fetches happen across
-                // dots 257–320; we do only the sprite-0 fetch here as a
-                // single lookup. Drives A12 correctly for MMC3.
-                self.fetch_sprite0_for_next_scanline(mapper);
+                // Sprite pipeline for NEXT scanline: evaluate primary
+                // OAM into secondary (up to 8 sprites, set overflow if
+                // more), then fetch each sprite's pattern bytes. Real
+                // hardware does eval across dots 65–256 and pattern
+                // fetches across 257–320; we batch both at dot 257.
+                // Behaviorally equivalent for commercial games that
+                // don't inject mid-eval OAM writes.
+                self.evaluate_sprites();
+                self.fetch_sprite_patterns(mapper);
+            }
+            // OAMADDR is held at 0 during dots 257–320 of rendering
+            // scanlines. Games rely on this before $4014 DMA so OAM
+            // DMA lands at OAM[0]. Without this a badly-timed eval
+            // can corrupt OAM with the "2C02G glitch increment".
+            if self.dot >= 257 && self.dot <= 320 {
+                self.oam_addr = 0;
             }
             if is_pre && self.dot >= 280 && self.dot <= 304 {
                 // Vertical v ← t copy (fine Y + coarse Y + NT-select
@@ -380,14 +411,10 @@ impl Ppu {
         let bg_enabled = rendering && (self.mask & 0x08) != 0;
         let sp_enabled = rendering && (self.mask & 0x10) != 0;
 
-        // BG pixel selection. The 16-bit shifter's bit (15 - fine_x)
-        // is the current screen position; fine_x pans left within the
-        // 2-tile visible window.
+        // --- BG pixel ---
         let mut bg_pattern: u8 = 0;
         let mut bg_palette: u8 = 0;
         if bg_enabled {
-            // Left-column BG clip: when $2001 bit 1 is clear, the first
-            // 8 pixels force transparent BG (backdrop shows through).
             let clip_bg_left = (self.mask & 0x02) == 0 && x < 8;
             if !clip_bg_left {
                 let bit = 15 - self.fine_x;
@@ -402,45 +429,77 @@ impl Ppu {
             }
         }
 
-        // Sprite-0 hit: pixel-precise predicate (nesdev / mesen-notes §14).
-        //   1. Both BG + sprite rendering enabled.
-        //   2. Sprite-0 is active on this scanline (pattern fetched at 257).
-        //   3. Current x is within sprite-0's 8-pixel horizontal extent.
-        //   4. Both left-8 clip flags must allow the pixel through
-        //      (BG clip = $2001.1, sprite clip = $2001.2).
-        //   5. Sprite-0 pixel is opaque (pattern != 0).
-        //   6. BG pixel is opaque (pattern != 0).
-        //   7. x != 255 — real hardware's famous "dot 256" suppression.
-        //   8. Sprite-0 hit flag not already latched.
-        if bg_enabled
-            && sp_enabled
-            && self.sprite0_active
-            && x >= self.sprite0_x as usize
-            && x < self.sprite0_x as usize + 8
-            && x != 255
-            && (self.status & 0x40) == 0
-            && bg_pattern != 0
-        {
-            let clip_bg_left = (self.mask & 0x02) == 0 && x < 8;
+        // --- Sprite pixel: first opaque sprite in secondary-OAM order ---
+        let mut sp_pattern: u8 = 0;
+        let mut sp_palette: u8 = 0;
+        let mut sp_priority_behind: bool = false;
+        let mut sp_is_zero: bool = false;
+        if sp_enabled {
             let clip_sp_left = (self.mask & 0x04) == 0 && x < 8;
-            if !clip_bg_left && !clip_sp_left {
-                let col = x - self.sprite0_x as usize;
-                let col = if self.sprite0_hflip { 7 - col } else { col };
-                let sp_bit = (7 - col) as u8;
-                let sp_p0 = (self.sprite0_pat_lo >> sp_bit) & 1;
-                let sp_p1 = (self.sprite0_pat_hi >> sp_bit) & 1;
-                if (sp_p0 | sp_p1) != 0 {
-                    self.status |= 0x40;
+            if !clip_sp_left {
+                let px = x as i16;
+                for i in 0..self.sprite_count as usize {
+                    let sx = self.sprite_x[i] as i16;
+                    if px >= sx && px < sx + 8 {
+                        let col = (px - sx) as u8;
+                        let hflip = (self.sprite_attr[i] & 0x40) != 0;
+                        let bit = if hflip { col } else { 7 - col };
+                        let p0 = (self.sprite_pat_lo[i] >> bit) & 1;
+                        let p1 = (self.sprite_pat_hi[i] >> bit) & 1;
+                        let pat = (p1 << 1) | p0;
+                        if pat != 0 {
+                            sp_pattern = pat;
+                            sp_palette = self.sprite_attr[i] & 0x03;
+                            sp_priority_behind = (self.sprite_attr[i] & 0x20) != 0;
+                            sp_is_zero = self.sprite_is_zero[i];
+                            break;
+                        }
+                    }
                 }
             }
         }
 
-        let color_idx = if bg_pattern != 0 {
+        // --- Sprite-0 hit (mesen-notes §14 five-part predicate) ---
+        // Both enables on, sprite-0 is the selected sprite on this pixel,
+        // both BG and sprite-0 opaque, x != 255, and if EITHER left-8
+        // clip is active the pixel must be in x >= 8.
+        if bg_enabled
+            && sp_enabled
+            && sp_is_zero
+            && sp_pattern != 0
+            && bg_pattern != 0
+            && x != 255
+            && (self.status & 0x40) == 0
+        {
+            let clip_any_left =
+                ((self.mask & 0x02) == 0 || (self.mask & 0x04) == 0) && x < 8;
+            if !clip_any_left {
+                self.status |= 0x40;
+            }
+        }
+
+        // --- Pixel mux. Sprite priority bit (attr $20) picks BG over
+        //     sprite when both are opaque; if BG is transparent the
+        //     sprite always wins (backdrop never beats a sprite). ---
+        let bg_opaque = bg_pattern != 0;
+        let sp_opaque = sp_pattern != 0;
+        let color_idx: u8 = if !bg_opaque && !sp_opaque {
+            0
+        } else if !bg_opaque {
+            0x10 | (sp_palette << 2) | sp_pattern
+        } else if !sp_opaque {
+            (bg_palette << 2) | bg_pattern
+        } else if sp_priority_behind {
             (bg_palette << 2) | bg_pattern
         } else {
-            0
+            0x10 | (sp_palette << 2) | sp_pattern
         };
-        let pal_addr = if color_idx == 0 { 0x3F00 } else { 0x3F00 | color_idx as u16 };
+
+        let pal_addr = if color_idx == 0 {
+            0x3F00
+        } else {
+            0x3F00 | color_idx as u16
+        };
         let pal_byte = (self.read_palette(pal_addr) & 0x3F) as usize;
         let [r, g, b] = NES_PALETTE[pal_byte];
         let i = (y * FRAME_WIDTH + x) * 4;
@@ -450,60 +509,91 @@ impl Ppu {
         self.frame_buffer[i + 3] = 0xFF;
     }
 
-    /// Pre-fetch sprite-0's pattern row for the *next* scanline. Called
-    /// at dot 257 of visible and pre-render scanlines (pre-render sets
-    /// up scanline 0). Honors 8×8 vs 8×16 sprite size, vertical flip,
-    /// and either pattern table per `$2000` bit 3 (8×8) or tile bit 0
-    /// (8×16). H-flip is remembered for per-pixel decoding.
-    fn fetch_sprite0_for_next_scanline(&mut self, mapper: &mut dyn Mapper) {
-        let next_scanline = self.scanline + 1;
-        if next_scanline < 0 || next_scanline >= FRAME_HEIGHT as i16 {
-            self.sprite0_active = false;
+    /// Fill secondary OAM with up to 8 sprites visible on the *next*
+    /// scanline. Set `$2002.5` (sprite overflow) if a 9th in-range
+    /// sprite is encountered. Called at dot 257; a cycle-accurate
+    /// implementation would run the state machine across dots 65–256
+    /// and replay the 2C02's diagonal-sweep overflow bug — we take
+    /// the batched approximation until a test ROM proves we need the
+    /// bug-accurate version.
+    fn evaluate_sprites(&mut self) {
+        for b in &mut self.secondary_oam {
+            *b = 0xFF;
+        }
+        self.sprite_count = 0;
+        for s in &mut self.sprite_is_zero {
+            *s = false;
+        }
+
+        let next = self.scanline + 1;
+        if next < 0 || next >= FRAME_HEIGHT as i16 {
             return;
         }
-        let sy = self.oam[0] as i16;
-        let tile = self.oam[1];
-        let attr = self.oam[2];
-        let sx = self.oam[3];
         let height: i16 = if (self.ctrl & 0x20) != 0 { 16 } else { 8 };
-
-        // Sprite appears on screen at scanlines sy+1 .. sy+height. Our
-        // "row within sprite" for the target scanline is next - sy - 1.
-        let row = next_scanline - sy - 1;
-        if row < 0 || row >= height {
-            self.sprite0_active = false;
-            return;
-        }
-        let vflip = (attr & 0x80) != 0;
-        let hflip = (attr & 0x40) != 0;
-        let fine_y: u16 = if vflip {
-            (height - 1 - row) as u16
-        } else {
-            row as u16
-        };
-
-        let addr: u16 = if height == 16 {
-            // 8×16: tile bit 0 picks the pattern table; bit 7..1 select
-            // a 2-tile pair. fine_y 0..7 → top tile, 8..15 → bottom tile.
-            let table = ((tile as u16) & 0x01) << 12;
-            let tile_num = (tile as u16) & 0xFE;
-            let (tile_off, row_in_tile) = if fine_y < 8 {
-                (tile_num, fine_y)
+        let mut found: usize = 0;
+        for n in 0..64usize {
+            let y = self.oam[n * 4] as i16;
+            let row = next - 1 - y;
+            if row < 0 || row >= height {
+                continue;
+            }
+            if found < 8 {
+                self.secondary_oam[found * 4] = self.oam[n * 4];
+                self.secondary_oam[found * 4 + 1] = self.oam[n * 4 + 1];
+                self.secondary_oam[found * 4 + 2] = self.oam[n * 4 + 2];
+                self.secondary_oam[found * 4 + 3] = self.oam[n * 4 + 3];
+                self.sprite_is_zero[found] = n == 0;
+                found += 1;
             } else {
-                (tile_num + 1, fine_y - 8)
-            };
-            table | (tile_off << 4) | row_in_tile
-        } else {
-            // 8×8: $2000 bit 3 picks the sprite pattern table.
-            let table = ((self.ctrl as u16) & 0x08) << 9;
-            table | ((tile as u16) << 4) | fine_y
-        };
+                // 9th+ in-range sprite: latch overflow and stop.
+                self.status |= 0x20;
+                break;
+            }
+        }
+        self.sprite_count = found as u8;
+    }
 
-        self.sprite0_pat_lo = self.ppu_bus_read(addr, mapper);
-        self.sprite0_pat_hi = self.ppu_bus_read(addr + 8, mapper);
-        self.sprite0_x = sx;
-        self.sprite0_hflip = hflip;
-        self.sprite0_active = true;
+    /// Fetch the low/high pattern bytes for each sprite found by
+    /// `evaluate_sprites`, accounting for 8×8 vs 8×16 size and
+    /// vertical flip. Addresses are driven on the PPU bus via
+    /// `ppu_bus_read` so A12-sensitive mappers (MMC3 / MMC5) see the
+    /// expected address stream for the sprite-fetch slots.
+    fn fetch_sprite_patterns(&mut self, mapper: &mut dyn Mapper) {
+        let next = self.scanline + 1;
+        let height: i16 = if (self.ctrl & 0x20) != 0 { 16 } else { 8 };
+        for i in 0..self.sprite_count as usize {
+            let y = self.secondary_oam[i * 4] as i16;
+            let tile = self.secondary_oam[i * 4 + 1];
+            let attr = self.secondary_oam[i * 4 + 2];
+            let x = self.secondary_oam[i * 4 + 3];
+
+            let row = (next - 1 - y).clamp(0, height - 1);
+            let vflip = (attr & 0x80) != 0;
+            let fine_y: u16 = if vflip {
+                (height - 1 - row) as u16
+            } else {
+                row as u16
+            };
+
+            let addr: u16 = if height == 16 {
+                let table = ((tile as u16) & 0x01) << 12;
+                let tile_num = (tile as u16) & 0xFE;
+                let (tile_off, row_in_tile) = if fine_y < 8 {
+                    (tile_num, fine_y)
+                } else {
+                    (tile_num + 1, fine_y - 8)
+                };
+                table | (tile_off << 4) | row_in_tile
+            } else {
+                let table = ((self.ctrl as u16) & 0x08) << 9;
+                table | ((tile as u16) << 4) | fine_y
+            };
+
+            self.sprite_pat_lo[i] = self.ppu_bus_read(addr, mapper);
+            self.sprite_pat_hi[i] = self.ppu_bus_read(addr + 8, mapper);
+            self.sprite_attr[i] = attr;
+            self.sprite_x[i] = x;
+        }
     }
 
     fn update_nmi_edge(&mut self) {
