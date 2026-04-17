@@ -1,4 +1,5 @@
 use crate::apu::Apu;
+use crate::audio::AudioSink;
 use crate::clock::{MasterClock, Region};
 use crate::mapper::Mapper;
 use crate::ppu::Ppu;
@@ -33,6 +34,12 @@ pub struct Bus {
     /// True while we're servicing a DMC DMA fetch. Prevents re-entering
     /// the DMA service from `tick_cycle` inside the stall cycles.
     dmc_dma_active: bool,
+
+    /// Host audio output. `None` in test ROMs / headless runs where
+    /// opening a cpal stream would be pointless or unavailable.
+    /// Attached from [`crate::nes::Nes::attach_audio`] after the bus is
+    /// constructed.
+    pub audio_sink: Option<AudioSink>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -75,6 +82,7 @@ impl Bus {
             prev_nmi_pending: false,
             open_bus: 0,
             dmc_dma_active: false,
+            audio_sink: None,
         }
     }
 
@@ -195,6 +203,9 @@ impl Bus {
         self.apu.tick_cpu_cycle();
         self.mapper.on_cpu_cycle();
         self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
+        if let Some(sink) = self.audio_sink.as_mut() {
+            sink.on_cpu_cycle(self.apu.output_sample());
+        }
     }
 
     /// Old combined tick entry — kept for stall cycles inside OAM/DMC

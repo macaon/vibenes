@@ -1,5 +1,6 @@
 pub mod apu;
 pub mod app;
+pub mod audio;
 pub mod bus;
 pub mod clock;
 pub mod cpu;

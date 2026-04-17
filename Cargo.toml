@@ -15,6 +15,14 @@ env_logger = "0.11"
 winit = "0.30"
 wgpu = "29"
 pollster = "0.4"
+# Audio output (Phase 7 audio-pacing prerequisite). `cpal` owns the host
+# audio stream; `blip_buf` is Blargg's band-limited step synthesizer — the
+# standard choice for NES/retro emulator resampling (1.789773 MHz APU →
+# host sample rate, typically 48 kHz). `ringbuf` is the lock-free SPSC
+# queue between the emulator thread and cpal's audio-callback thread.
+cpal = "0.15"
+blip_buf = "0.1"
+ringbuf = "0.4"
 
 [profile.dev]
 opt-level = 1

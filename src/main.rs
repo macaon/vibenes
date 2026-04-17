@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use vibenes::app;
+use vibenes::audio;
+use vibenes::clock::Region;
 use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
@@ -51,14 +53,42 @@ fn run() -> Result<()> {
     let cart = Cartridge::load(&rom_path)
         .with_context(|| format!("loading ROM {}", rom_path.display()))?;
     eprintln!("loaded: {}", cart.describe());
-    let nes = app::build_nes(cart)?;
+    let mut nes = app::build_nes(cart)?;
     eprintln!("region={:?} reset PC=${:04X}", nes.region(), nes.cpu.pc);
+
+    // Try to open a host audio stream. If the host has no audio device
+    // (headless CI, WSL without PulseAudio, etc.) we still want the
+    // emulator to run — just silently.
+    let audio_stream = match audio::start(cpu_clock_hz(nes.region())) {
+        Ok((sink, stream)) => {
+            eprintln!(
+                "audio: {} Hz × {} ch",
+                stream.sample_rate, stream.channels
+            );
+            nes.attach_audio(sink);
+            Some(stream)
+        }
+        Err(e) => {
+            eprintln!("vibenes: audio disabled ({e:#})");
+            None
+        }
+    };
 
     let event_loop = EventLoop::new().context("create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut handler = App::new(nes);
+    let mut handler = App::new(nes, audio_stream);
     event_loop.run_app(&mut handler).context("winit event loop")?;
     Ok(())
+}
+
+/// CPU-side APU sample rate in Hz — the clock at which the APU mixer
+/// emits one analog sample per bus tick. NTSC master = 21.477272 MHz
+/// ÷ 12; PAL master = 26.601712 MHz ÷ 16.
+fn cpu_clock_hz(region: Region) -> f64 {
+    match region {
+        Region::Ntsc => 21_477_272.0 / 12.0,
+        Region::Pal => 26_601_712.0 / 16.0,
+    }
 }
 
 fn parse_args() -> Result<PathBuf> {
@@ -83,13 +113,17 @@ struct App {
     /// `frame_period` each completed frame so drift stays pinned to
     /// wall-clock rather than accumulating.
     next_frame_deadline: Option<Instant>,
+    /// Keeps the cpal output stream alive. Dropping this silences the
+    /// device — hence why it lives on the App owner rather than a
+    /// local inside `run()`.
+    _audio_stream: Option<audio::AudioStream>,
 }
 
 impl App {
-    fn new(nes: Nes) -> Self {
+    fn new(nes: Nes, audio_stream: Option<audio::AudioStream>) -> Self {
         let frame_period = match nes.region() {
-            vibenes::clock::Region::Ntsc => NTSC_FRAME_PERIOD,
-            vibenes::clock::Region::Pal => PAL_FRAME_PERIOD,
+            Region::Ntsc => NTSC_FRAME_PERIOD,
+            Region::Pal => PAL_FRAME_PERIOD,
         };
         Self {
             nes,
@@ -98,6 +132,7 @@ impl App {
             halted_notice_shown: false,
             frame_period,
             next_frame_deadline: None,
+            _audio_stream: audio_stream,
         }
     }
 
@@ -124,6 +159,9 @@ impl App {
                 self.halted_notice_shown = true;
             }
         }
+        // Hand the frame's audio to the ring so the cpal callback can
+        // drain it before the next wakeup.
+        self.nes.end_audio_frame();
 
         renderer.upload_framebuffer(&self.nes.bus.ppu.frame_buffer);
         match renderer.render() {

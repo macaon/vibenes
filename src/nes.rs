@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use crate::audio::AudioSink;
 use crate::bus::Bus;
 use crate::clock::Region;
 use crate::cpu::Cpu;
@@ -69,5 +70,21 @@ impl Nes {
             self.step()?;
         }
         Ok(())
+    }
+
+    /// Attach a host audio sink. From this point on every CPU cycle's
+    /// APU output is fed into the sink's band-limited resampler.
+    pub fn attach_audio(&mut self, sink: AudioSink) {
+        self.bus.audio_sink = Some(sink);
+    }
+
+    /// Flush pending resampler output into the ring. Call once per
+    /// emulator frame from the GUI loop to bound audio latency;
+    /// otherwise the sink flushes on its internal cycle threshold
+    /// (~20 ms), which is fine but adds up to a frame of extra lag.
+    pub fn end_audio_frame(&mut self) {
+        if let Some(sink) = self.bus.audio_sink.as_mut() {
+            sink.end_frame();
+        }
     }
 }
