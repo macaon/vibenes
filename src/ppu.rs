@@ -96,6 +96,18 @@ pub struct Ppu {
     bg_attr_lo: u16,
     bg_attr_hi: u16,
 
+    // --- Sprite-0 hit detection shortcut. Real hardware folds the
+    //     sprite-0 hit test into full sprite evaluation + pixel mux;
+    //     we pre-fetch just OAM[0]'s pattern at dot 257 for the NEXT
+    //     scanline and check per-pixel overlap in `render_pixel`. This
+    //     is enough for SMB's status-bar split and Golf's scroll split
+    //     without waiting for Phase 6B's full sprite pipeline.
+    sprite0_active: bool,
+    sprite0_x: u8,
+    sprite0_hflip: bool,
+    sprite0_pat_lo: u8,
+    sprite0_pat_hi: u8,
+
     pub frame_buffer: Vec<u8>,
     open_bus: u8,
 }
@@ -131,6 +143,11 @@ impl Ppu {
             bg_pat_hi: 0,
             bg_attr_lo: 0,
             bg_attr_hi: 0,
+            sprite0_active: false,
+            sprite0_x: 0,
+            sprite0_hflip: false,
+            sprite0_pat_lo: 0,
+            sprite0_pat_hi: 0,
             frame_buffer: vec![0; FRAME_WIDTH * FRAME_HEIGHT * 4],
             open_bus: 0,
         }
@@ -261,6 +278,11 @@ impl Ppu {
                 // Also reload the shifter with the final fetch of this
                 // scanline so dot 321+ pre-fetch cycles start clean.
                 self.reload_bg_shifters();
+                // Pre-fetch sprite-0's pattern for the next scanline.
+                // On real hardware sprite pattern fetches happen across
+                // dots 257–320; we do only the sprite-0 fetch here as a
+                // single lookup. Drives A12 correctly for MMC3.
+                self.fetch_sprite0_for_next_scanline(mapper);
             }
             if is_pre && self.dot >= 280 && self.dot <= 304 {
                 // Vertical v ← t copy (fine Y + coarse Y + NT-select
@@ -283,22 +305,6 @@ impl Ppu {
             // 9/17/.../257 and 329 dots.
             if self.dot == 337 {
                 self.reload_bg_shifters();
-            }
-        }
-
-        // Sprite-0 hit stub — coarse approximation for 6A so games that
-        // gate on the flag (SMB status-bar split, R.C. Pro Am, etc.)
-        // can progress past the title. Real hardware fires at the
-        // first opaque pixel overlap on the first visible scanline of
-        // the sprite; firing later drags the game's scroll split down
-        // by the same delta, which visibly shows up as horizontal
-        // glitch bands below the expected split line. Replaced by the
-        // real pixel-mux detection in 6B.
-        if visible && (self.mask & 0x18) == 0x18 && (self.status & 0x40) == 0 {
-            let sy = (self.oam[0] as i16).wrapping_add(1);
-            let sx = self.oam[3] as u16;
-            if self.scanline == sy && self.dot == sx.saturating_add(1) {
-                self.status |= 0x40;
             }
         }
 
@@ -372,29 +378,68 @@ impl Ppu {
         let x = (self.dot - 1) as usize;
         let y = self.scanline as usize;
         let bg_enabled = rendering && (self.mask & 0x08) != 0;
+        let sp_enabled = rendering && (self.mask & 0x10) != 0;
 
         // BG pixel selection. The 16-bit shifter's bit (15 - fine_x)
         // is the current screen position; fine_x pans left within the
         // 2-tile visible window.
-        let mut color_idx: u8 = 0;
+        let mut bg_pattern: u8 = 0;
+        let mut bg_palette: u8 = 0;
         if bg_enabled {
             // Left-column BG clip: when $2001 bit 1 is clear, the first
             // 8 pixels force transparent BG (backdrop shows through).
-            let clip_left = (self.mask & 0x02) == 0 && x < 8;
-            if !clip_left {
+            let clip_bg_left = (self.mask & 0x02) == 0 && x < 8;
+            if !clip_bg_left {
                 let bit = 15 - self.fine_x;
                 let p0 = ((self.bg_pat_lo >> bit) & 1) as u8;
                 let p1 = ((self.bg_pat_hi >> bit) & 1) as u8;
-                let pattern = (p1 << 1) | p0;
-                if pattern != 0 {
+                bg_pattern = (p1 << 1) | p0;
+                if bg_pattern != 0 {
                     let a0 = ((self.bg_attr_lo >> bit) & 1) as u8;
                     let a1 = ((self.bg_attr_hi >> bit) & 1) as u8;
-                    let attr = (a1 << 1) | a0;
-                    color_idx = (attr << 2) | pattern;
+                    bg_palette = (a1 << 1) | a0;
                 }
             }
         }
 
+        // Sprite-0 hit: pixel-precise predicate (nesdev / mesen-notes §14).
+        //   1. Both BG + sprite rendering enabled.
+        //   2. Sprite-0 is active on this scanline (pattern fetched at 257).
+        //   3. Current x is within sprite-0's 8-pixel horizontal extent.
+        //   4. Both left-8 clip flags must allow the pixel through
+        //      (BG clip = $2001.1, sprite clip = $2001.2).
+        //   5. Sprite-0 pixel is opaque (pattern != 0).
+        //   6. BG pixel is opaque (pattern != 0).
+        //   7. x != 255 — real hardware's famous "dot 256" suppression.
+        //   8. Sprite-0 hit flag not already latched.
+        if bg_enabled
+            && sp_enabled
+            && self.sprite0_active
+            && x >= self.sprite0_x as usize
+            && x < self.sprite0_x as usize + 8
+            && x != 255
+            && (self.status & 0x40) == 0
+            && bg_pattern != 0
+        {
+            let clip_bg_left = (self.mask & 0x02) == 0 && x < 8;
+            let clip_sp_left = (self.mask & 0x04) == 0 && x < 8;
+            if !clip_bg_left && !clip_sp_left {
+                let col = x - self.sprite0_x as usize;
+                let col = if self.sprite0_hflip { 7 - col } else { col };
+                let sp_bit = (7 - col) as u8;
+                let sp_p0 = (self.sprite0_pat_lo >> sp_bit) & 1;
+                let sp_p1 = (self.sprite0_pat_hi >> sp_bit) & 1;
+                if (sp_p0 | sp_p1) != 0 {
+                    self.status |= 0x40;
+                }
+            }
+        }
+
+        let color_idx = if bg_pattern != 0 {
+            (bg_palette << 2) | bg_pattern
+        } else {
+            0
+        };
         let pal_addr = if color_idx == 0 { 0x3F00 } else { 0x3F00 | color_idx as u16 };
         let pal_byte = (self.read_palette(pal_addr) & 0x3F) as usize;
         let [r, g, b] = NES_PALETTE[pal_byte];
@@ -403,6 +448,62 @@ impl Ppu {
         self.frame_buffer[i + 1] = g;
         self.frame_buffer[i + 2] = b;
         self.frame_buffer[i + 3] = 0xFF;
+    }
+
+    /// Pre-fetch sprite-0's pattern row for the *next* scanline. Called
+    /// at dot 257 of visible and pre-render scanlines (pre-render sets
+    /// up scanline 0). Honors 8×8 vs 8×16 sprite size, vertical flip,
+    /// and either pattern table per `$2000` bit 3 (8×8) or tile bit 0
+    /// (8×16). H-flip is remembered for per-pixel decoding.
+    fn fetch_sprite0_for_next_scanline(&mut self, mapper: &mut dyn Mapper) {
+        let next_scanline = self.scanline + 1;
+        if next_scanline < 0 || next_scanline >= FRAME_HEIGHT as i16 {
+            self.sprite0_active = false;
+            return;
+        }
+        let sy = self.oam[0] as i16;
+        let tile = self.oam[1];
+        let attr = self.oam[2];
+        let sx = self.oam[3];
+        let height: i16 = if (self.ctrl & 0x20) != 0 { 16 } else { 8 };
+
+        // Sprite appears on screen at scanlines sy+1 .. sy+height. Our
+        // "row within sprite" for the target scanline is next - sy - 1.
+        let row = next_scanline - sy - 1;
+        if row < 0 || row >= height {
+            self.sprite0_active = false;
+            return;
+        }
+        let vflip = (attr & 0x80) != 0;
+        let hflip = (attr & 0x40) != 0;
+        let fine_y: u16 = if vflip {
+            (height - 1 - row) as u16
+        } else {
+            row as u16
+        };
+
+        let addr: u16 = if height == 16 {
+            // 8×16: tile bit 0 picks the pattern table; bit 7..1 select
+            // a 2-tile pair. fine_y 0..7 → top tile, 8..15 → bottom tile.
+            let table = ((tile as u16) & 0x01) << 12;
+            let tile_num = (tile as u16) & 0xFE;
+            let (tile_off, row_in_tile) = if fine_y < 8 {
+                (tile_num, fine_y)
+            } else {
+                (tile_num + 1, fine_y - 8)
+            };
+            table | (tile_off << 4) | row_in_tile
+        } else {
+            // 8×8: $2000 bit 3 picks the sprite pattern table.
+            let table = ((self.ctrl as u16) & 0x08) << 9;
+            table | ((tile as u16) << 4) | fine_y
+        };
+
+        self.sprite0_pat_lo = self.ppu_bus_read(addr, mapper);
+        self.sprite0_pat_hi = self.ppu_bus_read(addr + 8, mapper);
+        self.sprite0_x = sx;
+        self.sprite0_hflip = hflip;
+        self.sprite0_active = true;
     }
 
     fn update_nmi_edge(&mut self) {
