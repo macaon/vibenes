@@ -36,10 +36,6 @@ impl LengthCounter {
         self.enabled = false;
     }
 
-    pub fn enabled(&self) -> bool {
-        self.enabled
-    }
-
     /// Load from the 5-bit LLLLL field of a length write. If the half-frame
     /// clock fired on the *same* APU cycle and the counter is already
     /// nonzero, real hardware silently drops the load (blargg length-race
@@ -58,10 +54,6 @@ impl LengthCounter {
         if !self.halt && self.counter > 0 {
             self.counter -= 1;
         }
-    }
-
-    pub fn value(&self) -> u8 {
-        self.counter
     }
 
     pub fn is_nonzero(&self) -> bool {

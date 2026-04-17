@@ -27,7 +27,6 @@ pub struct Axrom {
     bank: u8,
     bank_mask: u8,
     mirroring: Mirroring,
-    prg_bank_count: usize,
 }
 
 impl Axrom {
@@ -54,7 +53,6 @@ impl Axrom {
             bank: 0,
             bank_mask,
             mirroring: Mirroring::SingleScreenLower,
-            prg_bank_count,
         }
     }
 

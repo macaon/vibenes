@@ -18,10 +18,6 @@ impl Envelope {
         self.divider_period = data & 0x0F;
     }
 
-    pub fn loop_flag(&self) -> bool {
-        self.loop_flag
-    }
-
     /// Called when the channel's timer-high / length byte is written —
     /// sets the envelope's start flag.
     pub fn restart(&mut self) {

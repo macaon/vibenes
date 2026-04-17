@@ -53,10 +53,6 @@ impl Sweep {
         self.target_period = if signed < 0 { 0 } else { signed as u16 };
     }
 
-    pub fn target(&self) -> u16 {
-        self.target_period
-    }
-
     /// Mute predicate, evaluated continuously in the channel output path.
     pub fn muted(&self, current_period: u16) -> bool {
         current_period < 8 || self.target_period > 0x7FF
