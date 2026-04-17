@@ -1,3 +1,21 @@
+//! Ricoh 2C02 PPU. Implements the register window at $2000–$2007, per-dot
+//! background rendering, frame timing, and the NMI edge latch used by
+//! the CPU. Sprite evaluation / pixel mux and sprite-0 hit land in 6B;
+//! this file carries a coarse sprite-0 stub so games that gate on the
+//! flag (SMB status-bar split) still progress past boot.
+//!
+//! Every PPU bus read calls `Mapper::on_ppu_addr(addr, ppu_cycle)` so
+//! A12-sensitive mappers (MMC3 scanline IRQ, MMC2/MMC4 CHR latch) have
+//! the stream of address-bus events they need. This is the hook that
+//! lets MMC3 land as pure implementation in Phase 6D.
+//!
+//! References while writing (behavioral only, per `CLAUDE.md`):
+//! - `~/.claude/skills/nes-expert/reference/ppu.md` §4 loopy registers,
+//!   §6 attribute table quadrant math, §9 sprite evaluation (for 6B),
+//!   §12 scanline timing.
+//! - `~/.claude/skills/nes-expert/reference/mesen-notes.md` §14
+//!   sprite-0 five-part predicate (for 6B).
+
 use crate::clock::Region;
 use crate::mapper::Mapper;
 use crate::rom::Mirroring;
@@ -8,15 +26,41 @@ pub const FRAME_HEIGHT: usize = 240;
 const DOTS_PER_SCANLINE: u16 = 341;
 const VBLANK_SCANLINE: i16 = 241;
 
-/// Minimal 2C02 PPU stub: enough to tick the frame timing, raise VBlank +
-/// NMI, and service the CPU-visible register window at $2000-$2007. Rendering
-/// into the framebuffer is a no-op for now.
+/// 64-entry NES master palette → sRGB. Widely-cited approximation of the
+/// 2C02's NTSC output. Exact values vary by emulator; this is close to
+/// the "classic" look shared by many modern emulators. Entries $0D, $1D,
+/// $2D, $3D are black on hardware regardless of row.
+const NES_PALETTE: [[u8; 3]; 64] = [
+    [0x62, 0x62, 0x62], [0x00, 0x2E, 0x98], [0x0C, 0x11, 0xC2], [0x3B, 0x00, 0xC2],
+    [0x65, 0x00, 0x9E], [0x7D, 0x00, 0x4E], [0x7D, 0x00, 0x00], [0x65, 0x1F, 0x00],
+    [0x3B, 0x37, 0x00], [0x0C, 0x4B, 0x00], [0x00, 0x52, 0x00], [0x00, 0x4B, 0x28],
+    [0x00, 0x37, 0x69], [0x00, 0x00, 0x00], [0x00, 0x00, 0x00], [0x00, 0x00, 0x00],
+    [0xAB, 0xAB, 0xAB], [0x19, 0x65, 0xEC], [0x3D, 0x3F, 0xFF], [0x73, 0x20, 0xFF],
+    [0xA6, 0x13, 0xDF], [0xC5, 0x14, 0x8C], [0xC5, 0x24, 0x2B], [0xA6, 0x47, 0x00],
+    [0x73, 0x6B, 0x00], [0x3D, 0x86, 0x00], [0x19, 0x90, 0x22], [0x00, 0x88, 0x72],
+    [0x00, 0x6D, 0xC5], [0x00, 0x00, 0x00], [0x00, 0x00, 0x00], [0x00, 0x00, 0x00],
+    [0xFF, 0xFF, 0xFF], [0x67, 0xB6, 0xFF], [0x8B, 0x8F, 0xFF], [0xC1, 0x6F, 0xFF],
+    [0xF4, 0x62, 0xFF], [0xFF, 0x63, 0xDA], [0xFF, 0x74, 0x79], [0xF4, 0x97, 0x15],
+    [0xC1, 0xBA, 0x0F], [0x8B, 0xD5, 0x1E], [0x67, 0xE0, 0x6E], [0x56, 0xD8, 0xBE],
+    [0x5B, 0xBC, 0xFF], [0x5A, 0x5A, 0x5A], [0x00, 0x00, 0x00], [0x00, 0x00, 0x00],
+    [0xFF, 0xFF, 0xFF], [0xBD, 0xDC, 0xFF], [0xCC, 0xCC, 0xFF], [0xE3, 0xBC, 0xFF],
+    [0xF8, 0xB6, 0xFF], [0xFF, 0xB6, 0xEA], [0xFF, 0xBD, 0xC2], [0xF8, 0xC9, 0x9A],
+    [0xE3, 0xDB, 0x92], [0xCC, 0xEC, 0x97], [0xBD, 0xF2, 0xBB], [0xB3, 0xEE, 0xDF],
+    [0xB5, 0xE0, 0xFF], [0xB8, 0xB8, 0xB8], [0x00, 0x00, 0x00], [0x00, 0x00, 0x00],
+];
+
 pub struct Ppu {
     region: Region,
     scanline: i16,
     dot: u16,
     frame: u64,
     odd_frame: bool,
+
+    /// Monotonic PPU-dot counter, incremented once per [`Ppu::tick`].
+    /// Fed to `Mapper::on_ppu_addr` so A12-sensitive mappers can time
+    /// their rising-edge filter (MMC3 requires ≥10 PPU cycles of
+    /// A12-low before a rise counts).
+    master_ppu_cycle: u64,
 
     ctrl: u8,
     mask: u8,
@@ -36,6 +80,22 @@ pub struct Ppu {
     palette: [u8; 32],
     vram: [u8; 0x800],
 
+    // --- BG pipeline latches (filled by dot-3/5/7 fetches, consumed by
+    //     the shifter reload at the start of the next 8-dot group).
+    bg_next_nt: u8,
+    bg_next_attr_bits: u8, // 2-bit palette selector pre-extracted at AT fetch
+    bg_next_pat_lo: u8,
+    bg_next_pat_hi: u8,
+
+    // --- BG pipeline shifters. Pattern shifters are 16-bit; attribute
+    //     shifters are 16-bit too, with the current tile's palette bit
+    //     replicated across the low 8 bits on reload. Current pixel is
+    //     at bit (15 - fine_x); we shift left by 1 every render dot.
+    bg_pat_lo: u16,
+    bg_pat_hi: u16,
+    bg_attr_lo: u16,
+    bg_attr_hi: u16,
+
     pub frame_buffer: Vec<u8>,
     open_bus: u8,
 }
@@ -48,6 +108,7 @@ impl Ppu {
             dot: 0,
             frame: 0,
             odd_frame: false,
+            master_ppu_cycle: 0,
             ctrl: 0,
             mask: 0,
             status: 0,
@@ -62,6 +123,14 @@ impl Ppu {
             oam: [0; 256],
             palette: [0; 32],
             vram: [0; 0x800],
+            bg_next_nt: 0,
+            bg_next_attr_bits: 0,
+            bg_next_pat_lo: 0,
+            bg_next_pat_hi: 0,
+            bg_pat_lo: 0,
+            bg_pat_hi: 0,
+            bg_attr_lo: 0,
+            bg_attr_hi: 0,
             frame_buffer: vec![0; FRAME_WIDTH * FRAME_HEIGHT * 4],
             open_bus: 0,
         }
@@ -75,6 +144,13 @@ impl Ppu {
         self.odd_frame = false;
         self.scanline = 0;
         self.dot = 0;
+        // BG pipeline state isn't explicitly reset on real hardware; a
+        // few games write to $2001 during the hidden scanlines expecting
+        // stale shifter contents. Zeroing is a reasonable default.
+        self.bg_pat_lo = 0;
+        self.bg_pat_hi = 0;
+        self.bg_attr_lo = 0;
+        self.bg_attr_hi = 0;
     }
 
     pub fn frame(&self) -> u64 {
@@ -89,28 +165,226 @@ impl Ppu {
         self.dot
     }
 
-    /// Advance one PPU dot. On NTSC the bus calls this 3× per CPU cycle; on
-    /// PAL the rate averages 3.2× per CPU cycle (the bus handles the phase).
-    pub fn tick(&mut self, _mapper: &mut dyn Mapper) {
+    /// Advance one PPU dot. On NTSC the bus calls this 3× per CPU cycle;
+    /// on PAL the rate averages 3.2× per CPU cycle (the bus handles the
+    /// phase). The NES's famously interleaved scanline pipeline is laid
+    /// out dot-by-dot here rather than coalesced, so mid-scanline
+    /// register writes (status-bar splits, etc.) see the same pipeline
+    /// state as real hardware.
+    pub fn tick(&mut self, mapper: &mut dyn Mapper) {
         let pre_render = self.region.pre_render_scanline();
+        let scanlines = self.region.scanlines_per_frame();
+        let rendering = (self.mask & 0x18) != 0;
+        let visible = self.scanline >= 0 && self.scanline < FRAME_HEIGHT as i16;
+        let is_pre = self.scanline == pre_render;
+
+        // VBlank / status flag edges.
         if self.scanline == VBLANK_SCANLINE && self.dot == 1 {
             self.status |= 0x80;
         }
-        if self.scanline == pre_render && self.dot == 1 {
+        if is_pre && self.dot == 1 {
+            // Clear VBlank, sprite-0 hit, sprite overflow.
             self.status &= !0xE0;
         }
         self.update_nmi_edge();
 
+        // Pixel output runs on every visible dot so backdrop fills the
+        // framebuffer even when rendering is disabled. Only the BG
+        // fetch/shift/increment machinery is gated on rendering.
+        if visible && self.dot >= 1 && self.dot <= 256 {
+            self.render_pixel(rendering);
+        }
+
+        if rendering && (visible || is_pre) {
+            // BG shift runs on dots 2..=257 and 322..=337.
+            let shift_now = (self.dot >= 2 && self.dot <= 257)
+                || (self.dot >= 322 && self.dot <= 337);
+            if shift_now {
+                self.shift_bg();
+            }
+
+            // BG fetch dots: 1..=256 (for this scanline) and 321..=336
+            // (pre-fetch two tiles of next scanline). Fetch step chosen
+            // by (dot-1) % 8.
+            let fetch_region = (self.dot >= 1 && self.dot <= 256)
+                || (self.dot >= 321 && self.dot <= 336);
+            if fetch_region {
+                match (self.dot - 1) % 8 {
+                    0 => {
+                        // At tile start — reload shifters first (except
+                        // on dot 1 / 321 which begin a fresh region
+                        // with no pending latches).
+                        if self.dot != 1 && self.dot != 321 {
+                            self.reload_bg_shifters();
+                        }
+                        let addr = 0x2000 | (self.v & 0x0FFF);
+                        self.bg_next_nt = self.ppu_bus_read(addr, mapper);
+                    }
+                    2 => {
+                        let at_addr = 0x23C0
+                            | (self.v & 0x0C00)
+                            | ((self.v >> 4) & 0x38)
+                            | ((self.v >> 2) & 0x07);
+                        let at_byte = self.ppu_bus_read(at_addr, mapper);
+                        // Pre-extract the 2-bit palette selector for
+                        // this tile's quadrant so the reload step
+                        // doesn't need v after it's been incremented.
+                        let shift = ((self.v >> 4) & 4) | (self.v & 2);
+                        self.bg_next_attr_bits = ((at_byte >> shift) & 3) as u8;
+                    }
+                    4 => {
+                        let addr = self.bg_pattern_addr(self.bg_next_nt);
+                        self.bg_next_pat_lo = self.ppu_bus_read(addr, mapper);
+                    }
+                    6 => {
+                        let addr = self.bg_pattern_addr(self.bg_next_nt) + 8;
+                        self.bg_next_pat_hi = self.ppu_bus_read(addr, mapper);
+                    }
+                    7 => {
+                        self.inc_coarse_x();
+                    }
+                    _ => {}
+                }
+            }
+
+            if self.dot == 256 {
+                self.inc_y();
+            }
+            if self.dot == 257 {
+                // Horizontal v ← t copy (coarse X + NT-select bit 10).
+                self.v = (self.v & !0x041F) | (self.t & 0x041F);
+                // Also reload the shifter with the final fetch of this
+                // scanline so dot 321+ pre-fetch cycles start clean.
+                self.reload_bg_shifters();
+            }
+            if is_pre && self.dot >= 280 && self.dot <= 304 {
+                // Vertical v ← t copy (fine Y + coarse Y + NT-select
+                // bit 11). Repeated across a range to match hardware.
+                self.v = (self.v & !0x7BE0) | (self.t & 0x7BE0);
+            }
+            // Garbage NT fetches at dots 337 and 339 keep the address
+            // bus honest — MMC5 uses these slots, MMC3 sees the same
+            // A12 timeline it would on hardware.
+            if self.dot == 337 || self.dot == 339 {
+                let addr = 0x2000 | (self.v & 0x0FFF);
+                let _ = self.ppu_bus_read(addr, mapper);
+            }
+        }
+
+        // Sprite-0 hit stub — coarse approximation for 6A so games that
+        // gate on the flag (SMB status-bar split) can progress past the
+        // title. Replaced by the real pixel-mux detection in 6B.
+        if visible && (self.mask & 0x18) == 0x18 && (self.status & 0x40) == 0 {
+            let sy = (self.oam[0] as i16).wrapping_add(1);
+            let sx = self.oam[3] as u16;
+            // Fire around the middle of the 8×8 sprite footprint so
+            // Mario's SMB split lands close enough to the real hit line.
+            if self.scanline == sy + 4 && self.dot == sx.saturating_add(8) {
+                self.status |= 0x40;
+            }
+        }
+
+        self.master_ppu_cycle = self.master_ppu_cycle.wrapping_add(1);
         self.dot += 1;
         if self.dot >= DOTS_PER_SCANLINE {
             self.dot = 0;
             self.scanline += 1;
-            if self.scanline >= self.region.scanlines_per_frame() {
+            if self.scanline >= scanlines {
                 self.scanline = 0;
                 self.frame = self.frame.wrapping_add(1);
                 self.odd_frame = !self.odd_frame;
             }
         }
+    }
+
+    fn bg_pattern_addr(&self, tile: u8) -> u16 {
+        // `$2000` bit 4 picks the BG pattern table (0x0000 or 0x1000).
+        let table = ((self.ctrl as u16) & 0x10) << 8;
+        let fine_y = (self.v >> 12) & 0x07;
+        table | ((tile as u16) << 4) | fine_y
+    }
+
+    fn shift_bg(&mut self) {
+        self.bg_pat_lo <<= 1;
+        self.bg_pat_hi <<= 1;
+        self.bg_attr_lo <<= 1;
+        self.bg_attr_hi <<= 1;
+    }
+
+    fn reload_bg_shifters(&mut self) {
+        self.bg_pat_lo = (self.bg_pat_lo & 0xFF00) | self.bg_next_pat_lo as u16;
+        self.bg_pat_hi = (self.bg_pat_hi & 0xFF00) | self.bg_next_pat_hi as u16;
+        let lo = if (self.bg_next_attr_bits & 1) != 0 { 0xFF } else { 0x00 };
+        let hi = if (self.bg_next_attr_bits & 2) != 0 { 0xFF } else { 0x00 };
+        self.bg_attr_lo = (self.bg_attr_lo & 0xFF00) | lo;
+        self.bg_attr_hi = (self.bg_attr_hi & 0xFF00) | hi;
+    }
+
+    fn inc_coarse_x(&mut self) {
+        // loopy: if coarse_x == 31, wrap to 0 and flip NT bit 10.
+        if (self.v & 0x001F) == 31 {
+            self.v &= !0x001F;
+            self.v ^= 0x0400;
+        } else {
+            self.v = self.v.wrapping_add(1);
+        }
+    }
+
+    fn inc_y(&mut self) {
+        // loopy: if fine_y < 7, bump it; else clear fine_y and bump
+        // coarse_y (with the 29/31 nametable-toggle quirk).
+        if (self.v & 0x7000) != 0x7000 {
+            self.v = self.v.wrapping_add(0x1000);
+        } else {
+            self.v &= !0x7000;
+            let mut y = (self.v & 0x03E0) >> 5;
+            if y == 29 {
+                y = 0;
+                self.v ^= 0x0800;
+            } else if y == 31 {
+                y = 0;
+            } else {
+                y += 1;
+            }
+            self.v = (self.v & !0x03E0) | (y << 5);
+        }
+    }
+
+    fn render_pixel(&mut self, rendering: bool) {
+        let x = (self.dot - 1) as usize;
+        let y = self.scanline as usize;
+        let bg_enabled = rendering && (self.mask & 0x08) != 0;
+
+        // BG pixel selection. The 16-bit shifter's bit (15 - fine_x)
+        // is the current screen position; fine_x pans left within the
+        // 2-tile visible window.
+        let mut color_idx: u8 = 0;
+        if bg_enabled {
+            // Left-column BG clip: when $2001 bit 1 is clear, the first
+            // 8 pixels force transparent BG (backdrop shows through).
+            let clip_left = (self.mask & 0x02) == 0 && x < 8;
+            if !clip_left {
+                let bit = 15 - self.fine_x;
+                let p0 = ((self.bg_pat_lo >> bit) & 1) as u8;
+                let p1 = ((self.bg_pat_hi >> bit) & 1) as u8;
+                let pattern = (p1 << 1) | p0;
+                if pattern != 0 {
+                    let a0 = ((self.bg_attr_lo >> bit) & 1) as u8;
+                    let a1 = ((self.bg_attr_hi >> bit) & 1) as u8;
+                    let attr = (a1 << 1) | a0;
+                    color_idx = (attr << 2) | pattern;
+                }
+            }
+        }
+
+        let pal_addr = if color_idx == 0 { 0x3F00 } else { 0x3F00 | color_idx as u16 };
+        let pal_byte = (self.read_palette(pal_addr) & 0x3F) as usize;
+        let [r, g, b] = NES_PALETTE[pal_byte];
+        let i = (y * FRAME_WIDTH + x) * 4;
+        self.frame_buffer[i] = r;
+        self.frame_buffer[i + 1] = g;
+        self.frame_buffer[i + 2] = b;
+        self.frame_buffer[i + 3] = 0xFF;
     }
 
     fn update_nmi_edge(&mut self) {
@@ -205,6 +479,9 @@ impl Ppu {
 
     fn ppu_bus_read(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
         let addr = addr & 0x3FFF;
+        // Every address the PPU drives on its bus is a chance for an
+        // A12-sensitive mapper (MMC3, MMC5) to count the edge.
+        mapper.on_ppu_addr(addr, self.master_ppu_cycle);
         match addr {
             0x0000..=0x1FFF => mapper.ppu_read(addr),
             0x2000..=0x3EFF => {
@@ -218,6 +495,7 @@ impl Ppu {
 
     fn ppu_bus_write(&mut self, addr: u16, data: u8, mapper: &mut dyn Mapper) {
         let addr = addr & 0x3FFF;
+        mapper.on_ppu_addr(addr, self.master_ppu_cycle);
         match addr {
             0x0000..=0x1FFF => mapper.ppu_write(addr, data),
             0x2000..=0x3EFF => {

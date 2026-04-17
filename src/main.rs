@@ -1,6 +1,8 @@
-//! `vibenes` — the windowed emulator binary. Phase 6A.3 stands up the
-//! wgpu passthrough pipeline and presents a static diagnostic pattern;
-//! 6A.4 hooks the PPU's real framebuffer in.
+//! `vibenes` — the windowed emulator binary. Phase 6A.4 hooks the
+//! PPU's real framebuffer in: step the NES until a frame completes,
+//! upload the result, present, repeat. Pace is vsync via wgpu's Fifo
+//! present mode; NTSC 60.0988 Hz drift is a Phase 7 (audio-pacing)
+//! problem.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -55,21 +57,57 @@ fn parse_args() -> Result<PathBuf> {
     }
 }
 
-/// Window + renderer + NES owner. 6A.3 uploads a static diagnostic
-/// pattern once on init; 6A.4 swaps that for `nes.bus.ppu.frame_buffer`
-/// each completed frame.
+/// Window + renderer + NES owner. Each RedrawRequested drives the NES
+/// for one PPU frame and presents `nes.bus.ppu.frame_buffer`.
 struct App {
-    _nes: Nes,
+    nes: Nes,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    halted_notice_shown: bool,
 }
 
 impl App {
     fn new(nes: Nes) -> Self {
         Self {
-            _nes: nes,
+            nes,
             window: None,
             renderer: None,
+            halted_notice_shown: false,
+        }
+    }
+
+    fn advance_and_present(&mut self, event_loop: &ActiveEventLoop) {
+        let renderer = match self.renderer.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+
+        if !self.nes.cpu.halted {
+            if let Err(msg) = self.nes.step_until_frame() {
+                if !self.halted_notice_shown {
+                    eprintln!("vibenes: CPU error: {msg}");
+                    self.halted_notice_shown = true;
+                }
+            } else if self.nes.cpu.halted && !self.halted_notice_shown {
+                let reason = self
+                    .nes
+                    .cpu
+                    .halt_reason
+                    .clone()
+                    .unwrap_or_else(|| "halted".to_string());
+                eprintln!("vibenes: CPU halted: {reason}");
+                self.halted_notice_shown = true;
+            }
+        }
+
+        renderer.upload_framebuffer(&self.nes.bus.ppu.frame_buffer);
+        match renderer.render() {
+            PresentOutcome::Presented | PresentOutcome::Skipped => {}
+            PresentOutcome::NeedsReconfigure => renderer.reconfigure(),
+            PresentOutcome::Fatal(msg) => {
+                eprintln!("vibenes: {msg}");
+                event_loop.exit();
+            }
         }
     }
 }
@@ -101,9 +139,6 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        // One-shot upload of the diagnostic pattern. 6A.4 replaces this
-        // with per-frame `upload_framebuffer(&ppu.frame_buffer)`.
-        renderer.upload_framebuffer(&vibenes::gfx::diagnostic_pattern());
         self.window = Some(window);
         self.renderer = Some(renderer);
     }
@@ -131,16 +166,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(r) = self.renderer.as_mut() {
-                    match r.render() {
-                        PresentOutcome::Presented | PresentOutcome::Skipped => {}
-                        PresentOutcome::NeedsReconfigure => r.reconfigure(),
-                        PresentOutcome::Fatal(msg) => {
-                            eprintln!("vibenes: {msg}");
-                            event_loop.exit();
-                        }
-                    }
-                }
+                self.advance_and_present(event_loop);
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }

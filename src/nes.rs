@@ -56,4 +56,18 @@ impl Nes {
         }
         Ok(())
     }
+
+    /// Step until the PPU finishes a frame (or the CPU halts). Used by
+    /// the GUI event loop to pace execution to the display: run one
+    /// frame, upload to the GPU, present, repeat.
+    pub fn step_until_frame(&mut self) -> Result<(), String> {
+        let start_frame = self.bus.ppu.frame();
+        while self.bus.ppu.frame() == start_frame {
+            if self.cpu.halted {
+                break;
+            }
+            self.step()?;
+        }
+        Ok(())
+    }
 }
