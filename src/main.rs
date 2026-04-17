@@ -154,12 +154,19 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::Escape),
-                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(code),
+                        state,
+                        repeat: false,
                         ..
                     },
                 ..
-            } => event_loop.exit(),
+            } => {
+                if code == KeyCode::Escape && state == ElementState::Pressed {
+                    event_loop.exit();
+                } else {
+                    self.apply_controller_input(code, state);
+                }
+            }
             WindowEvent::Resized(new_size) => {
                 if let Some(r) = self.renderer.as_mut() {
                     r.resize(new_size);
@@ -172,6 +179,43 @@ impl ApplicationHandler for App {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl App {
+    /// Map keyboard keys to NES controller-1 bits. The NES shifter
+    /// reads LSB-first in this order: A, B, Select, Start, Up, Down,
+    /// Left, Right (see `Controller::read`). Layout mirrors the
+    /// common Mesen / FCEUX default:
+    ///
+    /// | Key                 | NES button |
+    /// | ------------------- | ---------- |
+    /// | X                   | A          |
+    /// | Z                   | B          |
+    /// | Right Shift         | Select     |
+    /// | Enter / Return      | Start      |
+    /// | Arrow keys          | D-pad      |
+    ///
+    /// Key-repeat events are ignored (filtered at the call site) so
+    /// holding a button doesn't toggle it. Only physical press/release
+    /// edges flip the bit.
+    fn apply_controller_input(&mut self, code: KeyCode, state: ElementState) {
+        let bit: u8 = match code {
+            KeyCode::KeyX => 0x01,        // A
+            KeyCode::KeyZ => 0x02,        // B
+            KeyCode::ShiftRight => 0x04,  // Select
+            KeyCode::Enter => 0x08,       // Start
+            KeyCode::ArrowUp => 0x10,
+            KeyCode::ArrowDown => 0x20,
+            KeyCode::ArrowLeft => 0x40,
+            KeyCode::ArrowRight => 0x80,
+            _ => return,
+        };
+        let c = &mut self.nes.bus.controllers[0];
+        match state {
+            ElementState::Pressed => c.buttons |= bit,
+            ElementState::Released => c.buttons &= !bit,
         }
     }
 }

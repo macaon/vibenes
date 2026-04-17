@@ -136,8 +136,10 @@ opcodes and mapper quirks) but not for source.
   planned as a dedicated phase once CPU-side timing is locked down.
 - **PPU rendering** (pattern/nametable/sprite pipeline) and the wgpu
   window + wgsl shaders.
-- **Controllers** (beyond the shifter — needs a window + keyboard
-  event source, blocked by PPU rendering).
+- **Second controller / configurable key bindings** — player 1 is
+  wired to the keyboard (`./run ROM`, keys: Z=B, X=A, Enter=Start,
+  RShift=Select, arrows=D-pad; Esc quits). Player 2 and rebinding
+  land later.
 - **Additional mappers** — MMC3 (mapper 4) with A12-edge scanline IRQ,
   plus smaller boards as ROMs demand them.
 - Test suites that report via PPU screen instead of $6000
