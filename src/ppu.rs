@@ -110,12 +110,13 @@ pub struct Ppu {
     bg_attr_lo: u16,
     bg_attr_hi: u16,
 
-    // --- Sprite pipeline. Secondary OAM holds the 8 sprites selected
-    //     for the current scanline's rendering; the per-slot shifter
-    //     arrays hold their pattern bytes + attribute + X + an
-    //     "is original OAM[0]" flag needed for sprite-0 hit. Populated
-    //     at dot 257 of the *previous* scanline (+ pre-render for
-    //     scanline 0) by `evaluate_sprites` and `fetch_sprite_patterns`.
+    // --- Sprite pipeline.
+    // Secondary OAM holds the 8 sprites selected for the next
+    // scanline's rendering; populated by the per-dot evaluation
+    // state machine at dots 1–256. The per-slot shifter arrays
+    // (`sprite_pat_*`, `sprite_attr`, `sprite_x`, `sprite_is_zero`)
+    // hold the data the mux consumes during dots 1–256 of the scanline
+    // after the eval.
     secondary_oam: [u8; 32],
     sprite_count: u8,
     sprite_pat_lo: [u8; 8],
@@ -123,6 +124,35 @@ pub struct Ppu {
     sprite_attr: [u8; 8],
     sprite_x: [u8; 8],
     sprite_is_zero: [bool; 8],
+    // --- Sprite evaluation state machine (dots 1–256 of every
+    // rendering scanline). Matches Mesen2 NesPpu.cpp:1004–1130 including
+    // the 2C02 diagonal-sweep sprite overflow bug.
+    // `oam_copy_buffer`: byte latched from primary OAM on odd cycles,
+    // consumed on even cycles.
+    oam_copy_buffer: u8,
+    // `sec_oam_addr`: write cursor into `secondary_oam` (0..32). Reaches
+    // 32 when 8 sprites have been copied, which flips the state machine
+    // into its overflow-detection / bug-emulation branch.
+    sec_oam_addr: u8,
+    // `sprite_addr_h`: 6-bit primary OAM sprite index cursor (0..63).
+    sprite_addr_h: u8,
+    // `sprite_addr_l`: 2-bit byte-within-sprite cursor (0..3).
+    sprite_addr_l: u8,
+    // `oam_copy_done`: set when the state machine has walked all 64
+    // primary OAM sprites for this scanline's evaluation.
+    oam_copy_done: bool,
+    // `sprite_in_range`: set when the sprite currently being evaluated
+    // has its Y coordinate in-range for the next scanline; drives
+    // whether the following 3 bytes get copied into secondary OAM.
+    sprite_in_range: bool,
+    // `sprite_zero_added`: set when the first sprite whose Y was
+    // copied into secondary OAM at cycle 66 was primary OAM[0]. Feeds
+    // `sprite_is_zero[0]` at evaluation end.
+    sprite_zero_added: bool,
+    // `overflow_bug_counter`: 2-bit countdown that runs after the
+    // sprite-overflow flag is latched, emulating the "realignment"
+    // quirk in the 2C02 state machine before it stops scanning.
+    overflow_bug_counter: u8,
 
     pub frame_buffer: Vec<u8>,
     open_bus: u8,
@@ -168,6 +198,14 @@ impl Ppu {
             sprite_attr: [0; 8],
             sprite_x: [0; 8],
             sprite_is_zero: [false; 8],
+            oam_copy_buffer: 0xFF,
+            sec_oam_addr: 0,
+            sprite_addr_h: 0,
+            sprite_addr_l: 0,
+            oam_copy_done: false,
+            sprite_in_range: false,
+            sprite_zero_added: false,
+            overflow_bug_counter: 0,
             frame_buffer: vec![0; FRAME_WIDTH * FRAME_HEIGHT * 4],
             open_bus: 0,
         }
@@ -308,14 +346,16 @@ impl Ppu {
                 }
             }
 
+            // Per-dot sprite evaluation state machine (dots 1–256).
+            // Dots 1–64: clear secondary OAM. Dots 65–256: scan
+            // primary OAM for up to 8 in-range sprites for the next
+            // scanline, with the 2C02 diagonal-sweep overflow bug on
+            // the 9th+ in-range sprite.
+            if self.dot >= 1 && self.dot <= 256 {
+                self.sprite_eval_tick();
+            }
             if self.dot == 256 {
                 self.inc_y();
-                // Sprite eval for NEXT scanline finalizes by dot 256
-                // on real HW (dots 65–256 primary-OAM scan); we batch
-                // the evaluation at the end. Per-dot state-machine
-                // eval (with the 2C02 diagonal-sweep overflow bug)
-                // is a separate follow-up item.
-                self.evaluate_sprites();
             }
             if self.dot == 257 {
                 // Horizontal v ← t copy (coarse X + NT-select bit 10).
@@ -566,48 +606,195 @@ impl Ppu {
         self.frame_buffer[i + 3] = 0xFF;
     }
 
-    /// Fill secondary OAM with up to 8 sprites visible on the *next*
-    /// scanline. Set `$2002.5` (sprite overflow) if a 9th in-range
-    /// sprite is encountered. Called at dot 257; a cycle-accurate
-    /// implementation would run the state machine across dots 65–256
-    /// and replay the 2C02's diagonal-sweep overflow bug — we take
-    /// the batched approximation until a test ROM proves we need the
-    /// bug-accurate version.
-    fn evaluate_sprites(&mut self) {
-        for b in &mut self.secondary_oam {
-            *b = 0xFF;
+    /// Per-dot sprite evaluation tick. Called once per dot during
+    /// rendering-enabled scanlines at dots 1–256. Implements the
+    /// 2C02's real state machine including the diagonal-sweep
+    /// sprite-overflow bug. Mirrors Mesen2 `ProcessSpriteEvaluation`
+    /// (NesPpu.cpp:1004–1130).
+    ///
+    /// Dots 1–64: clear secondary OAM one byte per even cycle
+    /// (primary OAM reads are disabled during this window).
+    /// Dots 65–256: alternating odd-cycle read from primary OAM,
+    /// even-cycle process. The processor copies Y + 3 bytes of the
+    /// first 8 in-range sprites into secondary OAM, sets the
+    /// sprite-overflow flag when a 9th in-range sprite is found, and
+    /// then continues scanning with the buggy diagonal sweep that
+    /// produces the well-known false-positive / false-negative
+    /// overflow behavior on real hardware.
+    fn sprite_eval_tick(&mut self) {
+        let dot = self.dot;
+
+        // Dots 1–64: clear secondary OAM.
+        if dot < 65 {
+            self.oam_copy_buffer = 0xFF;
+            if (dot & 1) == 0 {
+                // Even dot: write 0xFF to secondary OAM.
+                let idx = ((dot - 1) >> 1) as usize;
+                self.secondary_oam[idx] = 0xFF;
+            }
+            return;
         }
-        self.sprite_count = 0;
+
+        // Dots 65–256: primary OAM scan.
+        if (dot & 1) == 1 {
+            // Odd cycle: read from primary OAM. At dot 65, also
+            // initialize the state machine from current OAMADDR —
+            // this reproduces the behavior where writing $2003 with
+            // a non-multiple-of-4 value before eval starts causes
+            // misaligned scans (see oam_flicker_test_reenable).
+            if dot == 65 {
+                self.sprite_eval_start();
+            }
+            self.oam_copy_buffer = self.oam[self.oam_addr as usize];
+            return;
+        }
+
+        // Even cycle (66..=256): process the latched byte.
+        let height: i16 = if (self.ctrl & 0x20) != 0 { 16 } else { 8 };
+        let sl = self.scanline;
+        let y = self.oam_copy_buffer as i16;
+
+        if self.oam_copy_done {
+            // Phase drained — still increment the primary-OAM high
+            // cursor so OAMADDR keeps advancing as on real HW. When
+            // secondary OAM is full, reads come from it instead (OAM
+            // write-disable turns writes into reads).
+            self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
+            if self.sec_oam_addr >= 32 {
+                self.oam_copy_buffer =
+                    self.secondary_oam[(self.sec_oam_addr & 0x1F) as usize];
+            }
+        } else {
+            // Range check gated on `sprite_in_range` so we only latch
+            // it on the Y byte of each sprite (the first byte fetched
+            // for that sprite).
+            if !self.sprite_in_range && sl >= y && sl < y + height {
+                self.sprite_in_range = !self.oam_copy_done;
+            }
+
+            if self.sec_oam_addr < 32 {
+                // Still have secondary-OAM room — copy the byte.
+                self.secondary_oam[self.sec_oam_addr as usize] = self.oam_copy_buffer;
+
+                if self.sprite_in_range {
+                    if dot == 66 {
+                        // The first Y latched into secondary at this
+                        // eval was in range: record that sprite 0 is
+                        // in the secondary OAM (drives sprite-0 hit).
+                        // This fires even when OAMADDR was non-zero at
+                        // eval start (Mesen2 NesPpu.cpp:1040–1045).
+                        self.sprite_zero_added = true;
+                    }
+                    self.sprite_addr_l += 1;
+                    self.sec_oam_addr += 1;
+
+                    if self.sprite_addr_l >= 4 {
+                        self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
+                        self.sprite_addr_l = 0;
+                        if self.sprite_addr_h == 0 {
+                            self.oam_copy_done = true;
+                        }
+                    }
+
+                    if (self.sec_oam_addr & 3) == 0 {
+                        // Completed 4-byte copy for this sprite.
+                        self.sprite_in_range = false;
+                        if self.sprite_addr_l != 0 {
+                            // Misaligned-start quirk: if the last byte
+                            // read (treated as Y) would also be in
+                            // range, we keep the low 2 bits of the
+                            // address and continue misinterpreting the
+                            // next sprite's bytes as Y.
+                            let in_range = sl >= y && sl < y + height;
+                            if !in_range {
+                                self.sprite_addr_l = 0;
+                            }
+                        }
+                    }
+                } else {
+                    // Not in range — skip to the next sprite.
+                    self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
+                    self.sprite_addr_l = 0;
+                    if self.sprite_addr_h == 0 {
+                        self.oam_copy_done = true;
+                    }
+                }
+            } else {
+                // Secondary OAM full — overflow-detect branch.
+                // Writes-disabled: reads come back from secondary OAM
+                // instead of the just-latched primary byte.
+                self.oam_copy_buffer =
+                    self.secondary_oam[(self.sec_oam_addr & 0x1F) as usize];
+
+                if self.oam_copy_done {
+                    // Move through remaining primary sprites after
+                    // overflow processing completed.
+                    self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
+                    self.sprite_addr_l = 0;
+                } else if self.sprite_in_range {
+                    // 9th sprite is actually in range → real overflow.
+                    self.status |= 0x20;
+                    self.sprite_addr_l += 1;
+                    if self.sprite_addr_l == 4 {
+                        self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
+                        self.sprite_addr_l = 0;
+                    }
+                    // The 2C02 "realignment" after overflow: for 3
+                    // more sprites it keeps fetching bytes from the
+                    // same position, then restarts at a clean index.
+                    if self.overflow_bug_counter == 0 {
+                        self.overflow_bug_counter = 3;
+                    } else {
+                        self.overflow_bug_counter -= 1;
+                        if self.overflow_bug_counter == 0 {
+                            self.oam_copy_done = true;
+                            self.sprite_addr_l = 0;
+                        }
+                    }
+                } else {
+                    // Diagonal-sweep bug: with secondary full and the
+                    // current sprite not in range, the state machine
+                    // increments BOTH H and L. This causes the famous
+                    // false-positive / false-negative overflow reports
+                    // that games like Smurfs and Spy Hunter exploit.
+                    self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
+                    self.sprite_addr_l = (self.sprite_addr_l + 1) & 3;
+                    if self.sprite_addr_h == 0 {
+                        self.oam_copy_done = true;
+                    }
+                }
+            }
+        }
+
+        self.oam_addr = (self.sprite_addr_l & 3) | (self.sprite_addr_h << 2);
+
+        if dot == 256 {
+            self.sprite_eval_end();
+        }
+    }
+
+    /// Reset eval state at dot 65. Called once per scanline.
+    fn sprite_eval_start(&mut self) {
+        self.sprite_zero_added = false;
+        self.sprite_in_range = false;
+        self.sec_oam_addr = 0;
+        self.overflow_bug_counter = 0;
+        self.oam_copy_done = false;
+        self.sprite_addr_h = (self.oam_addr >> 2) & 0x3F;
+        self.sprite_addr_l = self.oam_addr & 3;
+    }
+
+    /// Finalize eval at dot 256. Commits `sprite_count` and
+    /// `sprite_is_zero[0]` so the sprite fetch phase (dots 257–320)
+    /// knows which slots to fetch.
+    fn sprite_eval_end(&mut self) {
+        self.sprite_count = ((self.sec_oam_addr >> 2) as u8).min(8);
         for s in &mut self.sprite_is_zero {
             *s = false;
         }
-
-        let next = self.scanline + 1;
-        if next < 0 || next >= FRAME_HEIGHT as i16 {
-            return;
+        if self.sprite_zero_added && self.sprite_count > 0 {
+            self.sprite_is_zero[0] = true;
         }
-        let height: i16 = if (self.ctrl & 0x20) != 0 { 16 } else { 8 };
-        let mut found: usize = 0;
-        for n in 0..64usize {
-            let y = self.oam[n * 4] as i16;
-            let row = next - 1 - y;
-            if row < 0 || row >= height {
-                continue;
-            }
-            if found < 8 {
-                self.secondary_oam[found * 4] = self.oam[n * 4];
-                self.secondary_oam[found * 4 + 1] = self.oam[n * 4 + 1];
-                self.secondary_oam[found * 4 + 2] = self.oam[n * 4 + 2];
-                self.secondary_oam[found * 4 + 3] = self.oam[n * 4 + 3];
-                self.sprite_is_zero[found] = n == 0;
-                found += 1;
-            } else {
-                // 9th+ in-range sprite: latch overflow and stop.
-                self.status |= 0x20;
-                break;
-            }
-        }
-        self.sprite_count = found as u8;
     }
 
     /// Fetch one sprite slot's pattern byte (low plane when
