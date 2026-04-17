@@ -196,8 +196,13 @@ impl Ppu {
         }
 
         if rendering && (visible || is_pre) {
-            // BG shift runs on dots 2..=257 and 322..=337.
-            let shift_now = (self.dot >= 2 && self.dot <= 257)
+            // BG shift runs on every rendering dot 1..=256 (AFTER the
+            // pixel is read out) and on the prefetch dots 322..=337.
+            // The shift-after-render order means pixel (x) uses the
+            // shifter state built up by the previous dot's shift — if
+            // we instead started at dot 2, dots 1 and 2 would render
+            // the same pixel and each tile's left column would double.
+            let shift_now = (self.dot >= 1 && self.dot <= 256)
                 || (self.dot >= 322 && self.dot <= 337);
             if shift_now {
                 self.shift_bg();
@@ -269,17 +274,30 @@ impl Ppu {
                 let addr = 0x2000 | (self.v & 0x0FFF);
                 let _ = self.ppu_bus_read(addr, mapper);
             }
+            // Reload the second pre-fetched tile into the shifter.
+            // Without this, tile 1 of every scanline is never loaded,
+            // so pixels 8..=15 of every scanline render as backdrop —
+            // the "vertical black gap through the middle of the image"
+            // bug users see as holes in SMB's ground. The reload
+            // schedule has to cover dot 337 alongside the regular
+            // 9/17/.../257 and 329 dots.
+            if self.dot == 337 {
+                self.reload_bg_shifters();
+            }
         }
 
         // Sprite-0 hit stub — coarse approximation for 6A so games that
-        // gate on the flag (SMB status-bar split) can progress past the
-        // title. Replaced by the real pixel-mux detection in 6B.
+        // gate on the flag (SMB status-bar split, R.C. Pro Am, etc.)
+        // can progress past the title. Real hardware fires at the
+        // first opaque pixel overlap on the first visible scanline of
+        // the sprite; firing later drags the game's scroll split down
+        // by the same delta, which visibly shows up as horizontal
+        // glitch bands below the expected split line. Replaced by the
+        // real pixel-mux detection in 6B.
         if visible && (self.mask & 0x18) == 0x18 && (self.status & 0x40) == 0 {
             let sy = (self.oam[0] as i16).wrapping_add(1);
             let sx = self.oam[3] as u16;
-            // Fire around the middle of the 8×8 sprite footprint so
-            // Mario's SMB split lands close enough to the real hit line.
-            if self.scanline == sy + 4 && self.dot == sx.saturating_add(8) {
+            if self.scanline == sy && self.dot == sx.saturating_add(1) {
                 self.status |= 0x40;
             }
         }
