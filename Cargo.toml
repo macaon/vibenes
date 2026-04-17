@@ -7,6 +7,10 @@ edition = "2021"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
+# Phase 6: windowed emulator. winit 0.30 introduced `ApplicationHandler` —
+# the older closure-based API is gone. wgpu + pollster + bytemuck land in
+# the next sub-phase (6A.3) when we actually draw something.
+winit = "0.30"
 
 [profile.dev]
 opt-level = 1
