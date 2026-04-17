@@ -64,8 +64,13 @@ opcodes and mapper quirks) but not for source.
   drops the pending DMA). `$4010` IRQ-disable path clears latched DMC
   IRQ. DMC shift register, rate table, and bus-level DMA stall
   (4 CPU cycles, non-reentrant) fetch sample bytes through the mapper
-  and IRQ on non-looping completion. 14 unit tests cover the edges.
+  and IRQ on non-looping completion. Unit tests cover the edges
+  (25 across the crate).
   No audio output device yet — mixer samples are computed and dropped.
+- **CPU interrupt-polling extras** — branch-delays-IRQ quirk (Mesen2
+  `BranchRelative` + puNES `BRC` macro): a taken branch with no page
+  cross whose IRQ was newly asserted during the branch suppresses the
+  poll for one instruction. Unit-tested at the step level.
 - **Headless blargg test runner** (`cargo run --bin test_runner ROM`) —
   polls $6000 for the standard signature/status/message protocol.
 
@@ -106,22 +111,22 @@ opcodes and mapper quirks) but not for source.
 |---|---|
 | `1-cli_latency.nes` | PASS |
 | `2-nmi_and_brk.nes` | PASS (NMI-hijack-BRK fully working) |
-| `3-nmi_and_irq.nes` | FAIL — hijack fires on ~half of iterations, alternating-pattern artifact under investigation |
-| `4-irq_and_dma.nes` | FAIL — needs DMC-DMA ↔ IRQ interaction (Phase 5 Sub-C) |
-| `5-branch_delays_irq.nes` | FAIL — needs taken-no-cross branch IRQ suppression (Phase 5 Sub-B) |
+| `3-nmi_and_irq.nes` | FAIL — oscillating row pattern (some iterations NMI 1 instruction late, others early, others miss the hijack). Investigation in progress. |
+| `4-irq_and_dma.nes` | FAIL — IRQ recognition appears ~1 CPU cycle early relative to test expectations; flat shift (not oscillating like test 3). |
+| `5-branch_delays_irq.nes` | FAIL — branch-delays-IRQ quirk implemented + unit-tested, but the ROM's `test_jmp` subtest (pure JMP, no branches) fails with the same class of bug as test 3. |
 
 ### Not yet
 
-- **Test 3 `3-nmi_and_irq` alternating failure** — hijack mechanism
-  is correct but rows 4–10 alternate between "NMI hijacks IRQ
-  correctly" and anomalous "NMI fires early" outputs. Suspect race
-  between APU frame-counter IRQ assertion and NMI edge relative to
-  the new mid-cycle PPU tick boundary.
-- **Branch-delays-IRQ quirk** (`5-branch_delays_irq`) — on a taken
-  branch with no page cross, the IRQ poll on the final cycle is
-  suppressed. Needs an opcode-specific guard inside `branch()`.
-- **DMC DMA ↔ IRQ interaction** (`4-irq_and_dma`) — stall cycles
-  need to participate correctly in IRQ recognition timing.
+- **cpu_interrupts_v2 tests 3 / 4 / 5** — three failing ROMs that all
+  exercise cycle-exact interrupt-detection timing. Test 3 shows an
+  *oscillating* pattern across iterations (NMI sometimes late, sometimes
+  early, hijack sometimes missed). Test 4 shows a *flat* 1-cycle early
+  IRQ recognition — different signature, likely a different root cause.
+  Test 5's `test_jmp` subtest matches test 3's shape. Verified during
+  investigation: our PPU stub (rendering off) is sufficient for these
+  tests — the bug is on the CPU/bus/APU side. One failed fix attempt
+  (move APU tick to `tick_pre_access` per Mesen2's `StartCpuCycle`
+  ordering) regressed `apu_test/4-6`; reverted. Root cause still open.
 - **`$4016/$4017` DMC double-read bug** — the halt/dummy cycles of a
   DMC DMA don't replay the CPU's pending read address yet, so the
   controller-bit-deletion behavior checked by `dmc_dma_during_read4`
@@ -131,8 +136,10 @@ opcodes and mapper quirks) but not for source.
   planned as a dedicated phase once CPU-side timing is locked down.
 - **PPU rendering** (pattern/nametable/sprite pipeline) and the wgpu
   window + wgsl shaders.
-- **Controllers** (beyond the shifter).
-- **Additional mappers** (UxROM 2, MMC3 4, AxROM 7, …).
+- **Controllers** (beyond the shifter — needs a window + keyboard
+  event source, blocked by PPU rendering).
+- **Additional mappers** — MMC3 (mapper 4) with A12-edge scanline IRQ,
+  plus smaller boards as ROMs demand them.
 - Test suites that report via PPU screen instead of $6000
   (`branch_timing_tests`, `cpu_timing_test6`, `cpu_dummy_reads`, most
   of `apu_reset/*` and all of `dmc_tests/*`).
