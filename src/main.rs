@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use vibenes::app;
@@ -22,6 +23,17 @@ use winit::window::{Window, WindowId};
 const WINDOW_TITLE: &str = "vibenes";
 const DEFAULT_WINDOW_WIDTH: u32 = 512;
 const DEFAULT_WINDOW_HEIGHT: u32 = 480;
+
+/// NTSC NES frame period: 1 / (master 21477272 Hz ÷ 4 dots ÷ 89342
+/// dots per frame) ≈ 16.639 ms. We pace the emulation loop to this
+/// explicitly rather than relying on wgpu's Fifo present mode, since
+/// Fifo caps to the *monitor* refresh rate — anything above 60 Hz
+/// (144 Hz gaming displays, 120 Hz laptops, etc.) would run the
+/// emulator faster than real hardware.
+const NTSC_FRAME_PERIOD: Duration = Duration::from_nanos(16_639_267);
+/// PAL equivalent: 33247.5 CPU cycles ÷ (26601712 / 16) Hz ≈ 19.997
+/// ms per frame. Used when the loaded ROM is PAL.
+const PAL_FRAME_PERIOD: Duration = Duration::from_nanos(19_997_194);
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -64,15 +76,28 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     halted_notice_shown: bool,
+    /// Per-region frame period (NTSC ≈ 16.639 ms, PAL ≈ 19.997 ms).
+    /// Seeded from the cartridge's TV-system at construction.
+    frame_period: Duration,
+    /// Deadline for the next frame's present. Advanced by one
+    /// `frame_period` each completed frame so drift stays pinned to
+    /// wall-clock rather than accumulating.
+    next_frame_deadline: Option<Instant>,
 }
 
 impl App {
     fn new(nes: Nes) -> Self {
+        let frame_period = match nes.region() {
+            vibenes::clock::Region::Ntsc => NTSC_FRAME_PERIOD,
+            vibenes::clock::Region::Pal => PAL_FRAME_PERIOD,
+        };
         Self {
             nes,
             window: None,
             renderer: None,
             halted_notice_shown: false,
+            frame_period,
+            next_frame_deadline: None,
         }
     }
 
@@ -109,10 +134,48 @@ impl App {
                 event_loop.exit();
             }
         }
+
+        // Advance the frame deadline for NTSC/PAL-accurate pacing. If
+        // we've fallen more than a couple of frames behind (heavy host
+        // contention, long GC pause, whatever), reset the deadline
+        // anchor to "now" instead of accumulating slip.
+        let now = Instant::now();
+        let next = self
+            .next_frame_deadline
+            .map(|d| d + self.frame_period)
+            .unwrap_or(now + self.frame_period);
+        self.next_frame_deadline = Some(if next + self.frame_period < now {
+            now + self.frame_period
+        } else {
+            next
+        });
     }
 }
 
 impl ApplicationHandler for App {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Drive the frame cadence here rather than calling
+        // `request_redraw` immediately inside `RedrawRequested`
+        // (which would busy-loop on fast monitors). If the deadline
+        // has arrived, request a redraw now; otherwise tell winit to
+        // wake us up exactly when it arrives.
+        let Some(deadline) = self.next_frame_deadline else {
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+            return;
+        };
+        let now = Instant::now();
+        if now >= deadline {
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+            event_loop.set_control_flow(ControlFlow::Poll);
+        } else {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -174,9 +237,10 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.advance_and_present(event_loop);
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
+                // Do NOT immediately request another redraw here —
+                // `about_to_wait` drives the next frame off
+                // `next_frame_deadline` so we stay pinned to
+                // NTSC/PAL rate regardless of monitor refresh.
             }
             _ => {}
         }
