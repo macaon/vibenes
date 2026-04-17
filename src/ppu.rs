@@ -201,6 +201,15 @@ impl Ppu {
     pub fn debug_scroll(&self) -> (u16, u16, u8) {
         (self.v, self.t, self.fine_x)
     }
+    pub fn debug_palette(&self) -> &[u8; 32] {
+        &self.palette
+    }
+    pub fn debug_vram(&self) -> &[u8; 0x800] {
+        &self.vram
+    }
+    pub fn debug_oam(&self) -> &[u8; 256] {
+        &self.oam
+    }
 
     /// Advance one PPU dot. On NTSC the bus calls this 3× per CPU cycle;
     /// on PAL the rate averages 3.2× per CPU cycle (the bus handles the
@@ -253,12 +262,14 @@ impl Ppu {
             if fetch_region {
                 match (self.dot - 1) % 8 {
                     0 => {
-                        // At tile start — reload shifters first (except
-                        // on dot 1 / 321 which begin a fresh region
-                        // with no pending latches).
-                        if self.dot != 1 && self.dot != 321 {
-                            self.reload_bg_shifters();
-                        }
+                        // Reload shifters at every tile boundary. Dot 1
+                        // reload matches Mesen2 NesPpu.cpp:677–678:
+                        // `_lowBitShift |= _tile.LowByte`. The shifter's
+                        // low byte is 0 here (8 shifts since the last
+                        // reload have cleared it), so the reload is a
+                        // clean OR with the pat-lo/pat-hi fetched
+                        // during the previous tile's 8-cycle group.
+                        self.reload_bg_shifters();
                         let addr = 0x2000 | (self.v & 0x0FFF);
                         self.bg_next_nt = self.ppu_bus_read(addr, mapper);
                     }
@@ -295,16 +306,14 @@ impl Ppu {
             if self.dot == 257 {
                 // Horizontal v ← t copy (coarse X + NT-select bit 10).
                 self.v = (self.v & !0x041F) | (self.t & 0x041F);
-                // Reload the shifter with the final fetch of this
-                // scanline so dot 321+ pre-fetch cycles start clean.
-                self.reload_bg_shifters();
                 // Sprite pipeline for NEXT scanline: evaluate primary
                 // OAM into secondary (up to 8 sprites, set overflow if
                 // more), then fetch each sprite's pattern bytes. Real
                 // hardware does eval across dots 65–256 and pattern
                 // fetches across 257–320; we batch both at dot 257.
                 // Behaviorally equivalent for commercial games that
-                // don't inject mid-eval OAM writes.
+                // don't inject mid-eval OAM writes. Proper per-dot
+                // state machines land in follow-up PPU items.
                 self.evaluate_sprites();
                 self.fetch_sprite_patterns(mapper);
             }
@@ -326,16 +335,6 @@ impl Ppu {
             if self.dot == 337 || self.dot == 339 {
                 let addr = 0x2000 | (self.v & 0x0FFF);
                 let _ = self.ppu_bus_read(addr, mapper);
-            }
-            // Reload the second pre-fetched tile into the shifter.
-            // Without this, tile 1 of every scanline is never loaded,
-            // so pixels 8..=15 of every scanline render as backdrop —
-            // the "vertical black gap through the middle of the image"
-            // bug users see as holes in SMB's ground. The reload
-            // schedule has to cover dot 337 alongside the regular
-            // 9/17/.../257 and 329 dots.
-            if self.dot == 337 {
-                self.reload_bg_shifters();
             }
         }
 
@@ -430,14 +429,22 @@ impl Ppu {
         }
 
         // --- Sprite pixel: first opaque sprite in secondary-OAM order ---
+        //     PLUS independent sprite-0 opacity sampling for the hit flag.
+        //     Per nesdev: sprite-0 hit is "sprite 0 opaque AND BG opaque"
+        //     — it is NOT gated on sprite 0 winning the priority mux. If
+        //     sprite 3 also covers the pixel and comes first in secondary
+        //     OAM, sprite 3 wins the display mux but sprite 0 still sets
+        //     the hit flag. NES Open Tournament Golf's boot wait loop
+        //     depends on this independence.
         let mut sp_pattern: u8 = 0;
         let mut sp_palette: u8 = 0;
         let mut sp_priority_behind: bool = false;
-        let mut sp_is_zero: bool = false;
+        let mut sprite0_opaque_here = false;
         if sp_enabled {
             let clip_sp_left = (self.mask & 0x04) == 0 && x < 8;
             if !clip_sp_left {
                 let px = x as i16;
+                let mut picked = false;
                 for i in 0..self.sprite_count as usize {
                     let sx = self.sprite_x[i] as i16;
                     if px >= sx && px < sx + 8 {
@@ -448,25 +455,31 @@ impl Ppu {
                         let p1 = (self.sprite_pat_hi[i] >> bit) & 1;
                         let pat = (p1 << 1) | p0;
                         if pat != 0 {
-                            sp_pattern = pat;
-                            sp_palette = self.sprite_attr[i] & 0x03;
-                            sp_priority_behind = (self.sprite_attr[i] & 0x20) != 0;
-                            sp_is_zero = self.sprite_is_zero[i];
-                            break;
+                            if self.sprite_is_zero[i] {
+                                sprite0_opaque_here = true;
+                            }
+                            if !picked {
+                                sp_pattern = pat;
+                                sp_palette = self.sprite_attr[i] & 0x03;
+                                sp_priority_behind = (self.sprite_attr[i] & 0x20) != 0;
+                                picked = true;
+                            }
+                            // Continue scanning so sprite-0 opacity is
+                            // sampled even when an earlier sprite wins
+                            // the priority mux.
                         }
                     }
                 }
             }
         }
 
-        // --- Sprite-0 hit (mesen-notes §14 five-part predicate) ---
-        // Both enables on, sprite-0 is the selected sprite on this pixel,
-        // both BG and sprite-0 opaque, x != 255, and if EITHER left-8
-        // clip is active the pixel must be in x >= 8.
+        // --- Sprite-0 hit (nesdev-correct, independent of priority mux) ---
+        // Both rendering enables on, sprite-0 opaque at this pixel, BG
+        // opaque at this pixel, x != 255, and if EITHER left-8 clip
+        // flag is active the pixel must be in x >= 8.
         if bg_enabled
             && sp_enabled
-            && sp_is_zero
-            && sp_pattern != 0
+            && sprite0_opaque_here
             && bg_pattern != 0
             && x != 255
             && (self.status & 0x40) == 0

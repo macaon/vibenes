@@ -52,6 +52,46 @@ fn main() {
     );
     let (v, t, fine_x) = nes.bus.ppu.debug_scroll();
     eprintln!("v=${:04X} t=${:04X} fine_x={}", v, t, fine_x);
+    eprintln!(
+        "cpu: a=${:02X} x=${:02X} y=${:02X} sp=${:02X} pc=${:04X} halted={}",
+        nes.cpu.a, nes.cpu.x, nes.cpu.y, nes.cpu.sp, nes.cpu.pc, nes.cpu.halted
+    );
+    // Palette RAM (32 bytes).
+    eprint!("palette:");
+    for (i, v) in nes.bus.ppu.debug_palette().iter().enumerate() {
+        if i % 4 == 0 {
+            eprint!(" ");
+        }
+        eprint!("{:02X}", v);
+    }
+    eprintln!();
+    // Top 32 bytes of each nametable page.
+    let vram = nes.bus.ppu.debug_vram();
+    for row in [0usize, 16, 17] {
+        eprint!("NT0 row {:2}:", row);
+        for c in 0..32 {
+            eprint!(" {:02X}", vram[row * 32 + c]);
+        }
+        eprintln!();
+    }
+    // Probe CHR at a few tiles via the mapper.
+    for tile in [0u16, 0xE0, 0xEC, 0xF4] {
+        let base = tile * 16;
+        eprint!("CHR tile ${:03X} pat @${:04X}:", tile, base);
+        for off in 0..16 {
+            eprint!(" {:02X}", nes.bus.mapper.ppu_read(base + off));
+        }
+        eprintln!();
+    }
+    // Count non-zero OAM entries.
+    let oam = nes.bus.ppu.debug_oam();
+    let nonzero_oam = oam.iter().filter(|&&b| b != 0 && b != 0xFF).count();
+    eprintln!("OAM non-zero/-FF bytes: {}", nonzero_oam);
+    eprint!("OAM[0..16] (sprites 0..3 Y,tile,attr,X):");
+    for i in 0..16 {
+        eprint!(" {:02X}", oam[i]);
+    }
+    eprintln!();
     let mask = nes.bus.ppu.debug_mask();
     eprintln!(
         "  $2001 bits: grayscale={} bg_show_left={} sp_show_left={} bg_enable={} sp_enable={} R={} G={} B={}",
@@ -65,25 +105,23 @@ fn main() {
         (mask >> 7) & 1,
     );
     if inspect_sl < FRAME_HEIGHT {
-        eprintln!("scanline {} run-length (per palette color):", inspect_sl);
-        let mut cur: [u8; 3] = [0, 0, 0];
-        let mut run = 0usize;
-        let mut first = true;
-        for x in 0..FRAME_WIDTH {
-            let i = (inspect_sl * FRAME_WIDTH + x) * 4;
-            let px = [fb[i], fb[i + 1], fb[i + 2]];
-            if first || px != cur {
-                if !first {
-                    eprintln!("  x={:3} ({}×{:02X}{:02X}{:02X})", x - run, run, cur[0], cur[1], cur[2]);
-                }
-                cur = px;
-                run = 1;
-                first = false;
-            } else {
-                run += 1;
+        // Compress scanline to single-letter color codes (G=gray,
+        // K=black, ? = other), tile-grouped for fast visual scanning.
+        let classify = |r: u8, g: u8, b: u8| -> char {
+            if r == 0xAB && g == 0xAB && b == 0xAB { 'G' }
+            else if r == 0 && g == 0 && b == 0 { 'K' }
+            else { '?' }
+        };
+        eprintln!("per-scanline compressed view, 'G'=gray 'K'=black '?'=other, '.'=tile boundary:");
+        for y in 0..FRAME_HEIGHT {
+            eprint!("y={:3}: ", y);
+            for x in 0..FRAME_WIDTH {
+                if x > 0 && x % 8 == 0 { eprint!(" "); }
+                let i = (y * FRAME_WIDTH + x) * 4;
+                eprint!("{}", classify(fb[i], fb[i + 1], fb[i + 2]));
             }
+            eprintln!();
         }
-        eprintln!("  x={:3} ({}×{:02X}{:02X}{:02X})", FRAME_WIDTH - run, run, cur[0], cur[1], cur[2]);
         // Count distinct RGB values across the whole scanline as a
         // sanity check — if the "black left column" is really 8 pixels
         // of backdrop, pixels 0..7 should all be identical.
