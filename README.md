@@ -44,7 +44,8 @@ opcodes and mapper quirks) but not for source.
   reads see mid-cycle PPU state, needed for `cpu_interrupts_v2`
   iterations that sync to specific VBlank dots.
 - **Mappers** — NROM (0), MMC1/SxROM (1) with serial shift and the
-  consecutive-write filter, CNROM (3).
+  consecutive-write filter, UxROM (2) with `$8000-$BFFF` switchable /
+  `$C000-$FFFF` fixed-to-last split and CHR-RAM, CNROM (3).
 - **PPU stub** — register window at $2000-$2007, VBlank flag + NMI
   edge, scroll latch (t/v/x/w), palette and nametable mirroring,
   region-aware scanline count. No rendering yet.
@@ -183,6 +184,7 @@ src/
     mod.rs            trait + factory
     nrom.rs           mapper 0
     mmc1.rs           mapper 1 (SxROM)
+    uxrom.rs          mapper 2 (UNROM/UOROM)
     cnrom.rs          mapper 3
   nes.rs              system glue
   main.rs             CLI entry (stub runtime)

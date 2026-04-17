@@ -5,6 +5,7 @@ use crate::rom::{Cartridge, Mirroring};
 pub mod cnrom;
 pub mod mmc1;
 pub mod nrom;
+pub mod uxrom;
 
 pub trait Mapper: Send {
     fn cpu_read(&mut self, addr: u16) -> u8;
@@ -26,6 +27,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
     match cart.mapper_id {
         0 => Ok(Box::new(nrom::Nrom::new(cart))),
         1 => Ok(Box::new(mmc1::Mmc1::new(cart))),
+        2 => Ok(Box::new(uxrom::Uxrom::new(cart))),
         3 => Ok(Box::new(cnrom::Cnrom::new(cart))),
         other => bail!("unsupported mapper {}", other),
     }
