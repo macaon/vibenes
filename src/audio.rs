@@ -23,12 +23,19 @@
 //!     → HeapProd::try_push
 //!
 //! The ring buffer between threads is a lock-free SPSC queue (`ringbuf`
-//! 0.4). If the emulator runs *faster* than realtime the ring fills and
-//! `try_push` drops samples — manifest as a faint click every few
-//! seconds when NTSC wall-clock pacing drifts relative to the host's
-//! audio clock. If the emulator runs *slower* the ring drains and the
-//! callback writes silence. Both are audible but not catastrophic; a
-//! proper audio-driven pacing pass is a later phase.
+//! 0.4). Sizing it generously (~300 ms) is deliberate: the emulator
+//! produces ~734 samples in a burst at end-of-frame, while cpal drains
+//! continuously, so a slow frame (wgpu present blocking on compositor,
+//! OS scheduler hiccup, DMA-heavy scene) can starve the ring for
+//! 30–100 ms at a time. Pre-filling ~100 ms of silence at startup
+//! prevents the very first frame's setup cost from causing an
+//! immediate underrun click.
+//!
+//! Back-pressure policy: if the ring ever *does* fill, `try_push`
+//! silently drops the oldest-not-yet-written sample; if it drains,
+//! the cpal callback writes zeros. A proper audio-driven pacing pass
+//! (where the emulator sleeps when the ring is full rather than when
+//! a wall-clock deadline says so) is a later phase.
 
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -37,23 +44,29 @@ use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
 /// Scale factor from APU's `0.0..=1.0` analog level into signed 16-bit
-/// range. Keeps enough headroom that peak output (~0.5 on loud frames,
-/// modulo DC offset) lands near half-scale rather than clipping. The
-/// blip filter is DC-blocking, so the absolute offset doesn't matter —
-/// only the magnitude of deltas.
+/// range. Peak NES output hits 1.0 with all five channels at max, so
+/// 25000 leaves ~0.24 dB of headroom before i16 saturation. The blip
+/// filter is DC-blocking, so absolute offset doesn't matter — only
+/// delta magnitude.
 const AMP_SCALE: f32 = 25_000.0;
 
-/// How much audio to buffer between the emulator and the audio device,
-/// expressed as a fraction of one second. 100 ms is enough slack to
-/// absorb cpal callback jitter (~5–20 ms per wakeup on most OSes)
-/// without perceptible latency.
-const RING_SECONDS_NUM: u32 = 1;
-const RING_SECONDS_DEN: u32 = 10;
+/// Ring-buffer depth in milliseconds — upper bound on audio latency
+/// and the size of the stall this path can absorb without silencing.
+/// 300 ms handles a Wayland compositor's occasional 60-Hz hitch or a
+/// wgpu swapchain stall without a pop.
+const RING_MILLIS: u32 = 300;
 
-/// How often the sink flushes `BlipBuf` into the ring, in CPU cycles.
-/// Computed at startup as `cpu_clock_hz / FLUSH_DIVISOR` (≈ 20 ms).
-/// Flushing more often lowers latency but adds per-flush overhead.
-const FLUSH_DIVISOR: f64 = 50.0;
+/// Initial silence pre-fill, in milliseconds. Given to the cpal
+/// callback before the emulator has produced any samples so we don't
+/// hear a click at startup.
+const PREFILL_MILLIS: u32 = 100;
+
+/// BlipBuf→ring flush cadence in milliseconds (converted to CPU
+/// cycles at stream-open). 5 ms smooths out per-frame burstiness —
+/// samples trickle into the ring rather than arriving in one
+/// 16.6 ms lump per emulator frame — which keeps the consumer from
+/// oscillating near the empty end of the ring.
+const FLUSH_MILLIS: u32 = 5;
 
 /// Produces samples on the emulator thread. Holds the `BlipBuf`
 /// resampler and the ring-buffer producer side. `on_cpu_cycle` is
@@ -150,23 +163,32 @@ pub fn start(cpu_clock_hz: f64) -> Result<(AudioSink, AudioStream)> {
     let channels = supported.channels();
     let stream_config: StreamConfig = supported.into();
 
-    let ring_cap = ((sample_rate as u64 * RING_SECONDS_NUM as u64)
-        / RING_SECONDS_DEN as u64) as usize;
+    let ring_cap = ((sample_rate as u64 * RING_MILLIS as u64) / 1000) as usize;
     let ring_cap = ring_cap.max(4096);
     let rb: HeapRb<f32> = HeapRb::new(ring_cap);
-    let (producer, consumer) = rb.split();
+    let (mut producer, consumer) = rb.split();
+
+    // Pre-fill the ring with silence so the cpal callback has
+    // something to drain during the emulator's first frame of
+    // startup work.
+    let prefill = ((sample_rate as u64 * PREFILL_MILLIS as u64) / 1000) as usize;
+    for _ in 0..prefill {
+        if producer.try_push(0.0).is_err() {
+            break;
+        }
+    }
 
     let stream = build_stream(&device, &stream_config, sample_format, channels, consumer)?;
     stream.play().context("start audio stream")?;
 
-    // BlipBuf internal buffer must be large enough to hold all samples
-    // generated between flushes. We flush every ~20 ms, so sizing it
-    // for ~100 ms is comfortable headroom.
-    let blip_cap = (sample_rate / RING_SECONDS_DEN).max(2048);
+    // BlipBuf internal buffer must be >= samples produced between
+    // flushes. We flush every FLUSH_MILLIS; sizing for 4× that is
+    // comfortable headroom and lets a single missed flush tolerate.
+    let blip_cap = (sample_rate / 1000 * FLUSH_MILLIS * 4).max(2048);
     let mut blip = blip_buf::BlipBuf::new(blip_cap);
     blip.set_rates(cpu_clock_hz, sample_rate as f64);
 
-    let cycles_per_flush = (cpu_clock_hz / FLUSH_DIVISOR).max(1.0) as u32;
+    let cycles_per_flush = ((cpu_clock_hz * FLUSH_MILLIS as f64) / 1000.0).max(1.0) as u32;
     let scratch = vec![0i16; blip_cap as usize];
 
     let sink = AudioSink {
