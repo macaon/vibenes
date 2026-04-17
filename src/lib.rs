@@ -3,6 +3,7 @@ pub mod app;
 pub mod bus;
 pub mod clock;
 pub mod cpu;
+pub mod gfx;
 pub mod mapper;
 pub mod nes;
 pub mod ppu;

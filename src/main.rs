@@ -1,12 +1,14 @@
-//! `vibenes` — the windowed emulator binary. Phase 6A.2 opens a blank
-//! window and holds the loaded NES; rendering and per-frame stepping
-//! land in 6A.3 (wgpu pipeline) and 6A.4 (PPU background pipeline).
+//! `vibenes` — the windowed emulator binary. Phase 6A.3 stands up the
+//! wgpu passthrough pipeline and presents a static diagnostic pattern;
+//! 6A.4 hooks the PPU's real framebuffer in.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use vibenes::app;
+use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
 use winit::application::ApplicationHandler;
@@ -16,9 +18,6 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 const WINDOW_TITLE: &str = "vibenes";
-// NES native resolution is 256×240. Open at 2× by default so pixels are
-// visible on a modern display; wgpu sampler in 6A.3 will handle integer
-// scaling when the window is resized.
 const DEFAULT_WINDOW_WIDTH: u32 = 512;
 const DEFAULT_WINDOW_HEIGHT: u32 = 480;
 
@@ -56,12 +55,13 @@ fn parse_args() -> Result<PathBuf> {
     }
 }
 
-/// Window + NES owner. 6A.2 is deliberately inert — we just keep the NES
-/// alive so the render-path scaffolding in 6A.3 has something to draw
-/// from. The `_nes` field becomes active once we wire frame stepping.
+/// Window + renderer + NES owner. 6A.3 uploads a static diagnostic
+/// pattern once on init; 6A.4 swaps that for `nes.bus.ppu.frame_buffer`
+/// each completed frame.
 struct App {
     _nes: Nes,
-    window: Option<Window>,
+    window: Option<Arc<Window>>,
+    renderer: Option<Renderer>,
 }
 
 impl App {
@@ -69,6 +69,7 @@ impl App {
         Self {
             _nes: nes,
             window: None,
+            renderer: None,
         }
     }
 }
@@ -84,13 +85,27 @@ impl ApplicationHandler for App {
                 DEFAULT_WINDOW_WIDTH,
                 DEFAULT_WINDOW_HEIGHT,
             ));
-        match event_loop.create_window(attrs) {
-            Ok(w) => self.window = Some(w),
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
             Err(e) => {
                 eprintln!("vibenes: failed to create window: {e}");
                 event_loop.exit();
+                return;
             }
-        }
+        };
+        let renderer = match Renderer::new(Arc::clone(&window)) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("vibenes: failed to init wgpu: {e:#}");
+                event_loop.exit();
+                return;
+            }
+        };
+        // One-shot upload of the diagnostic pattern. 6A.4 replaces this
+        // with per-frame `upload_framebuffer(&ppu.frame_buffer)`.
+        renderer.upload_framebuffer(&vibenes::gfx::diagnostic_pattern());
+        self.window = Some(window);
+        self.renderer = Some(renderer);
     }
 
     fn window_event(
@@ -110,9 +125,22 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => event_loop.exit(),
+            WindowEvent::Resized(new_size) => {
+                if let Some(r) = self.renderer.as_mut() {
+                    r.resize(new_size);
+                }
+            }
             WindowEvent::RedrawRequested => {
-                // No wgpu surface yet — 6A.3 adds the passthrough pipeline.
-                // Keep the redraw pump alive so the window stays responsive.
+                if let Some(r) = self.renderer.as_mut() {
+                    match r.render() {
+                        PresentOutcome::Presented | PresentOutcome::Skipped => {}
+                        PresentOutcome::NeedsReconfigure => r.reconfigure(),
+                        PresentOutcome::Fatal(msg) => {
+                            eprintln!("vibenes: {msg}");
+                            event_loop.exit();
+                        }
+                    }
+                }
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }

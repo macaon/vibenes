@@ -8,9 +8,13 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 # Phase 6: windowed emulator. winit 0.30 introduced `ApplicationHandler` —
-# the older closure-based API is gone. wgpu + pollster + bytemuck land in
-# the next sub-phase (6A.3) when we actually draw something.
+# the older closure-based API is gone. wgpu + pollster are for the
+# passthrough render pipeline; we deliberately don't use the `pixels`
+# crate so post-process shader stages (CRT / NTSC filter / scanlines)
+# can plug in later without fighting `pixels`' built-in blit.
 winit = "0.30"
+wgpu = "29"
+pollster = "0.4"
 
 [profile.dev]
 opt-level = 1
