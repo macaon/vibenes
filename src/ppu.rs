@@ -310,25 +310,46 @@ impl Ppu {
 
             if self.dot == 256 {
                 self.inc_y();
+                // Sprite eval for NEXT scanline finalizes by dot 256
+                // on real HW (dots 65–256 primary-OAM scan); we batch
+                // the evaluation at the end. Per-dot state-machine
+                // eval (with the 2C02 diagonal-sweep overflow bug)
+                // is a separate follow-up item.
+                self.evaluate_sprites();
             }
             if self.dot == 257 {
                 // Horizontal v ← t copy (coarse X + NT-select bit 10).
                 self.v = (self.v & !0x041F) | (self.t & 0x041F);
-                // Sprite pipeline for NEXT scanline: evaluate primary
-                // OAM into secondary (up to 8 sprites, set overflow if
-                // more), then fetch each sprite's pattern bytes. Real
-                // hardware does eval across dots 65–256 and pattern
-                // fetches across 257–320; we batch both at dot 257 for
-                // now. Proper per-dot state machines land in the next
-                // PPU items.
-                self.evaluate_sprites();
-                self.fetch_sprite_patterns(mapper);
             }
-            // OAMADDR is held at 0 during dots 257–320 of rendering
-            // scanlines. Games rely on this before $4014 DMA so OAM
-            // DMA lands at OAM[0].
+            // Sprite pattern fetch across dots 257–320 in eight 8-dot
+            // slots, one per sprite. Per Mesen2 (NesPpu.cpp:899–933)
+            // and nesdev, each slot issues: garbage NT (cycle 1),
+            // garbage AT (cycle 3), sprite pattern lo (cycle 5),
+            // sprite pattern hi (cycle 7). The exact dots matter for
+            // MMC3 A12 counter filtering — batching all fetches at
+            // dot 257 would collapse 8 A12 rises into one.
+            // OAMADDR is held at 0 throughout this window (nesdev).
             if self.dot >= 257 && self.dot <= 320 {
                 self.oam_addr = 0;
+                let slot = ((self.dot - 257) / 8) as usize;
+                match (self.dot - 257) % 8 {
+                    1 => {
+                        // Garbage NT fetch — drives A12 low.
+                        let addr = 0x2000 | (self.v & 0x0FFF);
+                        let _ = self.ppu_bus_read(addr, mapper);
+                    }
+                    3 => {
+                        // Garbage AT fetch — drives A12 low.
+                        let at_addr = 0x23C0
+                            | (self.v & 0x0C00)
+                            | ((self.v >> 4) & 0x38)
+                            | ((self.v >> 2) & 0x07);
+                        let _ = self.ppu_bus_read(at_addr, mapper);
+                    }
+                    5 => self.fetch_sprite_pattern_slot(slot, false, mapper),
+                    7 => self.fetch_sprite_pattern_slot(slot, true, mapper),
+                    _ => {}
+                }
             }
             if is_pre && self.dot >= 280 && self.dot <= 304 {
                 // Vertical v ← t copy (fine Y + coarse Y + NT-select
@@ -589,46 +610,62 @@ impl Ppu {
         self.sprite_count = found as u8;
     }
 
-    /// Fetch the low/high pattern bytes for each sprite found by
-    /// `evaluate_sprites`, accounting for 8×8 vs 8×16 size and
-    /// vertical flip. Addresses are driven on the PPU bus via
-    /// `ppu_bus_read` so A12-sensitive mappers (MMC3 / MMC5) see the
-    /// expected address stream for the sprite-fetch slots.
-    fn fetch_sprite_patterns(&mut self, mapper: &mut dyn Mapper) {
+    /// Fetch one sprite slot's pattern byte (low plane when
+    /// `high = false`, high plane otherwise). Called at dots 5 and 7
+    /// of each 8-dot slot in the 257–320 sprite-fetch window.
+    ///
+    /// For slots beyond `sprite_count`, we still issue a read against
+    /// the sprite pattern table at tile $FF so MMC3's A12 counter
+    /// sees the expected rising edge. Returned data for unused slots
+    /// is discarded.
+    fn fetch_sprite_pattern_slot(&mut self, slot: usize, high: bool, mapper: &mut dyn Mapper) {
         let next = self.scanline + 1;
         let height: i16 = if (self.ctrl & 0x20) != 0 { 16 } else { 8 };
-        for i in 0..self.sprite_count as usize {
-            let y = self.secondary_oam[i * 4] as i16;
-            let tile = self.secondary_oam[i * 4 + 1];
-            let attr = self.secondary_oam[i * 4 + 2];
-            let x = self.secondary_oam[i * 4 + 3];
+        let (tile, attr, x, y) = if slot < self.sprite_count as usize {
+            (
+                self.secondary_oam[slot * 4 + 1],
+                self.secondary_oam[slot * 4 + 2],
+                self.secondary_oam[slot * 4 + 3],
+                self.secondary_oam[slot * 4] as i16,
+            )
+        } else {
+            // Dummy fetch for empty slots — tile $FF, Y at next scanline
+            // so the fine-y math lands at row 0.
+            (0xFFu8, 0u8, 0u8, (next - 1) as i16)
+        };
 
-            let row = (next - 1 - y).clamp(0, height - 1);
-            let vflip = (attr & 0x80) != 0;
-            let fine_y: u16 = if vflip {
-                (height - 1 - row) as u16
+        let row = (next - 1 - y).clamp(0, height - 1);
+        let vflip = (attr & 0x80) != 0;
+        let fine_y: u16 = if vflip {
+            (height - 1 - row) as u16
+        } else {
+            row as u16
+        };
+        let addr: u16 = if height == 16 {
+            let table = ((tile as u16) & 0x01) << 12;
+            let tile_num = (tile as u16) & 0xFE;
+            let (tile_off, row_in_tile) = if fine_y < 8 {
+                (tile_num, fine_y)
             } else {
-                row as u16
+                (tile_num + 1, fine_y - 8)
             };
+            table | (tile_off << 4) | row_in_tile
+        } else {
+            let table = ((self.ctrl as u16) & 0x08) << 9;
+            table | ((tile as u16) << 4) | fine_y
+        };
 
-            let addr: u16 = if height == 16 {
-                let table = ((tile as u16) & 0x01) << 12;
-                let tile_num = (tile as u16) & 0xFE;
-                let (tile_off, row_in_tile) = if fine_y < 8 {
-                    (tile_num, fine_y)
-                } else {
-                    (tile_num + 1, fine_y - 8)
-                };
-                table | (tile_off << 4) | row_in_tile
+        let addr = if high { addr + 8 } else { addr };
+        let byte = self.ppu_bus_read(addr, mapper);
+        if slot < self.sprite_count as usize {
+            if high {
+                self.sprite_pat_hi[slot] = byte;
             } else {
-                let table = ((self.ctrl as u16) & 0x08) << 9;
-                table | ((tile as u16) << 4) | fine_y
-            };
-
-            self.sprite_pat_lo[i] = self.ppu_bus_read(addr, mapper);
-            self.sprite_pat_hi[i] = self.ppu_bus_read(addr + 8, mapper);
-            self.sprite_attr[i] = attr;
-            self.sprite_x[i] = x;
+                self.sprite_pat_lo[slot] = byte;
+                // Latch attr/x on the first fetch of each slot.
+                self.sprite_attr[slot] = attr;
+                self.sprite_x[slot] = x;
+            }
         }
     }
 
