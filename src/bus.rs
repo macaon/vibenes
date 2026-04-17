@@ -174,11 +174,13 @@ impl Bus {
     /// APU + mapper tick here so writes to $4000–$4017 that trigger
     /// them (length loads, frame-counter reset, MMC3 A12 filter) land
     /// on the same cycle as the write. Re-samples the IRQ line after
-    /// APU updates.
+    /// APU updates. /IRQ is open-drain / wire-ORed on real hardware,
+    /// so cart-side IRQs (MMC3 scanline, FME-7 timer, VRC4/6/7) merge
+    /// with the APU frame IRQ and DMC IRQ via a simple OR.
     fn tick_post_access(&mut self) {
         self.apu.tick_cpu_cycle();
         self.mapper.on_cpu_cycle();
-        self.irq_line = self.apu.irq_line();
+        self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
     }
 
     /// Old combined tick entry — kept for stall cycles inside OAM/DMC

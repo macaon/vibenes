@@ -20,8 +20,20 @@ pub trait Mapper: Send {
         0
     }
     /// Called once per CPU cycle by the bus. Lets mappers with timing-sensitive
-    /// behavior (MMC1 consecutive-write filter, MMC3 A12 IRQ, etc.) advance.
+    /// behavior (MMC1 consecutive-write filter) advance.
     fn on_cpu_cycle(&mut self) {}
+    /// Called by the PPU every time it drives its address bus. `ppu_cycle`
+    /// is a monotonic PPU-dot timestamp the mapper can use to filter
+    /// glitches (e.g. MMC3's ≥10-PPU-cycle A12-low requirement before a
+    /// rising edge counts). Default no-op; MMC3 / MMC5 / MMC2 / MMC4
+    /// override to observe A12 or the CHR-latch tile reads.
+    fn on_ppu_addr(&mut self, _addr: u16, _ppu_cycle: u64) {}
+    /// True when the cart is pulling /IRQ low. Wire-ORed with the APU
+    /// IRQ line inside the bus. Default false; MMC3 / MMC5 / FME-7
+    /// / VRC IRQ mappers override.
+    fn irq_line(&self) -> bool {
+        false
+    }
 }
 
 pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
