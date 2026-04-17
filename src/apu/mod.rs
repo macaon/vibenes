@@ -243,15 +243,9 @@ impl Apu {
                 self.dmc_irq = false;
             }
             0x4017 => {
-                // After the Stage-2 bus reorder, `self.cycle` has already
-                // been incremented by this CPU cycle's APU tick (runs in
-                // `Bus::tick_pre_access` before the bus access). Roll back
-                // by one so the parity + base cycle match the pre-reorder
-                // semantic — `4017_timing.nes` was calibrated against it.
-                let write_cycle = self.cycle.wrapping_sub(1);
-                let parity_odd = (write_cycle & 1) == 1;
+                let parity_odd = (self.cycle & 1) == 1;
                 self.frame_counter
-                    .write_4017(data, write_cycle, parity_odd);
+                    .write_4017(data, self.cycle, parity_odd);
                 if (data & 0x40) != 0 {
                     self.frame_irq = false;
                 }
