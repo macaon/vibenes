@@ -103,6 +103,13 @@ impl AudioSink {
         }
         self.blip.end_frame(self.cycles);
         self.cycles = 0;
+        // Always drain BlipBuf to empty, even if the ring is full.
+        // Unread samples accumulate in `blip.avail`; across several
+        // full-ring flushes `avail` would eventually exceed the
+        // internal `samples` vector and `end_frame` would panic. We
+        // silently drop samples the consumer can't keep up with
+        // instead — back-pressure manifests as occasional clicks, not
+        // a dead audio thread.
         loop {
             let n = self.blip.read_samples(&mut self.scratch, false);
             if n == 0 {
@@ -110,13 +117,7 @@ impl AudioSink {
             }
             for &s in &self.scratch[..n] {
                 let f = s as f32 / 32_768.0;
-                if self.producer.try_push(f).is_err() {
-                    // Ring is full — consumer hasn't drained fast
-                    // enough. Drop the rest of this chunk; the next
-                    // flush will try again. Better than blocking the
-                    // emulator thread.
-                    return;
-                }
+                let _ = self.producer.try_push(f);
             }
         }
     }
