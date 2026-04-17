@@ -75,6 +75,20 @@ pub struct Ppu {
 
     nmi_previous: bool,
     pub nmi_edge: bool,
+    /// Becomes true at scanline 241 dot 1 when VBlank is set, and
+    /// stays true for the rest of that CPU cycle. The bus clears it
+    /// at the start of the next CPU cycle (`begin_cpu_cycle`). A
+    /// `$2002` read while this is set is "inside the race cycle" —
+    /// the read returns VBlank=0, clears the flag, and arms the NMI
+    /// suppression hint so the bus cancels the NMI that was latched
+    /// this cycle.
+    vbl_just_set: bool,
+    /// One-shot flag set by a `$2002` read inside the VBlank-start
+    /// race cycle. Consumed by the bus after the CPU access (see
+    /// `take_nmi_suppress_hint`) to clear `bus.nmi_pending`. Matches
+    /// the semantics of Mesen2's `_preventVblFlag` (NesPpu.cpp:585,
+    /// 1340) routed through our pre/post-access split.
+    nmi_suppress_hint: bool,
 
     oam: [u8; 256],
     palette: [u8; 32],
@@ -134,6 +148,8 @@ impl Ppu {
             data_buffer: 0,
             nmi_previous: false,
             nmi_edge: false,
+            vbl_just_set: false,
+            nmi_suppress_hint: false,
             oam: [0; 256],
             palette: [0; 32],
             vram: [0; 0x800],
@@ -227,6 +243,11 @@ impl Ppu {
         // VBlank / status flag edges.
         if self.scanline == VBLANK_SCANLINE && self.dot == 1 {
             self.status |= 0x80;
+            // Mark this CPU cycle as the VBlank-set race window. The
+            // flag persists across the remaining dots of this cycle
+            // and is cleared at the start of the next CPU cycle by
+            // `begin_cpu_cycle`, called from the bus.
+            self.vbl_just_set = true;
         }
         if is_pre && self.dot == 1 {
             // Clear VBlank, sprite-0 hit, sprite overflow.
@@ -234,41 +255,28 @@ impl Ppu {
         }
         self.update_nmi_edge();
 
-        // Pixel output runs on every visible dot so backdrop fills the
-        // framebuffer even when rendering is disabled. Only the BG
-        // fetch/shift/increment machinery is gated on rendering.
-        if visible && self.dot >= 1 && self.dot <= 256 {
-            self.render_pixel(rendering);
-        }
+        // Order per dot on real hardware (Mesen2 NesPpu.cpp:867–957):
+        //   1. LoadTileInfo (includes BG shifter reload at case 1).
+        //   2. DrawPixel.
+        //   3. ShiftTileRegisters.
+        // Reload-before-draw is critical: at dot 1 the newly-loaded
+        // tile must sit in bits 7–0 before the 8 subsequent shifts
+        // walk it into bits 15–8 by dot 9. With reload-after-draw the
+        // shifter accumulates only 7 shifts before dot 9 reads bit 15,
+        // producing the "1-pixel right shift" seen as a thin vertical
+        // line at tile boundaries.
 
         if rendering && (visible || is_pre) {
-            // BG shift runs on every rendering dot 1..=256 (AFTER the
-            // pixel is read out) and on the prefetch dots 322..=337.
-            // The shift-after-render order means pixel (x) uses the
-            // shifter state built up by the previous dot's shift — if
-            // we instead started at dot 2, dots 1 and 2 would render
-            // the same pixel and each tile's left column would double.
-            let shift_now = (self.dot >= 1 && self.dot <= 256)
-                || (self.dot >= 322 && self.dot <= 337);
-            if shift_now {
-                self.shift_bg();
-            }
-
-            // BG fetch dots: 1..=256 (for this scanline) and 321..=336
-            // (pre-fetch two tiles of next scanline). Fetch step chosen
-            // by (dot-1) % 8.
+            // --- (1) BG fetch / shifter reload / increments ---
             let fetch_region = (self.dot >= 1 && self.dot <= 256)
                 || (self.dot >= 321 && self.dot <= 336);
             if fetch_region {
                 match (self.dot - 1) % 8 {
                     0 => {
-                        // Reload shifters at every tile boundary. Dot 1
-                        // reload matches Mesen2 NesPpu.cpp:677–678:
-                        // `_lowBitShift |= _tile.LowByte`. The shifter's
-                        // low byte is 0 here (8 shifts since the last
-                        // reload have cleared it), so the reload is a
-                        // clean OR with the pat-lo/pat-hi fetched
-                        // during the previous tile's 8-cycle group.
+                        // Reload shifter's low byte with the pat data
+                        // fetched during the previous 8-cycle group.
+                        // After 8 prior shifts the low byte is 0, so
+                        // MASK+OR here is equivalent to Mesen2's `|=`.
                         self.reload_bg_shifters();
                         let addr = 0x2000 | (self.v & 0x0FFF);
                         self.bg_next_nt = self.ppu_bus_read(addr, mapper);
@@ -310,17 +318,15 @@ impl Ppu {
                 // OAM into secondary (up to 8 sprites, set overflow if
                 // more), then fetch each sprite's pattern bytes. Real
                 // hardware does eval across dots 65–256 and pattern
-                // fetches across 257–320; we batch both at dot 257.
-                // Behaviorally equivalent for commercial games that
-                // don't inject mid-eval OAM writes. Proper per-dot
-                // state machines land in follow-up PPU items.
+                // fetches across 257–320; we batch both at dot 257 for
+                // now. Proper per-dot state machines land in the next
+                // PPU items.
                 self.evaluate_sprites();
                 self.fetch_sprite_patterns(mapper);
             }
             // OAMADDR is held at 0 during dots 257–320 of rendering
             // scanlines. Games rely on this before $4014 DMA so OAM
-            // DMA lands at OAM[0]. Without this a badly-timed eval
-            // can corrupt OAM with the "2C02G glitch increment".
+            // DMA lands at OAM[0].
             if self.dot >= 257 && self.dot <= 320 {
                 self.oam_addr = 0;
             }
@@ -335,6 +341,23 @@ impl Ppu {
             if self.dot == 337 || self.dot == 339 {
                 let addr = 0x2000 | (self.v & 0x0FFF);
                 let _ = self.ppu_bus_read(addr, mapper);
+            }
+        }
+
+        // --- (2) Pixel output. Uses the shifter state AFTER the
+        // reload at match-arm 0 so the freshly-loaded tile's first
+        // pixel sits at bit 15 by dot 9 (after 8 shifts from dot 1).
+        if visible && self.dot >= 1 && self.dot <= 256 {
+            self.render_pixel(rendering);
+        }
+
+        // --- (3) Shift. Per-dot shift-by-1 during rendering dots
+        // 1..=256 and pre-fetch dots 322..=337.
+        if rendering && (visible || is_pre) {
+            let shift_now = (self.dot >= 1 && self.dot <= 256)
+                || (self.dot >= 322 && self.dot <= 337);
+            if shift_now {
+                self.shift_bg();
             }
         }
 
@@ -621,7 +644,16 @@ impl Ppu {
         let reg = addr & 0x0007;
         let value = match reg {
             0x02 => {
+                // Arm NMI suppression but don't mask the returned bit 7.
+                // sync_vbl polls bit 7 to sync to VBlank; hiding it would
+                // add one iteration of delay and shift downstream timing.
+                // The suppression hint cancels the NMI (if any) without
+                // disturbing sync loops.
+                let in_race = self.vbl_just_set;
                 let v = (self.status & 0xE0) | (self.open_bus & 0x1F);
+                if in_race {
+                    self.nmi_suppress_hint = true;
+                }
                 self.status &= !0x80;
                 self.w_latch = false;
                 self.update_nmi_edge();
@@ -758,6 +790,25 @@ impl Ppu {
         let edge = self.nmi_edge;
         self.nmi_edge = false;
         edge
+    }
+
+    /// Consume a one-shot NMI-suppress hint set by a `$2002` read
+    /// inside the VBlank-start race cycle. The bus calls this after
+    /// each CPU bus access and clears `bus.nmi_pending` when true,
+    /// cancelling the NMI that was latched during this cycle's
+    /// `tick_pre_access`.
+    pub fn take_nmi_suppress_hint(&mut self) -> bool {
+        let v = self.nmi_suppress_hint;
+        self.nmi_suppress_hint = false;
+        v
+    }
+
+    /// Clear the `vbl_just_set` race marker. The bus calls this at
+    /// the start of every CPU cycle (before ticking PPU dots) so the
+    /// marker only remains set during the cycle in which VBlank was
+    /// actually latched.
+    pub fn begin_cpu_cycle(&mut self) {
+        self.vbl_just_set = false;
     }
 
     pub fn oam_write(&mut self, data: u8) {

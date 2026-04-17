@@ -103,6 +103,14 @@ impl Bus {
             _ => self.open_bus,
         };
         self.open_bus = value;
+        // $2002 race: if the CPU read $2002 exactly during the VBlank-
+        // start dot window, the PPU arms a suppression hint. Clear the
+        // NMI that was latched in `tick_pre_access` before the CPU
+        // sees it — matches real hardware where reading $2002 at the
+        // race cycle cancels the frame's NMI.
+        if self.ppu.take_nmi_suppress_hint() {
+            self.nmi_pending = false;
+        }
         self.tick_post_access();
         value
     }
@@ -159,6 +167,12 @@ impl Bus {
     fn tick_pre_access(&mut self) {
         self.prev_irq_line = self.irq_line;
         self.prev_nmi_pending = self.nmi_pending;
+
+        // Let the PPU clear any per-cycle race markers (e.g.
+        // `vbl_just_set`) before we tick it for this CPU cycle. The
+        // markers re-arm if the corresponding dot is ticked in this
+        // cycle's PPU advance.
+        self.ppu.begin_cpu_cycle();
 
         let ppu_ticks = self.clock.advance_cpu_cycle();
         for _ in 0..ppu_ticks {
