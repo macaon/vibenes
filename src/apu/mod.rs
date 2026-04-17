@@ -267,32 +267,47 @@ impl Apu {
         }
     }
 
-    /// Sampled analog output in 0.0..=1.0 using the nonlinear APU mixer.
+    /// Sampled analog output in 0.0..≈0.98 using the 2A03 non-linear
+    /// mixer. Computed via Blargg's precomputed lookup tables (nesdev
+    /// "APU Mixer", "Lookup tables" form) — ~100× faster than the
+    /// per-sample division-based formula and tiny-fraction accurate
+    /// across the full input domain. Called from the bus every CPU
+    /// cycle (~1.79 MHz NTSC), so the speed matters.
     pub fn output_sample(&self) -> f32 {
-        let p1 = self.pulse1.output() as u32;
-        let p2 = self.pulse2.output() as u32;
-        let tr = self.triangle.output() as u32;
-        let ns = self.noise.output() as u32;
-        let dmc = self.dmc.output() as u32;
-        pulse_out(p1 + p2) + tnd_out(3 * tr + 2 * ns + dmc)
+        let p1 = self.pulse1.output() as usize;
+        let p2 = self.pulse2.output() as usize;
+        let tr = self.triangle.output() as usize;
+        let ns = self.noise.output() as usize;
+        let dmc = self.dmc.output() as usize;
+        PULSE_TABLE[p1 + p2] + TND_TABLE[3 * tr + 2 * ns + dmc]
     }
 }
 
-fn pulse_out(n: u32) -> f32 {
-    if n == 0 {
-        0.0
-    } else {
-        95.88 / (8128.0 / n as f32 + 100.0)
+/// `pulse_table[n] = 95.52 / (8128/n + 100)` for n in 1..=30, with
+/// index 0 = 0.0. Covers the full domain `pulse1 + pulse2` where each
+/// channel outputs 0..15.
+static PULSE_TABLE: [f32; 31] = {
+    let mut t = [0.0f32; 31];
+    let mut n = 1usize;
+    while n < 31 {
+        t[n] = 95.52 / (8128.0 / n as f32 + 100.0);
+        n += 1;
     }
-}
+    t
+};
 
-fn tnd_out(n: u32) -> f32 {
-    if n == 0 {
-        0.0
-    } else {
-        159.79 / (1.0 / (n as f32 / 100.0) + 100.0)
+/// `tnd_table[n] = 163.67 / (24329/n + 100)` for n in 1..=202, with
+/// index 0 = 0.0. Covers the full domain `3*triangle + 2*noise + dmc`
+/// where triangle and noise output 0..15 and dmc outputs 0..127.
+static TND_TABLE: [f32; 203] = {
+    let mut t = [0.0f32; 203];
+    let mut n = 1usize;
+    while n < 203 {
+        t[n] = 163.67 / (24329.0 / n as f32 + 100.0);
+        n += 1;
     }
-}
+    t
+};
 
 #[cfg(test)]
 mod tests {
