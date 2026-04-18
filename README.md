@@ -19,7 +19,7 @@ for hardware specifics and describe the model in my own words.
 | APU | 5 channels, frame counter, DMC DMA, staged length writes |
 | Host audio | cpal + blip_buf, band-limited resampling |
 | Windowed runtime | wgpu/wgsl renderer, NTSC/PAL-paced, keyboard input |
-| Mappers | NROM (0), MMC1/SxROM (1), UxROM (2), CNROM (3), AxROM (7) |
+| Mappers | NROM (0), MMC1/SxROM (1), UxROM (2), CNROM (3), MMC3/TxROM (4), AxROM (7) |
 
 ### Tested green
 
@@ -39,6 +39,11 @@ Every ROM in these suites passes:
   `dmc_dma_during_read4` integration test against hardware-behavior
   invariants (see "Not yet" below for the remaining CRC-strict
   alignment issue)
+- `mmc3_test/{1-clocking, 2-details, 3-A12_clocking, 5-MMC3}` (4/6)
+  and `mmc3_test_2/{1-clocking, 2-details, 3-A12_clocking, 5-MMC3}`
+  (4/6) — banking + A12-filtered IRQ counter + Rev B firing. See
+  "Not yet" for the remaining `4-scanline_timing` and Rev A /
+  `6-MMC3_alt` / `6-MMC6` details.
 
 ### Not yet
 
@@ -56,6 +61,17 @@ Every ROM in these suites passes:
   Requires rewriting OAM DMA as an explicit get/put-cycle loop per
   Mesen2 `NesCpu.cpp:399-447`. Write-up in
   `notes/phase9/follow_ups.md §F2`.
+- **MMC3 scanline-timing off-by-one** — `mmc3_test/4-scanline_timing`
+  (both suites) fails test #3 by ≥1 PPU cycle. The A12 rise that
+  clocks the counter lands later than expected in the test's
+  VBL-anchored countdown. Suspect: `on_ppu_addr` timestamp boundary
+  vs Mesen2's CPU-cycle-granular filter. Write-up in
+  `notes/phase10/follow_ups.md §F1`.
+- **MMC3 Rev A / MMC6 submapper** — `6-MMC3_alt` and `6-MMC6` need
+  Rev A firing semantics (no refire on reload-to-zero). The logic
+  is implemented (`alt_irq_behavior` flag, unit-tested) but has no
+  runtime activation path; iNES 1.0 can't carry submapper info.
+  Write-up in `notes/phase10/follow_ups.md §F2`.
 - **PPU edge-timing sub-tests** — `ppu_vbl_nmi` 6/10, plus
   `oam_stress` and `ppu_open_bus`. These probe per-dot-precise
   edges of VBL / odd-frame skip / NMI on/off.
