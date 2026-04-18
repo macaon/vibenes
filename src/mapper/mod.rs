@@ -51,6 +51,39 @@ pub enum PpuFetchKind {
     SpritePattern,
 }
 
+/// Source for a single nametable-slot read, returned by
+/// [`Mapper::ppu_nametable_read`]. The PPU uses this to decide which
+/// byte the fetch yields. Lets MMC5 route each of its four NT slots
+/// independently to CIRAM A, CIRAM B, ExRAM, or fill-mode — a
+/// freedom the flat `Mirroring` enum can't express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NametableSource {
+    /// No override — PPU falls through to CIRAM via `mirroring()`.
+    /// The default for every mapper except MMC5 + (future) FDS.
+    Default,
+    /// Force the slot to CIRAM bank A (the PPU's first 1 KB of VRAM).
+    CiramA,
+    /// Force the slot to CIRAM bank B (the PPU's second 1 KB).
+    CiramB,
+    /// Mapper supplies the byte directly — ExRAM-as-NT or fill mode.
+    Byte(u8),
+}
+
+/// Target for a single nametable-slot write. Symmetric with
+/// [`NametableSource`] for reads. Returned by
+/// [`Mapper::ppu_nametable_write`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NametableWriteTarget {
+    /// No override — PPU writes to CIRAM via `mirroring()`.
+    Default,
+    /// Write to CIRAM bank A.
+    CiramA,
+    /// Write to CIRAM bank B.
+    CiramB,
+    /// Mapper consumed the write (ExRAM-as-NT, or dropped for fill).
+    Consumed,
+}
+
 pub trait Mapper: Send {
     fn cpu_read(&mut self, addr: u16) -> u8;
     fn cpu_write(&mut self, addr: u16, data: u8);
@@ -70,8 +103,32 @@ pub trait Mapper: Send {
         None
     }
     /// Called once per CPU cycle by the bus. Lets mappers with timing-sensitive
-    /// behavior (MMC1 consecutive-write filter) advance.
+    /// behavior (MMC1 consecutive-write filter, MMC5 ppu-idle counter) advance.
     fn on_cpu_cycle(&mut self) {}
+
+    /// Called by the PPU when it's about to read a nametable byte at
+    /// `$2000-$2FFF`. `slot` is the 1 KB slot index (0..=3). See
+    /// [`NametableSource`] for the reply taxonomy. MMC5 uses this
+    /// for `$5105` NT slot mapping, fill-mode, and ExRAM-as-NT.
+    /// Default `NametableSource::Default` defers to the PPU's
+    /// mirroring-based CIRAM fetch (the pre-MMC5 path).
+    fn ppu_nametable_read(&mut self, _slot: u8, _offset: u16) -> NametableSource {
+        NametableSource::Default
+    }
+
+    /// Called by the PPU on a nametable write. See
+    /// [`NametableWriteTarget`] for the reply taxonomy. MMC5 routes
+    /// writes based on `$5105`: CIRAM A/B slots land in the relevant
+    /// CIRAM bank, ExRAM-mapped slots store in ExRAM, fill-mode
+    /// slots drop the write (read-only on real hardware).
+    fn ppu_nametable_write(
+        &mut self,
+        _slot: u8,
+        _offset: u16,
+        _data: u8,
+    ) -> NametableWriteTarget {
+        NametableWriteTarget::Default
+    }
     /// Called by the PPU every time it drives its address bus.
     /// `ppu_cycle` is a monotonic PPU-dot timestamp the mapper can
     /// use to filter glitches (e.g. MMC3's ≥10-PPU-cycle A12-low
