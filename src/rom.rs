@@ -146,11 +146,15 @@ impl Cartridge {
         }
         let prg_rom = bytes[offset..prg_end].to_vec();
 
-        let chr_rom: Vec<u8>;
-        let chr_ram;
-        if chr_size == 0 {
-            chr_rom = vec![0; CHR_BANK_SIZE];
-            chr_ram = true;
+        // On-disk CHR bytes are whatever the file carries for CHR-ROM.
+        // CHR-RAM carts (header byte 5 == 0) have no on-disk CHR; the
+        // 8 KB RAM buffer we synthesize below is runtime-only and must
+        // NOT feed into the CRC (Mesen2 hashes file bytes after the
+        // header / trainer — iNesLoader.cpp:62 — which excludes the
+        // synthetic RAM). Without this distinction, CHR-RAM carts
+        // produce a different CRC from Mesen's DB key and never match.
+        let chr_on_disk: &[u8] = if chr_size == 0 {
+            &[]
         } else {
             let chr_end = prg_end
                 .checked_add(chr_size)
@@ -162,27 +166,32 @@ impl Cartridge {
                     prg_end
                 );
             }
-            chr_rom = bytes[prg_end..chr_end].to_vec();
-            chr_ram = false;
-        }
+            &bytes[prg_end..chr_end]
+        };
+
+        // PRG+CHR CRC32 over the on-disk ROM bodies (matches Mesen2's
+        // `PrgChrCrc32` — iNesLoader.cpp:62-63). Trainer bytes, if
+        // present, are NOT included — they sit between the header and
+        // the PRG and neither emulator hashes them. The transient
+        // `concat` allocates once per load (~300 KB typical); not
+        // worth inlining a streaming variant.
+        let crc = {
+            let mut buf = Vec::with_capacity(prg_rom.len() + chr_on_disk.len());
+            buf.extend_from_slice(&prg_rom);
+            buf.extend_from_slice(chr_on_disk);
+            crc32(&buf)
+        };
+
+        let (chr_rom, chr_ram) = if chr_size == 0 {
+            (vec![0u8; CHR_BANK_SIZE], true)
+        } else {
+            (chr_on_disk.to_vec(), false)
+        };
 
         let prg_ram_size = if prg_ram_size == 0 && !is_nes2 {
             8 * 1024
         } else {
             prg_ram_size
-        };
-
-        // PRG+CHR CRC32 over the ROM bodies (matches Mesen2's
-        // `PrgChrCrc32` — iNesLoader.cpp:62-63). Computed over the
-        // concatenation; trainer bytes, if present, are NOT included —
-        // they sit between the header and the PRG and neither emulator
-        // hashes them. The transient `concat` allocates once per load
-        // (~300 KB typical); not worth inlining a streaming variant.
-        let crc = {
-            let mut buf = Vec::with_capacity(prg_rom.len() + chr_rom.len());
-            buf.extend_from_slice(&prg_rom);
-            buf.extend_from_slice(&chr_rom);
-            crc32(&buf)
         };
 
         let mut cart = Self {
