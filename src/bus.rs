@@ -134,13 +134,37 @@ impl Bus {
             0x4014 => {
                 // STA $4014's final write cycle.
                 self.tick_post_access();
+                // Snapshot the CPU's penultimate-cycle interrupt samples
+                // so they survive OAM DMA's 513/514 stall cycles. Each
+                // DMA cycle's `tick_pre_access` overwrites
+                // `prev_irq_line`/`prev_nmi_pending`; without a
+                // save/restore, STA's end-of-step poll would see
+                // end-of-DMA state and mis-attribute any IRQ/NMI that
+                // asserted during the DMA window to STA itself. The
+                // next instruction's cycle-1 tick re-captures
+                // `bus.irq_line` (which stays live across DMA) so a
+                // DMA-window assertion still fires on the cycle after
+                // DMA releases — matching puNES's explicit `irq.delay`
+                // guard and Mesen2's lazy-DMA-inside-MemoryRead model.
+                // Required by `cpu_interrupts_v2/4-irq_and_dma.nes`.
+                let saved_prev_irq = self.prev_irq_line;
+                let saved_prev_nmi = self.prev_nmi_pending;
                 // Nesdev "OAM DMA": 513 CPU cycles total, plus one more
-                // if the DMA begins on an odd CPU cycle. We capture the
-                // parity at the moment the DMA starts (immediately after
-                // STA's write) and pass it on so `run_oam_dma` can add
-                // the alignment idle when needed.
-                let extra_idle = (self.clock.cpu_cycles() & 1) != 0;
+                // (514) if the DMA's halt cycle lands on a "put" (odd)
+                // cycle and needs to be aligned to the following "get".
+                // Our `cpu_cycles` counter is sampled AFTER STA's
+                // `tick_post_access`, so it reflects the cycle just
+                // completed; the halt cycle that follows runs at
+                // `cpu_cycles + 1`. The extra alignment cycle is
+                // therefore needed when `cpu_cycles` itself is EVEN
+                // (halt lands on odd). Confirmed against
+                // `cpu_interrupts_v2/4-irq_and_dma`: with the inverted
+                // condition, the column 8→9 boundary lands on dly=527
+                // as blargg's reference table requires.
+                let extra_idle = (self.clock.cpu_cycles() & 1) == 0;
                 self.run_oam_dma(data, extra_idle);
+                self.prev_irq_line = saved_prev_irq;
+                self.prev_nmi_pending = saved_prev_nmi;
                 return;
             }
             0x4016 => {
@@ -297,37 +321,43 @@ mod tests {
         Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc)
     }
 
+    // The OAM DMA cycle-count convention is tuned by
+    // `cpu_interrupts_v2/4-irq_and_dma.nes`: we add the extra alignment
+    // idle when `cpu_cycles` at end-of-STA is EVEN (i.e. the halt cycle
+    // that follows lands on odd and needs to be aligned). Nesdev phrases
+    // this as "total DMA = 513 cycles, +1 if starting on a put cycle";
+    // the unit tests below pin the two branches so any future
+    // `extra_idle` tweak must deliberately update this contract.
+
     #[test]
-    fn oam_dma_even_parity_is_513_cycles() {
+    fn oam_dma_halt_on_get_runs_513_beyond_sta() {
         let mut bus = build_bus();
-        // Tick once so cpu_cycles becomes 1 (odd). STA's write cycle
-        // will then put cpu_cycles at 2 (even) — the "no extra idle"
-        // case, total DMA = 513.
-        bus.tick_cycle();
+        // cpu_cycles starts at 0. STA's tick_pre_access brings it to 1
+        // (odd) for the match-arm parity check → extra_idle=false →
+        // DMA = 513 cycles beyond STA's own cycle. Total ticks in
+        // `write()` = 1 + 513 = 514.
         let before = bus.clock.cpu_cycles();
         bus.write(0x4014, 0x00);
         let dma_cycles = bus.clock.cpu_cycles() - before;
-        // 1 (STA write) + 1 (idle) + 512 (256 read/write pairs) = 514.
-        // The spec's "513" is measured from DMA start, not counting the
-        // STA write itself, so we expect 514 ticks in our `write()`.
         assert_eq!(
             dma_cycles, 514,
-            "even-parity entry: STA + 1 idle + 512 pairs = 514 ticks"
+            "STA + 1 halt + 512 pairs = 514 ticks (513-cycle DMA branch)"
         );
     }
 
     #[test]
-    fn oam_dma_odd_parity_is_514_cycles() {
+    fn oam_dma_halt_on_put_runs_514_beyond_sta() {
         let mut bus = build_bus();
-        // cpu_cycles starts at 0. STA's write cycle ticks once → 1 (odd)
-        // → needs extra idle.
+        // Tick once so cpu_cycles=1 before STA. STA's tick_pre_access
+        // brings it to 2 (even) → extra_idle=true → DMA = 514 cycles
+        // beyond STA. Total ticks in `write()` = 1 + 514 = 515.
+        bus.tick_cycle();
         let before = bus.clock.cpu_cycles();
         bus.write(0x4014, 0x00);
         let dma_cycles = bus.clock.cpu_cycles() - before;
-        // 1 (STA write) + 2 idles + 512 pairs = 515.
         assert_eq!(
             dma_cycles, 515,
-            "odd-parity entry: STA + 2 idles + 512 pairs = 515 ticks"
+            "STA + 1 halt + 1 align + 512 pairs = 515 ticks (514-cycle DMA branch)"
         );
     }
 }
