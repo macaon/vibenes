@@ -5,6 +5,8 @@ pub mod blargg_2005_scan;
 pub mod bus;
 pub mod clock;
 pub mod cpu;
+pub mod crc32;
+pub mod gamedb;
 pub mod gfx;
 pub mod mapper;
 pub mod nes;

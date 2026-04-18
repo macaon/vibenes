@@ -2,6 +2,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::fs;
 use std::path::Path;
 
+use crate::crc32::crc32;
+use crate::gamedb;
+
 const INES_MAGIC: [u8; 4] = *b"NES\x1A";
 const INES_HEADER_SIZE: usize = 16;
 const PRG_BANK_SIZE: usize = 16 * 1024;
@@ -35,6 +38,14 @@ pub struct Cartridge {
     pub prg_ram_size: usize,
     pub tv_system: TvSystem,
     pub is_nes2: bool,
+    /// CRC32 of the PRG-ROM || CHR-ROM data (matches Mesen2's
+    /// `PrgChrCrc32`). Used as the key into the game database; also
+    /// handy to display in debug UI.
+    pub prg_chr_crc32: u32,
+    /// True when any cartridge field was overridden from the game
+    /// database (Mesen2's `MesenNesDB.txt`). Useful for "where did
+    /// this region / mapper variant come from" debugging.
+    pub db_matched: bool,
 }
 
 impl Cartridge {
@@ -161,7 +172,20 @@ impl Cartridge {
             prg_ram_size
         };
 
-        Ok(Self {
+        // PRG+CHR CRC32 over the ROM bodies (matches Mesen2's
+        // `PrgChrCrc32` — iNesLoader.cpp:62-63). Computed over the
+        // concatenation; trainer bytes, if present, are NOT included —
+        // they sit between the header and the PRG and neither emulator
+        // hashes them. The transient `concat` allocates once per load
+        // (~300 KB typical); not worth inlining a streaming variant.
+        let crc = {
+            let mut buf = Vec::with_capacity(prg_rom.len() + chr_rom.len());
+            buf.extend_from_slice(&prg_rom);
+            buf.extend_from_slice(&chr_rom);
+            crc32(&buf)
+        };
+
+        let mut cart = Self {
             prg_rom,
             chr_rom,
             chr_ram,
@@ -172,12 +196,34 @@ impl Cartridge {
             prg_ram_size,
             tv_system,
             is_nes2,
-        })
+            prg_chr_crc32: crc,
+            db_matched: false,
+        };
+
+        // Supplement the header from the game database. iNES 1.0 Flags 9
+        // bit 0 is almost universally 0 regardless of actual region
+        // (nesdev wiki: "virtually no ROM images in circulation make
+        // use of it"), so for iNES 1.0 dumps the DB is the only
+        // reliable source of region info. NES 2.0 byte 12 is trusted
+        // and only overridden by the DB when the two disagree.
+        if let Some(entry) = gamedb::lookup(crc) {
+            cart.db_matched = true;
+            if entry.is_pal_like() {
+                cart.tv_system = TvSystem::Pal;
+            } else if matches!(
+                entry.system,
+                gamedb::System::NesNtsc | gamedb::System::Famicom | gamedb::System::Playchoice
+            ) {
+                cart.tv_system = TvSystem::Ntsc;
+            }
+        }
+
+        Ok(cart)
     }
 
     pub fn describe(&self) -> String {
-        format!(
-            "iNES{} mapper={} submapper={} prg={}KiB chr={}KiB({}) mirror={:?} battery={} prg_ram={}KiB tv={:?}",
+        let mut s = format!(
+            "iNES{} mapper={} submapper={} prg={}KiB chr={}KiB({}) mirror={:?} battery={} prg_ram={}KiB tv={:?} crc={:08X}",
             if self.is_nes2 { "2.0" } else { "1.0" },
             self.mapper_id,
             self.submapper,
@@ -188,6 +234,28 @@ impl Cartridge {
             self.battery_backed,
             self.prg_ram_size / 1024,
             self.tv_system,
-        )
+            self.prg_chr_crc32,
+        );
+        if let Some(entry) = gamedb::lookup(self.prg_chr_crc32) {
+            // Append the DB-matched chip/board info so the initial load
+            // line also tells you WHY the region or mapper variant was
+            // picked. Empty fields stay blank (the DB leaves most board
+            // info empty for obscure homebrew / unlicensed carts).
+            s.push_str(&format!(
+                " db[{:?}{}{}]",
+                entry.system,
+                if !entry.board.is_empty() {
+                    format!(" board={}", entry.board)
+                } else {
+                    String::new()
+                },
+                if !entry.chip.is_empty() {
+                    format!(" chip={}", entry.chip)
+                } else {
+                    String::new()
+                },
+            ));
+        }
+        s
     }
 }

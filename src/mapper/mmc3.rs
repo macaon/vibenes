@@ -426,6 +426,8 @@ mod tests {
             prg_ram_size: PRG_RAM_SIZE,
             tv_system: TvSystem::Ntsc,
             is_nes2: false,
+            prg_chr_crc32: 0,
+            db_matched: false,
         }
     }
 

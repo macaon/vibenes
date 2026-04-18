@@ -426,6 +426,8 @@ mod tests {
             prg_ram_size: 0x2000,
             tv_system: TvSystem::Ntsc,
             is_nes2: false,
+            prg_chr_crc32: 0,
+            db_matched: false,
         };
         Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc)
     }
