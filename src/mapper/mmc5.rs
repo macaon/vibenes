@@ -193,6 +193,11 @@ pub struct Mmc5 {
     /// cycle. When it hits 0, rendering is presumed off and
     /// `in_frame` clears.
     ppu_idle_counter: u8,
+
+    /// $5205 write value. Multiplicand.
+    mult_a: u8,
+    /// $5206 write value. Multiplier.
+    mult_b: u8,
 }
 
 impl Mmc5 {
@@ -266,6 +271,8 @@ impl Mmc5 {
             last_ppu_addr: 0,
             nt_read_counter: 0,
             ppu_idle_counter: 0,
+            mult_a: 0,
+            mult_b: 0,
         };
         m.update_prg_banks();
         m
@@ -566,23 +573,24 @@ impl Mapper for Mmc5 {
             0x5203 => self.irq_target = data,
             // $5204: bit 7 = IRQ enable. Other bits ignored on write.
             0x5204 => self.irq_enable = (data & 0x80) != 0,
-            // $5C00-$5FFF: ExRAM CPU write window. Modes 0/1 disable
-            // writes outside rendering (real hardware clocks zero
-            // through the write latch when the PPU isn't active).
-            // Modes 2/3 are always writable / read-only-writable
-            // respectively — sub-E gates the read path; for now we
-            // accept the write for modes 2/3 and respect 0/1's
-            // rendering gate.
+            // $5205/$5206: hardware 8×8 unsigned multiplier operands.
+            // The product is computed lazily on read.
+            0x5205 => self.mult_a = data,
+            0x5206 => self.mult_b = data,
+            // $5C00-$5FFF: ExRAM CPU write window.
+            //   Mode 0/1 — Only writable during rendering. Writes
+            //              outside rendering clock a zero through
+            //              (matches Mesen2 `WriteRam`).
+            //   Mode 2  — Plain R/W CPU RAM.
+            //   Mode 3  — Read-only from CPU; writes are dropped.
             0x5C00..=0x5FFF => {
                 let idx = (addr - 0x5C00) as usize;
-                if self.exram_mode <= 1 {
-                    // Modes 0/1: only writable while rendering. Store
-                    // zero when outside the render window instead of
-                    // dropping the write entirely (matches Mesen2
-                    // `WriteRam`).
-                    self.exram[idx] = if self.in_frame { data } else { 0 };
-                } else {
-                    self.exram[idx] = data;
+                match self.exram_mode {
+                    0 | 1 => {
+                        self.exram[idx] = if self.in_frame { data } else { 0 };
+                    }
+                    2 => self.exram[idx] = data,
+                    _ => {} // mode 3 — read-only, drop write
                 }
             }
             // $5128-$512F covers sprite regs + upper-reg stub.
@@ -631,7 +639,15 @@ impl Mapper for Mmc5 {
                     None
                 }
             }
-            // Sub-D will wire $5205/$5206 multiply read-back.
+            // $5205/$5206: hardware multiplier product. The 16-bit
+            // unsigned product of `mult_a × mult_b` is available with
+            // the low byte at $5205 and the high byte at $5206.
+            // Reading does not clear; subsequent reads yield the same
+            // bytes until either operand is rewritten.
+            0x5205 => Some((self.mult_a as u16).wrapping_mul(self.mult_b as u16) as u8),
+            0x5206 => Some(
+                ((self.mult_a as u16).wrapping_mul(self.mult_b as u16) >> 8) as u8,
+            ),
             _ => None,
         }
     }
@@ -731,7 +747,18 @@ impl Mapper for Mmc5 {
         match nt_id {
             0 => NametableSource::CiramA,
             1 => NametableSource::CiramB,
-            2 => NametableSource::Byte(self.exram[offset as usize & 0x03FF]),
+            2 => {
+                // ExRAM slot. Modes 0/1 use ExRAM as an actual NT
+                // (byte-per-cell). Modes 2/3 repurpose ExRAM as CPU
+                // RAM, and the PPU sees an "empty" (zeroed) NT on
+                // these slots instead — matches Mesen2's
+                // `_emptyNametable` mapping in `SetNametableMapping`.
+                if self.exram_mode <= 1 {
+                    NametableSource::Byte(self.exram[offset as usize & 0x03FF])
+                } else {
+                    NametableSource::Byte(0)
+                }
+            }
             _ => {
                 // Fill mode: tile byte from $5106 at offsets < $3C0;
                 // attribute byte from $5107's 2 bits replicated
@@ -753,15 +780,15 @@ impl Mapper for Mmc5 {
             0 => NametableWriteTarget::CiramA,
             1 => NametableWriteTarget::CiramB,
             2 => {
-                // ExRAM-as-NT. Modes 0/1 "clock through a zero" when
-                // the PPU isn't actively rendering — same quirk as
-                // the CPU `$5C00-$5FFF` write path.
-                let idx = offset as usize & 0x03FF;
-                self.exram[idx] = if self.exram_mode <= 1 && !self.in_frame {
-                    0
-                } else {
-                    data
-                };
+                // ExRAM-as-NT in modes 0/1 only. Writes outside
+                // rendering clock a zero through (same quirk as the
+                // CPU $5C00-$5FFF path). Modes 2/3 have ExRAM
+                // repurposed as CPU RAM — PPU-side NT writes do not
+                // land in the buffer.
+                if self.exram_mode <= 1 {
+                    let idx = offset as usize & 0x03FF;
+                    self.exram[idx] = if self.in_frame { data } else { 0 };
+                }
                 NametableWriteTarget::Consumed
             }
             _ => NametableWriteTarget::Consumed,
@@ -1118,16 +1145,54 @@ mod tests {
         assert_eq!(chr_read(&mut m, 0x0000, PpuFetchKind::Idle), 10);
     }
 
+    // ---- Sub-D: hardware multiplier ----
+
     #[test]
-    fn multiply_and_exram_reads_remain_stubbed_until_later_subphases() {
-        // Sub-D wires $5205/$5206 (multiply). Sub-E wires the ExRAM
-        // window's read path for modes 0/1. Sub-C already returns the
-        // ExRAM byte for modes 2/3 — checked in a dedicated test
-        // below. Here we just confirm the stubbed arms still return
-        // None so the bus falls to open bus.
+    fn hardware_multiplier_returns_full_16_bit_product() {
         let mut m = Mmc5::new(tagged_cart());
-        assert!(m.cpu_read_ex(0x5205).is_none());
-        assert!(m.cpu_read_ex(0x5206).is_none());
+        m.cpu_write(0x5205, 0xFF);
+        m.cpu_write(0x5206, 0xFF);
+        // 0xFF * 0xFF = 0xFE01. Low = 0x01, high = 0xFE.
+        assert_eq!(m.cpu_read_ex(0x5205), Some(0x01));
+        assert_eq!(m.cpu_read_ex(0x5206), Some(0xFE));
+    }
+
+    #[test]
+    fn multiplier_small_values_produce_expected_bytes() {
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5205, 7);
+        m.cpu_write(0x5206, 5);
+        // 7 × 5 = 35 = 0x0023.
+        assert_eq!(m.cpu_read_ex(0x5205), Some(0x23));
+        assert_eq!(m.cpu_read_ex(0x5206), Some(0x00));
+    }
+
+    #[test]
+    fn multiplier_reads_are_stable_across_repeats() {
+        // Reading either byte has no side effect — both bytes should
+        // keep returning the same product until an operand is rewritten.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5205, 0x10);
+        m.cpu_write(0x5206, 0x20);
+        // 0x10 * 0x20 = 0x0200
+        assert_eq!(m.cpu_read_ex(0x5205), Some(0x00));
+        assert_eq!(m.cpu_read_ex(0x5206), Some(0x02));
+        assert_eq!(m.cpu_read_ex(0x5205), Some(0x00));
+        assert_eq!(m.cpu_read_ex(0x5206), Some(0x02));
+    }
+
+    #[test]
+    fn multiplier_zero_operand_returns_zero() {
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5205, 0x00);
+        m.cpu_write(0x5206, 0xAB);
+        assert_eq!(m.cpu_read_ex(0x5205), Some(0x00));
+        assert_eq!(m.cpu_read_ex(0x5206), Some(0x00));
+    }
+
+    #[test]
+    fn exram_mode_0_reads_still_return_none_for_open_bus() {
+        let mut m = Mmc5::new(tagged_cart());
         // ExRAM mode 0 (default) -> reads return None (open bus).
         assert!(m.cpu_read_ex(0x5C00).is_none());
     }
@@ -1259,12 +1324,14 @@ mod tests {
         // $5105 = 0b11_10_01_00:
         //   slot 0 -> 0 (CIRAM A)
         //   slot 1 -> 1 (CIRAM B)
-        //   slot 2 -> 2 (ExRAM)
+        //   slot 2 -> 2 (ExRAM-as-NT — requires mode 0/1)
         //   slot 3 -> 3 (Fill)
         m.cpu_write(0x5105, 0b11_10_01_00);
-        // Populate ExRAM and fill regs with distinctive bytes.
-        m.cpu_write(0x5104, 0x02); // ExRAM mode 2 (CPU RAM -> writes land)
-        m.cpu_write(0x5C00, 0xA5); // ExRAM[0] = 0xA5
+        // ExRAM mode 0 — buffer serves as an extra nametable. The
+        // NT write path lands bytes while `in_frame` is true; use a
+        // direct buffer poke via the bypass below.
+        m.cpu_write(0x5104, 0x00);
+        m.exram[0] = 0xA5;
         m.cpu_write(0x5106, 0x7F); // fill tile
         m.cpu_write(0x5107, 0x03); // fill attr (2 bits replicated)
 
@@ -1302,5 +1369,72 @@ mod tests {
         m.cpu_write(0x5104, 0x02);
         m.cpu_write(0x5C00, 0xCC);
         assert_eq!(m.exram[0], 0xCC);
+    }
+
+    // ---- Sub-E: ExRAM mode gating ----
+
+    #[test]
+    fn exram_mode_3_is_read_only_from_cpu() {
+        let mut m = Mmc5::new(tagged_cart());
+        // Prime the buffer in mode 2 (writable).
+        m.cpu_write(0x5104, 0x02);
+        m.cpu_write(0x5C00, 0xDE);
+        assert_eq!(m.cpu_read_ex(0x5C00), Some(0xDE));
+
+        // Switch to mode 3 (read-only) and try to overwrite.
+        m.cpu_write(0x5104, 0x03);
+        m.cpu_write(0x5C00, 0xAD);
+        assert_eq!(
+            m.cpu_read_ex(0x5C00),
+            Some(0xDE),
+            "mode 3 must drop CPU writes",
+        );
+    }
+
+    #[test]
+    fn exram_mode_2_reads_round_trip() {
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5104, 0x02);
+        m.cpu_write(0x5C55, 0x42);
+        assert_eq!(m.cpu_read_ex(0x5C55), Some(0x42));
+    }
+
+    #[test]
+    fn nt_slot_to_exram_returns_zero_when_mode_is_cpu_ram() {
+        // In modes 2/3 the NT-mapped ExRAM slot reads as empty (zero)
+        // — real hardware routes the PPU fetch to an empty page
+        // rather than the ExRAM buffer so CPU-side data can't leak
+        // into the rendered scene.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5105, 0b00_00_00_10); // slot 0 -> ExRAM
+        m.cpu_write(0x5104, 0x02); // mode 2: RAM
+        m.cpu_write(0x5C00, 0xFF); // poke a value in
+        assert_eq!(m.ppu_nametable_read(0, 0), NametableSource::Byte(0));
+
+        // Swap to mode 0 — now NT slot reads reflect the buffer.
+        m.cpu_write(0x5104, 0x00);
+        assert_eq!(m.ppu_nametable_read(0, 0), NametableSource::Byte(0xFF));
+    }
+
+    #[test]
+    fn nt_slot_writes_to_exram_only_land_in_modes_0_and_1() {
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5105, 0b00_00_00_10); // slot 0 -> ExRAM
+
+        // Mode 2 (CPU RAM) — PPU-side writes via slot must NOT
+        // corrupt the CPU's view of ExRAM.
+        m.cpu_write(0x5104, 0x02);
+        m.cpu_write(0x5C00, 0x11);
+        assert_eq!(
+            m.ppu_nametable_write(0, 0, 0x22),
+            NametableWriteTarget::Consumed,
+        );
+        assert_eq!(m.cpu_read_ex(0x5C00), Some(0x11));
+
+        // Mode 0 with in_frame=true — PPU-side writes land.
+        m.cpu_write(0x5104, 0x00);
+        m.in_frame = true;
+        m.ppu_nametable_write(0, 0, 0x33);
+        assert_eq!(m.exram[0], 0x33);
     }
 }
