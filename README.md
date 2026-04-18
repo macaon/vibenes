@@ -27,13 +27,18 @@ opcodes and mapper quirks) but not for source.
   of dots (3 on NTSC, 3 or 4 per cycle on PAL's 1:3.2 ratio) and ticks
   the APU. No batching. OAM DMA charges 513 or 514 cycles based on
   the CPU-cycle parity at DMA start.
-- **6502 CPU core** — all 151 official opcodes plus the stable
-  unofficial set (LAX, SAX, SLO, RLA, SRE, RRA, DCP, ISB, ALR, ANC,
-  ARR, AXS, LXA, SHX, SHY, LAS, TAS, AHX). Dummy reads/writes are
-  emitted so the bus charges the right cycle count. JAM opcodes halt
-  cleanly. Interrupts (NMI/IRQ/BRK/Reset) and the JMP indirect wrap
-  bug implemented. Reset is the full 7-cycle sequence (5 dummy bus
-  cycles + 2 vector reads) so APU/PPU see the correct cycle counts.
+- **6502 CPU core** — every opcode decoded (all 151 official plus
+  the full stable + unstable unofficial set: LAX, SAX, SLO, RLA,
+  SRE, RRA, DCP, ISB, ALR, ANC, ARR, AXS, LXA, ANE, SHX, SHY, LAS,
+  TAS, AHX). 12 JAM/KIL/STP opcodes halt cleanly; the match is
+  exhaustive so a missing future opcode would be a compile-time
+  error rather than a silent halt. Dummy reads/writes are emitted
+  so the bus charges the right cycle count. Interrupts
+  (NMI/IRQ/BRK/Reset) and the JMP indirect wrap bug implemented.
+  Reset is the full 7-cycle sequence (5 dummy bus cycles + 2 vector
+  reads) so APU/PPU see the correct cycle counts; SP starts at
+  $00 at power so the first reset's 3-cycle decrement wraps it to
+  $FD (matches `cpu_reset/registers`).
   **Penultimate-cycle IRQ/NMI polling** with CLI/SEI/PLP delayed-I
   and RTI immediate-I semantics. **BRK / IRQ → NMI vector hijack**
   when NMI is asserted during the service sequence; late NMIs are
@@ -104,8 +109,10 @@ opcodes and mapper quirks) but not for source.
 - **Headless blargg test runners** — `test_runner` (standard
   $6000/DE-B0-61 protocol, `$81` reset request supported) and
   `blargg_2005_report` (pre-$6000 suite: watches for the CPU trap
-  in the `forever:` loop, scans nametable 0 for the `$hh` result
-  emitted by `debug_byte`).
+  in the `forever:` loop, scans nametable 0. Recognizes the
+  `$hh` format used by the 2005-era devcart loader, the newer
+  ca65 framework's `Passed` / `Failed` / `Error N` keywords, and
+  the `All tests complete` completion sentinel).
 
 ### CPU test results
 
@@ -114,9 +121,15 @@ opcodes and mapper quirks) but not for source.
 | `instr_test-v5/all_instrs.nes` | All 16 tests passed |
 | `instr_test-v5/rom_singles/` (16 files) | 16/16 PASS |
 | `instr_test-v5/official_only.nes` | 16/16 PASS |
+| `instr_test-v3/official_only.nes` | PASS |
 | `nes_instr_test/rom_singles/` (11 files) | 11/11 PASS |
+| `instr_timing/{1-instr_timing, 2-branch_timing}` | 2/2 PASS |
+| `cpu_dummy_reads.nes` | PASS (via `blargg_2005_report`) |
 | `cpu_dummy_writes_oam.nes` | PASS |
 | `cpu_dummy_writes_ppumem.nes` | PASS |
+| `cpu_exec_space/{apu, ppuio}` | 2/2 PASS |
+| `cpu_reset/{ram_after_reset, registers}` | 2/2 PASS |
+| `blargg_nes_cpu_test5/{official, cpu}` | 2/2 PASS (via `blargg_2005_report`) |
 | `instr_misc.nes` | 4/4 PASS (`04-dummy_reads_apu` now covered) |
 
 ### APU test results
