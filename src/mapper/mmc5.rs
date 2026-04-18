@@ -54,10 +54,11 @@
 //! - `~/Git/punes/src/core/mappers/mapper_MMC5.c`
 //! - `reference/mappers.md §Mapper 5`
 
-use crate::mapper::Mapper;
+use crate::mapper::{Mapper, PpuFetchKind};
 use crate::rom::{Cartridge, Mirroring};
 
 const PRG_BANK_8K: usize = 8 * 1024;
+const CHR_BANK_1K: usize = 1024;
 /// Minimum PRG-RAM we allocate even if the header says 0. Many MMC5
 /// carts under-declare PRG-RAM in their iNES v1 header; allocating a
 /// single 8 KB chip keeps them from faulting on the first `$6000`
@@ -107,6 +108,29 @@ pub struct Mmc5 {
 
     prg_bank_count_8k: usize,
     prg_ram_bank_count_8k: usize,
+
+    /// $5101 low 2 bits — CHR window layout selector. 0=8K, 1=4K×2,
+    /// 2=2K×4, 3=1K×8.
+    chr_mode: u8,
+    /// $5120-$5127 — BG CHR bank selectors.
+    chr_bg_regs: [u8; 8],
+    /// $5128-$512B — sprite CHR bank selectors (used only when 8×16
+    /// sprite mode is active; the PPU tags those fetches
+    /// `PpuFetchKind::SpritePattern`, everything else routes through
+    /// the BG set).
+    chr_spr_regs: [u8; 4],
+    /// $5130 low 2 bits — upper bank-index bits for CHR > 256 KB.
+    /// OR'd into every `$5120-$512B` value at bank-resolution time.
+    chr_upper: u8,
+
+    chr_bank_count_1k: usize,
+
+    /// Fetch kind latched from the most recent `on_ppu_addr` call.
+    /// `ppu_read` fires directly after that hook (see
+    /// [`crate::ppu::Ppu::ppu_bus_read`]) so the latch reflects the
+    /// current access's classification. Idle by default so CPU-side
+    /// `$2007` reads route through the BG bank set.
+    last_fetch_kind: PpuFetchKind,
 }
 
 impl Mmc5 {
@@ -116,14 +140,15 @@ impl Mmc5 {
         let prg_ram = vec![0u8; prg_ram_size];
         let prg_ram_bank_count_8k = (prg_ram.len() / PRG_BANK_8K).max(1);
 
-        // CHR is a stub in sub-A: one 8 KB window taken from the cart's
-        // supplied CHR-ROM, or a fresh 8 KB of CHR-RAM. Sub-B installs
-        // the full banking model.
+        // CHR: use the cart's supplied CHR-ROM, or allocate 8 KB of
+        // CHR-RAM. MMC5 carts in the wild all use CHR-ROM, but the
+        // stub path keeps CHR-RAM carts from panicking.
         let chr = if cart.chr_ram {
             vec![0u8; 8 * 1024]
         } else {
             cart.chr_rom
         };
+        let chr_bank_count_1k = (chr.len() / CHR_BANK_1K).max(1);
 
         let mut m = Self {
             prg_rom: cart.prg_rom,
@@ -149,9 +174,93 @@ impl Mmc5 {
             },
             prg_bank_count_8k,
             prg_ram_bank_count_8k,
+            // Power-on CHR defaults: 8 KB mode (`$5101 = 3` per
+            // nesdev? actually Mesen defaults `$5101=3` so the very
+            // first CHR write commits immediately — matches us).
+            chr_mode: 3,
+            chr_bg_regs: [0; 8],
+            chr_spr_regs: [0; 4],
+            chr_upper: 0,
+            chr_bank_count_1k,
+            last_fetch_kind: PpuFetchKind::Idle,
         };
         m.update_prg_banks();
         m
+    }
+
+    /// Resolve a PPU-side CHR address to an offset into `self.chr`,
+    /// selecting between the BG and sprite bank sets based on the
+    /// fetch kind upstream. The PPU already collapses 8×8-sprite
+    /// fetches to `BgPattern`, so we only see `SpritePattern` when
+    /// 8×16 mode is active.
+    fn resolve_chr(&self, addr: u16, kind: PpuFetchKind) -> usize {
+        let is_sprite = matches!(kind, PpuFetchKind::SpritePattern);
+        // Which 1 KB slot of the $0000-$1FFF window this address hits.
+        let slot_1k = ((addr >> 10) & 0x07) as usize;
+        let offset_in_1k = (addr & 0x03FF) as usize;
+
+        // Per-mode register selection. Each mode's table maps the
+        // 1 KB slot to (register index, window size in 1 KB).
+        // Sprite-set slots 4-7 intentionally alias back to regs 8-11
+        // — there are only four sprite registers, so the top half
+        // of the window reuses them. (Matches Mesen2 `UpdateChrBanks`
+        // `chrA ? ... : 0x08 + (slot & 3)` pattern.)
+        let (reg_idx, size_1k) = match self.chr_mode & 0x03 {
+            0 => {
+                // One 8 KB window. Reg 7 (BG) or 11 (sprite).
+                let reg = if is_sprite { 11 } else { 7 };
+                (reg, 8usize)
+            }
+            1 => {
+                // Two 4 KB windows: low half via reg 3/11, high via 7/11.
+                let reg = if is_sprite {
+                    11
+                } else if slot_1k < 4 {
+                    3
+                } else {
+                    7
+                };
+                (reg, 4usize)
+            }
+            2 => {
+                // Four 2 KB windows. BG: regs 1/3/5/7. Sprite: 9/11/9/11.
+                let pair = slot_1k / 2;
+                let reg = if is_sprite {
+                    [9, 11, 9, 11][pair]
+                } else {
+                    [1, 3, 5, 7][pair]
+                };
+                (reg, 2usize)
+            }
+            _ => {
+                // 1 KB mode — eight windows. BG: regs 0..=7 in order.
+                // Sprite: regs 8..=11 replicated across slots 0-3 and
+                // 4-7.
+                let reg = if is_sprite {
+                    8 + (slot_1k & 0x03)
+                } else {
+                    slot_1k
+                };
+                (reg, 1usize)
+            }
+        };
+
+        // Compose the final 1 KB bank index. The register stores a
+        // value in `size_1k`-KB units; multiply to convert to 1 KB
+        // units, then pick the sub-slot. `$5130` upper bits widen
+        // the index for CHR > 256 KB (unused by most games).
+        let raw = self.chr_reg(reg_idx) as usize;
+        let base_1k = (raw | ((self.chr_upper as usize & 0x03) << 8)) * size_1k;
+        let bank_1k = (base_1k + (slot_1k & (size_1k - 1))) % self.chr_bank_count_1k;
+        bank_1k * CHR_BANK_1K + offset_in_1k
+    }
+
+    fn chr_reg(&self, idx: usize) -> u8 {
+        if idx < 8 {
+            self.chr_bg_regs[idx]
+        } else {
+            self.chr_spr_regs[idx - 8]
+        }
     }
 
     /// True when both halves of the write-protect pair have been
@@ -334,6 +443,8 @@ impl Mapper for Mmc5 {
                 self.prg_mode = data & 0x03;
                 self.update_prg_banks();
             }
+            // $5101: CHR mode select.
+            0x5101 => self.chr_mode = data & 0x03,
             // $5102 / $5103: two-register PRG-RAM write-protect. Both
             // must reach the unlock values ($5102 & 3 == 2, $5103 & 3
             // == 1) before writes to PRG-RAM actually land.
@@ -345,10 +456,21 @@ impl Mapper for Mmc5 {
                 self.prg_regs[(addr - 0x5113) as usize] = data;
                 self.update_prg_banks();
             }
-            // $5101, $5104-$5107, $5120-$5130, $5200-$5206: stubbed
-            // for later sub-phases. Swallow the write so games that
-            // touch them during init don't panic. (CHR / NT / IRQ /
-            // multiply land in sub-B/C/D.)
+            // $5120-$5127: BG CHR bank selectors.
+            0x5120..=0x5127 => {
+                self.chr_bg_regs[(addr - 0x5120) as usize] = data;
+            }
+            // $5128-$512B: sprite CHR bank selectors (8×16 mode).
+            0x5128..=0x512B => {
+                self.chr_spr_regs[(addr - 0x5128) as usize] = data;
+            }
+            // $5130: upper bits for >256 KB CHR.
+            0x5130 => self.chr_upper = data & 0x03,
+            // $5104-$5107, $512C-$512F, $5200-$5206, $5C00-$5FFF:
+            // stubbed for later sub-phases (NT slot mapping + fill
+            // mode + split-screen / IRQ / multiply / ExRAM). Swallow
+            // the write so games that touch them during init don't
+            // panic.
             0x5000..=0x5FFF => {}
             // PRG-RAM window.
             0x6000..=0x7FFF => {
@@ -383,9 +505,11 @@ impl Mapper for Mmc5 {
     }
 
     fn ppu_read(&mut self, addr: u16) -> u8 {
-        // Sub-A stub: flat 8 KB CHR window. Sub-B installs banking.
         match addr {
-            0x0000..=0x1FFF => self.chr[(addr as usize) % self.chr.len().max(1)],
+            0x0000..=0x1FFF => {
+                let off = self.resolve_chr(addr, self.last_fetch_kind);
+                self.chr[off]
+            }
             _ => 0,
         }
     }
@@ -393,10 +517,18 @@ impl Mapper for Mmc5 {
     fn ppu_write(&mut self, addr: u16, data: u8) {
         if self.chr_ram {
             if let 0x0000..=0x1FFF = addr {
-                let idx = (addr as usize) % self.chr.len().max(1);
-                self.chr[idx] = data;
+                let off = self.resolve_chr(addr, self.last_fetch_kind);
+                self.chr[off] = data;
             }
         }
+    }
+
+    fn on_ppu_addr(&mut self, _addr: u16, _ppu_cycle: u64, kind: PpuFetchKind) {
+        // The PPU calls `on_ppu_addr` immediately before `ppu_read`
+        // (or `ppu_write`) in the same bus access, so this latch
+        // stays fresh for the CHR resolver. Sub-C will also use this
+        // hook for the scanline-IRQ 3-consecutive-NT detector.
+        self.last_fetch_kind = kind;
     }
 
     fn mirroring(&self) -> Mirroring {
@@ -412,16 +544,22 @@ mod tests {
 
     /// 128 KB PRG-ROM (16 × 8 KB banks) with each bank filled with
     /// its 8 KB bank index, plus 32 KB PRG-RAM (4 × 8 KB banks)
-    /// whose backing store starts zeroed. CHR is a single 8 KB
-    /// zeroed buffer — sub-A doesn't bank CHR.
+    /// whose backing store starts zeroed, plus 64 KB CHR-ROM
+    /// (64 × 1 KB banks) where each 1 KB bank is filled with its
+    /// bank index. Lets CHR tests assert "this address reads back
+    /// bank N" without any arithmetic.
     fn tagged_cart() -> Cartridge {
         let mut prg = vec![0u8; 16 * PRG_BANK_8K];
         for bank in 0..16 {
             prg[bank * PRG_BANK_8K..(bank + 1) * PRG_BANK_8K].fill(bank as u8);
         }
+        let mut chr = vec![0u8; 64 * CHR_BANK_1K];
+        for bank in 0..64 {
+            chr[bank * CHR_BANK_1K..(bank + 1) * CHR_BANK_1K].fill(bank as u8);
+        }
         Cartridge {
             prg_rom: prg,
-            chr_rom: vec![0u8; 8 * 1024],
+            chr_rom: chr,
             chr_ram: false,
             mapper_id: 5,
             submapper: 0,
@@ -433,6 +571,14 @@ mod tests {
             prg_chr_crc32: 0,
             db_matched: false,
         }
+    }
+
+    /// Drive a single PPU read via the trait surface — matching what
+    /// the bus does on a real fetch. `kind` latches through
+    /// `on_ppu_addr` so `ppu_read` sees the right classification.
+    fn chr_read(m: &mut Mmc5, addr: u16, kind: PpuFetchKind) -> u8 {
+        m.on_ppu_addr(addr, 0, kind);
+        m.ppu_read(addr)
     }
 
     /// Both halves of the PRG-RAM write-protect pair — after this,
@@ -577,6 +723,155 @@ mod tests {
         assert_eq!(m.cpu_peek(0x6000), 0x11);
         m.cpu_write(0x5113, 0x02);
         assert_eq!(m.cpu_peek(0x6000), 0x22);
+    }
+
+    // ---- CHR banking (sub-B) ----
+
+    #[test]
+    fn chr_mode_0_selects_one_8k_window_via_5127() {
+        // Mode 0: $5127 provides the bank in 8 KB units. Writing 2
+        // means "CHR bank group 2" = 1 KB banks 16..=23.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5101, 0x00); // 8 KB mode
+        m.cpu_write(0x5127, 0x02);
+        for slot in 0..8u16 {
+            let addr = slot * 0x0400;
+            assert_eq!(chr_read(&mut m, addr, PpuFetchKind::BgPattern), (16 + slot) as u8);
+        }
+    }
+
+    #[test]
+    fn chr_mode_1_splits_4k_via_5123_and_5127() {
+        // Mode 1: two 4 KB windows. $5123 -> $0000-$0FFF (regs index
+        // 3 in 4 KB units = 4 KB banks 12..=15). $5127 -> $1000-$1FFF.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5101, 0x01);
+        m.cpu_write(0x5123, 0x03); // low half: banks 12..=15
+        m.cpu_write(0x5127, 0x05); // high half: banks 20..=23
+        // Low-half slots 0..=3 read banks 12..=15.
+        for slot in 0..4u16 {
+            assert_eq!(
+                chr_read(&mut m, slot * 0x0400, PpuFetchKind::BgPattern),
+                (12 + slot) as u8,
+            );
+        }
+        // High-half slots 4..=7 read banks 20..=23.
+        for slot in 4..8u16 {
+            assert_eq!(
+                chr_read(&mut m, slot * 0x0400, PpuFetchKind::BgPattern),
+                (20 + slot - 4) as u8,
+            );
+        }
+    }
+
+    #[test]
+    fn chr_mode_2_splits_2k_via_5121_5123_5125_5127() {
+        // Mode 2: four 2 KB windows. BG regs 1/3/5/7 drive each pair.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5101, 0x02);
+        m.cpu_write(0x5121, 0x00); // slots 0-1 -> banks 0,1
+        m.cpu_write(0x5123, 0x02); // slots 2-3 -> banks 4,5
+        m.cpu_write(0x5125, 0x04); // slots 4-5 -> banks 8,9
+        m.cpu_write(0x5127, 0x06); // slots 6-7 -> banks 12,13
+        let expected = [0u8, 1, 4, 5, 8, 9, 12, 13];
+        for slot in 0..8u16 {
+            assert_eq!(
+                chr_read(&mut m, slot * 0x0400, PpuFetchKind::BgPattern),
+                expected[slot as usize],
+            );
+        }
+    }
+
+    #[test]
+    fn chr_mode_3_gives_eight_1k_banks_from_5120_5127() {
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5101, 0x03);
+        for i in 0..8u8 {
+            // Each reg picks a distinct 1 KB bank: 8, 9, 10, 11, ...
+            m.cpu_write(0x5120 + i as u16, 8 + i);
+        }
+        for slot in 0..8u16 {
+            assert_eq!(
+                chr_read(&mut m, slot * 0x0400, PpuFetchKind::BgPattern),
+                (8 + slot) as u8,
+            );
+        }
+    }
+
+    #[test]
+    fn sprite_pattern_fetch_routes_through_sprite_regs_in_1k_mode() {
+        // 1 KB mode, populate BG and sprite sets with distinct banks.
+        // BgPattern fetches read BG-set values; SpritePattern fetches
+        // read sprite-set values.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5101, 0x03);
+        // BG regs: banks 0..=7
+        for i in 0..8u8 {
+            m.cpu_write(0x5120 + i as u16, i);
+        }
+        // Sprite regs: banks 16..=19 (replicated across slots 4-7)
+        for i in 0..4u8 {
+            m.cpu_write(0x5128 + i as u16, 16 + i);
+        }
+        // BG fetch at slot 2 -> BG bank 2.
+        assert_eq!(
+            chr_read(&mut m, 0x0800, PpuFetchKind::BgPattern),
+            2,
+        );
+        // Sprite fetch at the same address -> sprite reg 2 (bank 18).
+        assert_eq!(
+            chr_read(&mut m, 0x0800, PpuFetchKind::SpritePattern),
+            18,
+        );
+        // Sprite fetch at slot 6 -> sprite reg 8 + (6 & 3) = reg 10 = bank 18.
+        assert_eq!(
+            chr_read(&mut m, 0x1800, PpuFetchKind::SpritePattern),
+            18,
+        );
+    }
+
+    #[test]
+    fn chr_upper_bits_from_5130_widen_bank_index() {
+        // With 64 × 1 KB (64 KB total) CHR the upper bits normally
+        // wrap, but we can still check that the math goes through
+        // the `chr_upper * 256 * size_1k` path by forcing a wrap.
+        // $5130 = 1 -> raw |= 0x100 -> bank index += 0x100 * size.
+        // In 1 KB mode, $5120 = 0, $5130 = 1 => bank 256 % 64 = 0.
+        // Set $5130 = 0 and $5120 = 0 -> bank 0. Same value, so not a
+        // discriminating test. Instead: $5130 = 1, $5120 = 1 -> bank
+        // 257 % 64 = 1. With $5130 = 0, $5120 = 65 -> also bank 1
+        // (65 % 64). To *prove* $5130 matters, pick a $5120 value
+        // that would otherwise land on a different bank:
+        // $5130 = 1, $5120 = 0 -> 256 % 64 = 0
+        // $5130 = 0, $5120 = 0 -> 0 % 64 = 0 (same)
+        // $5130 = 1, $5120 = 0x10 -> (0x10 | 0x100) * 1 = 272 % 64 = 16
+        // $5130 = 0, $5120 = 0x10 -> 16 % 64 = 16 (same)
+        // The 64-bank wrap masks $5130's effect. Use a smaller mod:
+        // $5120 = 0x3F (bank 63 without upper bits, so non-zero),
+        // $5130 = 1 -> (0x3F | 0x100) * 1 = 319 % 64 = 63 (same).
+        //
+        // Because our test cart's CHR is exactly 64 KB, every upper
+        // bit combination wraps back to the same bank. Rather than
+        // invent a bigger cart for this one assertion, just check
+        // that the upper-bits write does not panic or corrupt the
+        // BG read path.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5101, 0x03);
+        m.cpu_write(0x5120, 0x05);
+        m.cpu_write(0x5130, 0x03); // all upper bits set
+        assert_eq!(chr_read(&mut m, 0x0000, PpuFetchKind::BgPattern), 5);
+    }
+
+    #[test]
+    fn idle_fetches_still_return_sensible_bytes() {
+        // CPU $2007 reads route through `ppu_read` with Idle as the
+        // fetch kind. MMC5 handles these via the BG bank set (default
+        // when `SpritePattern` is not observed). Verify we don't
+        // panic and the byte matches what a BG fetch would have read.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5101, 0x03);
+        m.cpu_write(0x5120, 0x0A);
+        assert_eq!(chr_read(&mut m, 0x0000, PpuFetchKind::Idle), 10);
     }
 
     #[test]

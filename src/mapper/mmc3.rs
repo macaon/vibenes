@@ -44,7 +44,7 @@
 //! - `~/Git/puNES/src/core/irqA12.c`
 //! - `reference/mappers.md §Mapper 4`, `mesen-notes.md §20-21`, `punes-notes.md §MMC3 A12 filter`
 
-use crate::mapper::Mapper;
+use crate::mapper::{Mapper, PpuFetchKind};
 use crate::rom::{Cartridge, Mirroring};
 
 const PRG_BANK_8K: usize = 8 * 1024;
@@ -374,7 +374,7 @@ impl Mapper for Mmc3 {
         self.mirroring
     }
 
-    fn on_ppu_addr(&mut self, addr: u16, ppu_cycle: u64) {
+    fn on_ppu_addr(&mut self, addr: u16, ppu_cycle: u64, _kind: PpuFetchKind) {
         let a12 = (addr & 0x1000) != 0;
         if a12 {
             // On a transition out of a low period, check the filter.
@@ -645,9 +645,9 @@ mod tests {
     fn toggle_a12(m: &mut Mmc3, start_cycle: u64, rises: usize, rise_gap: u64) {
         let mut t = start_cycle;
         for _ in 0..rises {
-            m.on_ppu_addr(0x0000, t); // A12 low
+            m.on_ppu_addr(0x0000, t, PpuFetchKind::Idle); // A12 low
             t += rise_gap;
-            m.on_ppu_addr(0x1000, t); // A12 high — filtered rise if gap >= 10
+            m.on_ppu_addr(0x1000, t, PpuFetchKind::Idle); // A12 high — filtered rise if gap >= 10
             t += 1;
         }
     }
