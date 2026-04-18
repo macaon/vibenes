@@ -14,11 +14,13 @@
 //! | `$E000` | IRQ disable + acknowledge |
 //! | `$E001` | IRQ enable |
 //!
-//! This module (phase 10A) implements only the banking side. The IRQ
-//! state machine lands in phase 10B alongside an A12 rising-edge watcher
-//! called from [`Mapper::on_ppu_addr`]. To keep the wire-up stable, the
-//! IRQ registers are decoded here but stored into placeholder fields —
-//! writes are absorbed without ever asserting [`Mapper::irq_line`].
+//! The A12 IRQ counter (phase 10B) is clocked on filtered A12 rising
+//! edges delivered via [`Mapper::on_ppu_addr`]. A12 must be low for
+//! at least [`A12_FILTER_PPU_CYCLES`] PPU cycles before the next rise
+//! counts — Mesen's A12Watcher approach, chosen over puNES's per-path
+//! latches because our `master_ppu_cycle` is PPU-cycle granular and
+//! the test ROMs' tolerance for the single-filter model is well-
+//! documented.
 //!
 //! **PRG layout** (bit 6 of $8000):
 //! - 0: R6 at $8000-$9FFF, R7 at $A000-$BFFF, second-to-last at $C000, last at $E000
@@ -49,6 +51,14 @@ const PRG_BANK_8K: usize = 8 * 1024;
 const CHR_BANK_1K: usize = 1024;
 const PRG_RAM_SIZE: usize = 8 * 1024;
 
+/// Minimum number of PPU cycles A12 must be held low before the next
+/// rising edge is counted by the IRQ counter. Mesen's `A12Watcher`
+/// template defaults to 10; the Mesen2 wiki prose says "~8-12 CPU
+/// cycles" (≈ 24-36 PPU cycles under the standard 3:1 ratio), but the
+/// template constant is what their test-ROM scores are validated
+/// against. Tune here if `mmc3_test/4-scanline_timing` drifts.
+const A12_FILTER_PPU_CYCLES: u64 = 10;
+
 pub struct Mmc3 {
     prg_rom: Vec<u8>,
     chr: Vec<u8>,
@@ -75,12 +85,24 @@ pub struct Mmc3 {
     prg_bank_count_8k: usize,
     chr_bank_count_1k: usize,
 
-    // --- IRQ state (decoded in 10A, activated in 10B) ---
+    // --- IRQ state ---
     irq_latch: u8,
     irq_counter: u8,
     irq_reload: bool,
     irq_enabled: bool,
     irq_line: bool,
+    /// PPU cycle at which A12 transitioned from high to low. `None` means
+    /// A12 is currently high (or we haven't observed a fall yet at power-
+    /// on). On an A12 rise, the elapsed PPU-cycle count is compared
+    /// against [`A12_FILTER_PPU_CYCLES`] to decide whether this rise
+    /// clocks the counter.
+    a12_low_since: Option<u64>,
+    /// MMC3 Rev A firing semantics. Default false (Rev B): IRQ fires
+    /// whenever the counter hits zero at an A12 rise, including
+    /// reload-from-zero (can double-fire). Rev A: IRQ fires only on a
+    /// non-zero→zero transition. Activated by submapper in the NES 2.0
+    /// header, or by a ROM-database override (phase 10D).
+    alt_irq_behavior: bool,
 }
 
 impl Mmc3 {
@@ -118,6 +140,35 @@ impl Mmc3 {
             irq_reload: false,
             irq_enabled: false,
             irq_line: false,
+            a12_low_since: None,
+            alt_irq_behavior: false,
+        }
+    }
+
+    /// Advance the IRQ counter one step on a filtered A12 rising edge.
+    ///
+    /// - If the counter is zero or the reload flag is set, load from the
+    ///   `$C000` latch; otherwise decrement.
+    /// - If the post-step counter is zero and IRQ is enabled, assert
+    ///   `/IRQ`. Rev B fires unconditionally at zero; Rev A only on a
+    ///   transition *into* zero (`prev != 0 || was_reload`).
+    fn clock_irq_counter(&mut self) {
+        let prev = self.irq_counter;
+        let was_reload = self.irq_reload;
+        if self.irq_counter == 0 || self.irq_reload {
+            self.irq_counter = self.irq_latch;
+        } else {
+            self.irq_counter -= 1;
+        }
+        self.irq_reload = false;
+
+        let should_fire = if self.alt_irq_behavior {
+            (prev > 0 || was_reload) && self.irq_counter == 0
+        } else {
+            self.irq_counter == 0
+        };
+        if should_fire && self.irq_enabled {
+            self.irq_line = true;
         }
     }
 
@@ -321,6 +372,28 @@ impl Mapper for Mmc3 {
 
     fn mirroring(&self) -> Mirroring {
         self.mirroring
+    }
+
+    fn on_ppu_addr(&mut self, addr: u16, ppu_cycle: u64) {
+        let a12 = (addr & 0x1000) != 0;
+        if a12 {
+            // On a transition out of a low period, check the filter.
+            if let Some(low_since) = self.a12_low_since {
+                let elapsed = ppu_cycle.wrapping_sub(low_since);
+                if elapsed >= A12_FILTER_PPU_CYCLES {
+                    self.clock_irq_counter();
+                }
+                // Whether filtered or not, we're no longer in a low
+                // window — the counter restarts only on the next fall.
+                self.a12_low_since = None;
+            }
+        } else if self.a12_low_since.is_none() {
+            self.a12_low_since = Some(ppu_cycle);
+        }
+    }
+
+    fn irq_line(&self) -> bool {
+        self.irq_line
     }
 }
 
@@ -559,6 +632,140 @@ mod tests {
         // CHR-ROM carts reject PPU writes (chr_ram flag is false).
         assert_eq!(m.ppu_read(0x0100), before);
         assert!(!m.chr_ram);
+    }
+
+    // ---- A12 IRQ state machine ----
+
+    /// Clock the A12 filter by driving a low→high→... sequence with
+    /// explicit PPU cycle timestamps. `rise_gap` is the PPU-cycle gap
+    /// between the A12 fall and the following rise — ≥10 counts,
+    /// <10 is filtered. Returns the Mmc3 in a known state.
+    fn toggle_a12(m: &mut Mmc3, start_cycle: u64, rises: usize, rise_gap: u64) {
+        let mut t = start_cycle;
+        for _ in 0..rises {
+            m.on_ppu_addr(0x0000, t); // A12 low
+            t += rise_gap;
+            m.on_ppu_addr(0x1000, t); // A12 high — filtered rise if gap >= 10
+            t += 1;
+        }
+    }
+
+    #[test]
+    fn irq_counter_decrements_on_filtered_rise() {
+        let mut m = Mmc3::new(tagged_cart());
+        write_reg(&mut m, 0xC000, 3); // latch = 3
+        write_reg(&mut m, 0xC001, 0); // arm reload
+        write_reg(&mut m, 0xE001, 0); // enable IRQ
+
+        // First rise: reload counter to 3.
+        toggle_a12(&mut m, 100, 1, 20);
+        assert!(!m.irq_line(), "first rise only reloads");
+        // Three more rises: 3 -> 2 -> 1 -> 0; only the fourth rise
+        // (the one that hits zero) asserts /IRQ.
+        toggle_a12(&mut m, 200, 3, 20);
+        assert!(m.irq_line(), "IRQ asserted when counter reaches 0");
+    }
+
+    #[test]
+    fn a12_filter_rejects_short_low_windows() {
+        let mut m = Mmc3::new(tagged_cart());
+        write_reg(&mut m, 0xC000, 1); // latch = 1
+        write_reg(&mut m, 0xC001, 0);
+        write_reg(&mut m, 0xE001, 0);
+
+        // Fall->rise with only 5 PPU cycles low: must be filtered.
+        toggle_a12(&mut m, 100, 3, 5);
+        assert!(!m.irq_line(), "short low windows are filtered out");
+        // A proper wide rise after — this is rise #1 so it only
+        // reloads the counter, not fires.
+        toggle_a12(&mut m, 1000, 1, 20);
+        assert!(!m.irq_line());
+        // Next wide rise now clocks 1 -> 0 and fires.
+        toggle_a12(&mut m, 2000, 1, 20);
+        assert!(m.irq_line());
+    }
+
+    #[test]
+    fn e000_clears_irq_line_and_disables() {
+        let mut m = Mmc3::new(tagged_cart());
+        write_reg(&mut m, 0xC000, 1);
+        write_reg(&mut m, 0xC001, 0);
+        write_reg(&mut m, 0xE001, 0);
+        toggle_a12(&mut m, 100, 2, 20); // rise 1 reload, rise 2 -> 0 -> fire
+        assert!(m.irq_line());
+
+        // Acknowledge + disable.
+        write_reg(&mut m, 0xE000, 0);
+        assert!(!m.irq_line());
+
+        // Further rises don't refire while disabled.
+        toggle_a12(&mut m, 1000, 5, 20);
+        assert!(!m.irq_line());
+    }
+
+    #[test]
+    fn c001_forces_reload_on_next_rise() {
+        let mut m = Mmc3::new(tagged_cart());
+        write_reg(&mut m, 0xC000, 5);
+        write_reg(&mut m, 0xE001, 0);
+
+        // Get the counter partway down.
+        write_reg(&mut m, 0xC001, 0);
+        toggle_a12(&mut m, 100, 3, 20); // counter now 5 -> 5 -> 4 -> 3
+        assert_eq!(m.irq_counter, 3);
+        assert!(!m.irq_line());
+
+        // Change the latch + arm reload — next A12 rise reloads to 5,
+        // not continues decrement to 2.
+        write_reg(&mut m, 0xC000, 2);
+        write_reg(&mut m, 0xC001, 0);
+        toggle_a12(&mut m, 500, 1, 20);
+        assert_eq!(m.irq_counter, 2);
+    }
+
+    #[test]
+    fn rev_b_refires_on_reload_from_zero() {
+        // Rev B behavior: if latch=0, reload sets counter=0 and fires
+        // every A12 rise.
+        let mut m = Mmc3::new(tagged_cart());
+        write_reg(&mut m, 0xC000, 0);
+        write_reg(&mut m, 0xC001, 0);
+        write_reg(&mut m, 0xE001, 0);
+
+        toggle_a12(&mut m, 100, 1, 20);
+        assert!(m.irq_line(), "Rev B fires on first reload-to-zero");
+        // Acknowledge clears the line AND disables IRQ on real hardware;
+        // for this test we want to see Rev B refiring, so re-enable.
+        write_reg(&mut m, 0xE000, 0);
+        write_reg(&mut m, 0xE001, 0);
+        assert!(!m.irq_line());
+
+        // Next A12 rise fires again on Rev B — counter was 0,
+        // reload to 0, still 0, still fires.
+        toggle_a12(&mut m, 1000, 1, 20);
+        assert!(m.irq_line(), "Rev B refires every zero");
+    }
+
+    #[test]
+    fn rev_a_does_not_refire_on_reload_from_zero() {
+        let mut m = Mmc3::new(tagged_cart());
+        m.alt_irq_behavior = true; // Rev A
+        write_reg(&mut m, 0xC000, 0);
+        write_reg(&mut m, 0xC001, 0);
+        write_reg(&mut m, 0xE001, 0);
+
+        // First rise: was_reload=true, prev=0, post=0. Rev A fires
+        // because reload semantics count as a transition.
+        toggle_a12(&mut m, 100, 1, 20);
+        assert!(m.irq_line(), "Rev A fires on the reload transition");
+        write_reg(&mut m, 0xE000, 0);
+
+        // Second rise: counter was 0 and no reload armed, so we hit
+        // the "counter==0 -> reload to latch (0)" path — prev=0,
+        // was_reload=false. Rev A requires prev>0 OR was_reload.
+        // Neither holds, so no fire.
+        toggle_a12(&mut m, 1000, 1, 20);
+        assert!(!m.irq_line(), "Rev A suppresses repeat-at-zero");
     }
 
     // ---- Register-address aliasing ----

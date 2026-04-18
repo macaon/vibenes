@@ -936,6 +936,10 @@ impl Ppu {
                     buffered
                 };
                 self.increment_v();
+                // Post-increment v appears on the PPU address bus
+                // outside rendering — gives MMC3's A12 watcher another
+                // rise/fall edge to observe.
+                mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle);
                 result
             }
             _ => self.open_bus,
@@ -979,6 +983,12 @@ impl Ppu {
                 } else {
                     self.t = (self.t & 0xFF00) | (data as u16);
                     self.v = self.t;
+                    // Real hardware reflects the new `v` on the PPU
+                    // address bus for a cycle after the second $2006
+                    // write, so A12-sensitive mappers (MMC3) observe
+                    // the bit-12 toggle. Without this notification the
+                    // mmc3_test "clocked via PPUADDR" gate fails.
+                    mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle);
                 }
                 self.w_latch = !self.w_latch;
             }
@@ -986,6 +996,10 @@ impl Ppu {
                 let addr = self.v & 0x3FFF;
                 self.ppu_bus_write(addr, data, mapper);
                 self.increment_v();
+                // Post-increment `v` is placed on the address bus
+                // outside rendering — another A12 opportunity for
+                // MMC3 (Mesen2 NesPpu.cpp ProcessPpuDataAccess).
+                mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle);
             }
             _ => {}
         }
