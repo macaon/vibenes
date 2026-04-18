@@ -1209,6 +1209,22 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             cpu.set_zn(v);
         }
 
+        // ANE / XAA (opcode $8B). Unstable unofficial: real hardware does
+        // `A = (A | magic) & X & operand`, where the `magic` constant
+        // varies by chip / temperature and is usually $EE. puNES, Mesen2
+        // and Nestopia all pick a fixed magic ($EE is the de-facto
+        // standard across emulators) so test ROMs that bracket-check the
+        // result still get a deterministic answer. Cycle cost = 2
+        // (immediate). `instr_timing.nes` needs this one implemented —
+        // its test harness executes every opcode; an unimplemented $8B
+        // halts the CPU before any timing measurement runs.
+        0x8B => {
+            let v = cpu.fetch_byte(bus);
+            let result = (cpu.a | 0xEE) & cpu.x & v;
+            cpu.a = result;
+            cpu.set_zn(result);
+        }
+
         // SHY abs,X ($9C). value = Y & (base_hi + 1); on page cross the
         // store's high byte is ANDed with Y (see Nestopia NstCpu.cpp Shy /
         // puNES cpu.c SXX macro / Mesen2 SyaSxaAxa).
@@ -1284,19 +1300,15 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             cpu.set_zn(result);
         }
 
-        // JAM / KIL / STP — halt the CPU
+        // JAM / KIL / STP — halt the CPU. With all other 244 opcodes
+        // explicitly handled above, this arm also makes the match
+        // exhaustive on u8 — a missing future opcode would surface
+        // as a non-exhaustive-match compile error rather than a
+        // silent runtime halt.
         0x02 | 0x12 | 0x22 | 0x32 | 0x42 | 0x52 | 0x62 | 0x72 | 0x92 | 0xB2 | 0xD2 | 0xF2 => {
             return Err(format!(
                 "CPU JAM: illegal opcode ${:02X} at PC=${:04X}",
                 op,
-                cpu.pc.wrapping_sub(1)
-            ));
-        }
-
-        other => {
-            return Err(format!(
-                "unimplemented opcode ${:02X} at PC=${:04X}",
-                other,
                 cpu.pc.wrapping_sub(1)
             ));
         }
