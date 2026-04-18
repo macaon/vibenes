@@ -17,7 +17,7 @@
 //!   sprite-0 five-part predicate (for 6B).
 
 use crate::clock::Region;
-use crate::mapper::{Mapper, PpuFetchKind};
+use crate::mapper::{Mapper, NametableSource, NametableWriteTarget, PpuFetchKind};
 use crate::rom::Mirroring;
 
 pub const FRAME_WIDTH: usize = 256;
@@ -1077,13 +1077,28 @@ impl Ppu {
         // Every address the PPU drives on its bus is a chance for an
         // A12-sensitive mapper (MMC3, MMC5) to count the edge. MMC5
         // also uses the fetch `kind` to route between its BG and
-        // sprite CHR bank sets.
+        // sprite CHR bank sets and to detect scanlines via the
+        // 3-consecutive-NT-fetch signature.
         mapper.on_ppu_addr(addr, self.master_ppu_cycle, kind);
         match addr {
             0x0000..=0x1FFF => mapper.ppu_read(addr),
             0x2000..=0x3EFF => {
-                let i = self.nametable_index(addr & 0x0FFF, mapper.mirroring());
-                self.vram[i]
+                // Give the mapper first dibs on the nametable byte —
+                // MMC5 uses this for `$5105` NT slot mapping,
+                // fill-mode, and ExRAM-as-NT. `Default` means use
+                // CIRAM via the cart's mirroring() configuration (the
+                // pre-MMC5 path).
+                let slot = ((addr >> 10) & 0x03) as u8;
+                let offset = (addr & 0x03FF) as usize;
+                match mapper.ppu_nametable_read(slot, offset as u16) {
+                    NametableSource::Default => {
+                        let i = self.nametable_index(addr & 0x0FFF, mapper.mirroring());
+                        self.vram[i]
+                    }
+                    NametableSource::CiramA => self.vram[offset],
+                    NametableSource::CiramB => self.vram[0x400 + offset],
+                    NametableSource::Byte(b) => b,
+                }
             }
             0x3F00..=0x3FFF => self.read_palette(addr),
             _ => 0,
@@ -1096,9 +1111,18 @@ impl Ppu {
         match addr {
             0x0000..=0x1FFF => mapper.ppu_write(addr, data),
             0x2000..=0x3EFF => {
-                let mirroring = mapper.mirroring();
-                let i = self.nametable_index(addr & 0x0FFF, mirroring);
-                self.vram[i] = data;
+                let slot = ((addr >> 10) & 0x03) as u8;
+                let offset = (addr & 0x03FF) as usize;
+                match mapper.ppu_nametable_write(slot, offset as u16, data) {
+                    NametableWriteTarget::Default => {
+                        let mirroring = mapper.mirroring();
+                        let i = self.nametable_index(addr & 0x0FFF, mirroring);
+                        self.vram[i] = data;
+                    }
+                    NametableWriteTarget::CiramA => self.vram[offset] = data,
+                    NametableWriteTarget::CiramB => self.vram[0x400 + offset] = data,
+                    NametableWriteTarget::Consumed => {}
+                }
             }
             0x3F00..=0x3FFF => self.write_palette(addr, data),
             _ => {}
