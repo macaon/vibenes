@@ -241,7 +241,11 @@ impl Apu {
                 self.pulse2.set_enabled((data & 0x02) != 0);
                 self.triangle.set_enabled((data & 0x04) != 0);
                 self.noise.set_enabled((data & 0x08) != 0);
-                self.dmc.set_enabled((data & 0x10) != 0);
+                // Mesen2-style transfer-start delay needs the CPU-cycle
+                // parity at the moment `$4015` was written. `apu.cycle`
+                // equals the current CPU cycle (phase-6 moved APU tick
+                // into pre-access); even → 2-cycle delay, odd → 3.
+                self.dmc.set_enabled((data & 0x10) != 0, (self.cycle & 1) == 1);
                 // Any $4015 write clears DMC IRQ (not frame IRQ).
                 self.dmc_irq = false;
             }
@@ -369,16 +373,24 @@ mod tests {
     }
 
     #[test]
-    fn dmc_enable_via_4015_arms_dma_request() {
+    fn dmc_enable_via_4015_arms_dma_request_after_transfer_start_delay() {
         let mut apu = ntsc();
         // $4013: sample length = 1 byte; $4012: start addr $C000.
         apu.write_reg(0x4013, 0x00);
         apu.write_reg(0x4012, 0x00);
         apu.write_reg(0x4015, 0x10); // enable DMC
 
+        // Mesen2's `_transferStartDelay` defers the DMA arming by 2 or
+        // 3 CPU cycles (per write-cycle parity). Tick the APU until the
+        // delay clears; the request must then be visible.
+        assert!(apu.take_dmc_dma_request().is_none());
+        for _ in 0..3 {
+            apu.tick_cpu_cycle();
+        }
         assert!(
             apu.take_dmc_dma_request().is_some(),
-            "enabling DMC with bytes_remaining==0 must arm a DMA fetch"
+            "enabling DMC with bytes_remaining==0 must arm a DMA fetch \
+             once the transfer-start delay elapses"
         );
     }
 

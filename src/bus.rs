@@ -124,8 +124,17 @@ impl Bus {
     }
 
     pub fn read(&mut self, addr: u16) -> u8 {
-        self.service_pending_dmc_dma(addr);
         self.tick_pre_access();
+        // Service DMC DMA AFTER the APU tick inside `tick_pre_access`
+        // so a DMA that the DMC arms on THIS cycle's APU step is
+        // visible this cycle — matches Mesen2's
+        // `StartCpuCycle → ProcessPendingDma → Read` order
+        // (`NesCpu.cpp:256-268`). The pre-phase-6 order had APU
+        // ticking post-access, which made "service before tick"
+        // equivalent; under the phase-6 pre-access APU tick, we
+        // must service after. Required so `dma_4016_read`'s DMA
+        // aligns on the correct iteration.
+        self.service_pending_dmc_dma(addr);
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
