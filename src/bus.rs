@@ -34,6 +34,13 @@ pub struct Bus {
     /// True while we're servicing a DMC DMA fetch. Prevents re-entering
     /// the DMA service from `tick_cycle` inside the stall cycles.
     dmc_dma_active: bool,
+    /// Number of PPU dots left to run in the current CPU cycle's
+    /// post-access phase. `tick_pre_access` advances the clock and
+    /// runs all but the last dot; the remainder lives here until
+    /// `tick_post_access` drains it. Carried as state (not a local)
+    /// because the bus access between the two halves can make
+    /// arbitrary register reads / writes.
+    pending_ppu_ticks: u64,
 
     /// Host audio output. `None` in test ROMs / headless runs where
     /// opening a cpal stream would be pointless or unavailable.
@@ -82,6 +89,7 @@ impl Bus {
             prev_nmi_pending: false,
             open_bus: 0,
             dmc_dma_active: false,
+            pending_ppu_ticks: 0,
             audio_sink: None,
         }
     }
@@ -206,13 +214,26 @@ impl Bus {
         // cycle's PPU advance.
         self.ppu.begin_cpu_cycle();
 
+        // NTSC: 3 PPU dots per CPU cycle, split 2 pre-access + 1
+        // post-access to match Mesen2's phase alignment (see
+        // `NesCpu.cpp:73-75,296,319` for the master-clock math that
+        // yields a 2/1 split in steady state). Required by
+        // `cpu_interrupts_v2/3-nmi_and_irq`: when dot 1 of scanline 241
+        // is the *third* PPU dot of a CPU cycle, our old 3/0 split
+        // made VBL visible to a `bit $2002` read on that same cycle,
+        // so `sync_vbl` exited one cycle too early and every
+        // downstream timing shifted by one iteration.
+        //
+        // PAL: 3 or 4 dots per cycle (ratio 1:3.2). Keep the same
+        // rule — "all but the last dot" runs pre-access — so the PAL
+        // variant of the same alignment behaves consistently.
         let ppu_ticks = self.clock.advance_cpu_cycle();
-        for _ in 0..ppu_ticks {
+        self.pending_ppu_ticks = ppu_ticks;
+        let pre_ticks = ppu_ticks.saturating_sub(1);
+        for _ in 0..pre_ticks {
             self.ppu.tick(&mut *self.mapper);
         }
-        if self.ppu.poll_nmi() {
-            self.nmi_pending = true;
-        }
+        self.pending_ppu_ticks -= pre_ticks;
 
         // APU ticks BEFORE the bus access so that:
         //   * a `$4015` read on the cycle the frame counter asserts
@@ -223,9 +244,9 @@ impl Bus {
         //     cycle (was lagging by one under the post-access model).
         // Mapper tick stays co-located with the APU tick so the IRQ-line
         // refresh sees both subsystems' latest state before the CPU's
-        // penultimate-cycle poll snapshot is taken. Audio sampling
-        // stays in `tick_post_access` — it reads output for the cycle
-        // just finished, not one about to start.
+        // penultimate-cycle poll snapshot is taken. NMI poll and audio
+        // sampling run in `tick_post_access` — see that function's
+        // comment for why the NMI poll is deferred.
         self.apu.tick_cpu_cycle();
         self.mapper.on_cpu_cycle();
         self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
@@ -233,9 +254,22 @@ impl Bus {
 
     /// Second half of a CPU cycle — runs after the bus access.
     ///
-    /// Audio sample emission only; APU + mapper + IRQ-line refresh
-    /// moved to `tick_pre_access` (see blargg 08 fix).
+    /// Runs the final PPU dot (the 3rd dot on NTSC / 4th on PAL when
+    /// the ratio produces it) so register reads during the bus
+    /// access see the PPU state as of "2 dots into this cycle". NMI
+    /// poll lives here too so a `(241,1)` dot that lands as the
+    /// final dot sets `nmi_pending` *after* this cycle's access —
+    /// i.e. visible to the CPU no earlier than the next cycle's
+    /// penultimate poll, matching Mesen2's
+    /// `StartCpuCycle`/`EndCpuCycle` split.
     fn tick_post_access(&mut self) {
+        for _ in 0..self.pending_ppu_ticks {
+            self.ppu.tick(&mut *self.mapper);
+        }
+        self.pending_ppu_ticks = 0;
+        if self.ppu.poll_nmi() {
+            self.nmi_pending = true;
+        }
         if let Some(sink) = self.audio_sink.as_mut() {
             sink.on_cpu_cycle(self.apu.output_sample());
         }
