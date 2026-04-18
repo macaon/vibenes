@@ -174,10 +174,13 @@ impl Mmc5 {
             },
             prg_bank_count_8k,
             prg_ram_bank_count_8k,
-            // Power-on CHR defaults: 8 KB mode (`$5101 = 3` per
-            // nesdev? actually Mesen defaults `$5101=3` so the very
-            // first CHR write commits immediately — matches us).
-            chr_mode: 3,
+            // Power-on CHR mode: 8 KB (matches Mesen2's default
+            // `_chrMode = 0`). With regs zero-initialized this makes
+            // the whole $0000-$1FFF window alias to CHR banks 0-7,
+            // the same flat layout the sub-A stub had — so anything
+            // the game relies on seeing briefly before it writes its
+            // own CHR banks still looks sensible.
+            chr_mode: 0,
             chr_bg_regs: [0; 8],
             chr_spr_regs: [0; 4],
             chr_upper: 0,
