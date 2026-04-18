@@ -22,7 +22,12 @@ use egui_winit::{EventResponse, State as EguiWinit};
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+pub mod commands;
 mod menus;
+pub mod recent;
+
+pub use commands::UiCommand;
+pub use recent::RecentRoms;
 
 pub struct UiLayer {
     ctx: Context,
@@ -72,12 +77,12 @@ impl UiLayer {
     }
 
     /// Build the UI for the current frame and stash the output for
-    /// `paint`. This sub-phase hard-codes the empty menubar; later
-    /// sub-phases will take a state reference + command queue.
-    pub fn run(&mut self, window: &Window) {
+    /// `paint`. Widgets push `UiCommand` variants into `cmds`; the host
+    /// drains them after `paint` returns.
+    pub fn run(&mut self, window: &Window, recent: &RecentRoms, cmds: &mut Vec<UiCommand>) {
         let raw_input = self.winit_state.take_egui_input(window);
         let full_output = self.ctx.run_ui(raw_input, |ui| {
-            menus::build_top_menubar(ui);
+            menus::build_top_menubar(ui, recent, cmds);
         });
         self.pending = Some(full_output);
     }

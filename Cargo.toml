@@ -33,6 +33,12 @@ ringbuf = "0.4"
 egui = "0.34"
 egui-wgpu = { version = "0.34", features = ["winit"] }
 egui-winit = "0.34"
+# Native file picker. `rfd` wraps the platform dialog (GTK/portal on
+# Linux, NSOpenPanel on macOS, IFileOpenDialog on Windows). We use the
+# synchronous `pick_file` — it blocks the event loop briefly, which
+# the 300 ms audio ring pre-buffer (see src/audio.rs) absorbs without
+# clicks. An async variant is available if we ever need it.
+rfd = "0.15"
 
 [profile.dev]
 opt-level = 1

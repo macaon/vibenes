@@ -83,6 +83,10 @@ pub struct AudioSink {
     producer: HeapProd<f32>,
     scratch: Vec<i16>,
     cycles_per_flush: u32,
+    /// Output sample rate of the cpal stream. Constant for the lifetime
+    /// of the stream; cached so we can re-tune BlipBuf after a region
+    /// change.
+    sample_rate: u32,
 }
 
 impl AudioSink {
@@ -108,6 +112,18 @@ impl AudioSink {
     /// emulation runs that don't go through the frame loop.
     pub fn end_frame(&mut self) {
         self.flush();
+    }
+
+    /// Re-tune the resampler for a new CPU clock rate. Called when a
+    /// ROM swap changes the TV system (NTSC ↔ PAL). Flushes any in-flight
+    /// samples at the old rate first so they drain at their original
+    /// pitch, then reconfigures BlipBuf + the cycle→flush threshold so
+    /// subsequent samples are resampled at the new rate.
+    pub fn set_cpu_clock(&mut self, cpu_clock_hz: f64) {
+        self.flush();
+        self.blip.set_rates(cpu_clock_hz, self.sample_rate as f64);
+        self.cycles_per_flush =
+            ((cpu_clock_hz * FLUSH_MILLIS as f64) / 1000.0).max(1.0) as u32;
     }
 
     fn flush(&mut self) {
@@ -198,6 +214,7 @@ pub fn start(cpu_clock_hz: f64) -> Result<(AudioSink, AudioStream)> {
         producer,
         scratch,
         cycles_per_flush,
+        sample_rate,
     };
     let stream = AudioStream {
         _stream: stream,

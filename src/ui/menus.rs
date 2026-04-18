@@ -1,18 +1,16 @@
-//! Top menubar layout. Sub-phase 1 ships an empty shell — items render
-//! but have no actions wired. Sub-phase 2+ will take a `&mut Vec<UiCommand>`
-//! and push commands when items are clicked.
+//! Top menubar layout. Widgets here push `UiCommand` variants into the
+//! caller's scratch `Vec`; the host drains and applies them after the
+//! paint pass. Sub-phase 2 wires File → Open / Recent / Quit. Other
+//! menus are still placeholder labels.
 
 use egui::{MenuBar, Panel, Ui};
 
-pub fn build_top_menubar(ui: &mut Ui) {
+use crate::ui::{RecentRoms, UiCommand};
+
+pub fn build_top_menubar(ui: &mut Ui, recent: &RecentRoms, cmds: &mut Vec<UiCommand>) {
     Panel::top("vibenes.menubar").show_inside(ui, |ui| {
         MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                ui.label("Open ROM…");
-                ui.label("Recent ROMs");
-                ui.separator();
-                ui.label("Quit");
-            });
+            file_menu(ui, recent, cmds);
             ui.menu_button("Emulation", |ui| {
                 ui.label("Pause");
                 ui.label("Reset");
@@ -31,5 +29,39 @@ pub fn build_top_menubar(ui: &mut Ui) {
                 ui.label("Debug panel");
             });
         });
+    });
+}
+
+fn file_menu(ui: &mut Ui, recent: &RecentRoms, cmds: &mut Vec<UiCommand>) {
+    ui.menu_button("File", |ui| {
+        if ui.button("Open ROM…").clicked() {
+            cmds.push(UiCommand::OpenRomDialog);
+            ui.close();
+        }
+        ui.menu_button("Recent ROMs", |ui| {
+            if recent.is_empty() {
+                ui.add_enabled(false, egui::Label::new("(none yet)"));
+                return;
+            }
+            for path in recent.iter() {
+                // File name is more legible than the full path; the
+                // full path is available as a hover tooltip for
+                // disambiguating two ROMs with the same filename.
+                let label = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                let resp = ui.button(label).on_hover_text(path.display().to_string());
+                if resp.clicked() {
+                    cmds.push(UiCommand::OpenRom(path.clone()));
+                    ui.close();
+                }
+            }
+        });
+        ui.separator();
+        if ui.button("Quit").clicked() {
+            cmds.push(UiCommand::Quit);
+            ui.close();
+        }
     });
 }

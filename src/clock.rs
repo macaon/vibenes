@@ -46,6 +46,17 @@ impl Region {
             Region::Pal => 311,
         }
     }
+
+    /// CPU-side clock rate in Hz — the rate at which the APU emits one
+    /// mixer sample per bus tick. Used by the host audio resampler to
+    /// convert APU output to the sound device's sample rate.
+    /// NTSC master = 21.477272 MHz ÷ 12; PAL master = 26.601712 MHz ÷ 16.
+    pub fn cpu_clock_hz(self) -> f64 {
+        match self {
+            Region::Ntsc => 21_477_272.0 / 12.0,
+            Region::Pal => 26_601_712.0 / 16.0,
+        }
+    }
 }
 
 /// Master clock model.

@@ -78,6 +78,25 @@ impl Nes {
         self.bus.audio_sink = Some(sink);
     }
 
+    /// Replace the loaded cartridge with a new one and cold-reset the
+    /// CPU. The already-attached `AudioSink` is preserved across the
+    /// swap so the cpal stream keeps running without a reconnect; if
+    /// the new ROM's TV system differs from the old one, the sink is
+    /// re-tuned to the new CPU clock so pitch stays correct.
+    pub fn swap_cartridge(&mut self, cart: Cartridge) -> Result<()> {
+        let mut sink = self.bus.audio_sink.take();
+        let region = Region::from_tv_system(cart.tv_system);
+        if let Some(sink) = sink.as_mut() {
+            sink.set_cpu_clock(region.cpu_clock_hz());
+        }
+        let mapper = mapper::build(cart)?;
+        self.bus = Bus::new(mapper, region);
+        self.bus.audio_sink = sink;
+        self.cpu = Cpu::new();
+        self.cpu.reset(&mut self.bus);
+        Ok(())
+    }
+
     /// Flush pending resampler output into the ring. Call once per
     /// emulator frame from the GUI loop to bound audio latency;
     /// otherwise the sink flushes on its internal cycle threshold

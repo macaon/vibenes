@@ -4,7 +4,7 @@
 //! present mode; NTSC 60.0988 Hz drift is a Phase 7 (audio-pacing)
 //! problem.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ use vibenes::clock::Region;
 use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
-use vibenes::ui::UiLayer;
+use vibenes::ui::{RecentRoms, UiCommand, UiLayer};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -60,7 +60,7 @@ fn run() -> Result<()> {
     // Try to open a host audio stream. If the host has no audio device
     // (headless CI, WSL without PulseAudio, etc.) we still want the
     // emulator to run — just silently.
-    let audio_stream = match audio::start(cpu_clock_hz(nes.region())) {
+    let audio_stream = match audio::start(nes.region().cpu_clock_hz()) {
         Ok((sink, stream)) => {
             eprintln!(
                 "audio: {} Hz × {} ch",
@@ -77,18 +77,15 @@ fn run() -> Result<()> {
 
     let event_loop = EventLoop::new().context("create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut handler = App::new(nes, audio_stream);
+    let mut handler = App::new(nes, audio_stream, rom_path);
     event_loop.run_app(&mut handler).context("winit event loop")?;
     Ok(())
 }
 
-/// CPU-side APU sample rate in Hz — the clock at which the APU mixer
-/// emits one analog sample per bus tick. NTSC master = 21.477272 MHz
-/// ÷ 12; PAL master = 26.601712 MHz ÷ 16.
-fn cpu_clock_hz(region: Region) -> f64 {
+fn frame_period_for(region: Region) -> Duration {
     match region {
-        Region::Ntsc => 21_477_272.0 / 12.0,
-        Region::Pal => 26_601_712.0 / 16.0,
+        Region::Ntsc => NTSC_FRAME_PERIOD,
+        Region::Pal => PAL_FRAME_PERIOD,
     }
 }
 
@@ -109,7 +106,8 @@ struct App {
     ui: Option<UiLayer>,
     halted_notice_shown: bool,
     /// Per-region frame period (NTSC ≈ 16.639 ms, PAL ≈ 19.997 ms).
-    /// Seeded from the cartridge's TV-system at construction.
+    /// Seeded from the cartridge's TV-system at construction; updated
+    /// when a ROM swap changes regions.
     frame_period: Duration,
     /// Deadline for the next frame's present. Advanced by one
     /// `frame_period` each completed frame so drift stays pinned to
@@ -119,14 +117,20 @@ struct App {
     /// device — hence why it lives on the App owner rather than a
     /// local inside `run()`.
     _audio_stream: Option<audio::AudioStream>,
+    /// Most-recently-loaded ROMs, shown in the File menu. Seeded with
+    /// the path passed on the command line.
+    recent_roms: RecentRoms,
 }
 
 impl App {
-    fn new(nes: Nes, audio_stream: Option<audio::AudioStream>) -> Self {
-        let frame_period = match nes.region() {
-            Region::Ntsc => NTSC_FRAME_PERIOD,
-            Region::Pal => PAL_FRAME_PERIOD,
-        };
+    fn new(
+        nes: Nes,
+        audio_stream: Option<audio::AudioStream>,
+        initial_rom: PathBuf,
+    ) -> Self {
+        let frame_period = frame_period_for(nes.region());
+        let mut recent_roms = RecentRoms::default();
+        recent_roms.push(initial_rom);
         Self {
             nes,
             window: None,
@@ -136,6 +140,7 @@ impl App {
             frame_period,
             next_frame_deadline: None,
             _audio_stream: audio_stream,
+            recent_roms,
         }
     }
 
@@ -169,9 +174,12 @@ impl App {
         renderer.upload_framebuffer(&self.nes.bus.ppu.frame_buffer);
         // Build the UI outside the overlay closure so we can borrow
         // `self.ui` mutably here and again inside the closure without
-        // a conflicting double-borrow of `self`.
+        // a conflicting double-borrow of `self`. Commands produced by
+        // egui widgets are drained after paint so emulator mutations
+        // don't race with any in-flight borrows.
+        let mut cmds: Vec<UiCommand> = Vec::new();
         if let (Some(ui), Some(window)) = (self.ui.as_mut(), self.window.as_ref()) {
-            ui.run(window);
+            ui.run(window, &self.recent_roms, &mut cmds);
         }
         let ui_window = self.window.clone();
         let ui = self.ui.as_mut();
@@ -187,6 +195,9 @@ impl App {
                 eprintln!("vibenes: {msg}");
                 event_loop.exit();
             }
+        }
+        for cmd in cmds {
+            self.apply_ui_command(cmd, event_loop);
         }
 
         // Advance the frame deadline for NTSC/PAL-accurate pacing. If
@@ -324,6 +335,49 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    fn apply_ui_command(&mut self, cmd: UiCommand, event_loop: &ActiveEventLoop) {
+        match cmd {
+            UiCommand::OpenRomDialog => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("NES ROM", &["nes"])
+                    .pick_file()
+                {
+                    self.load_rom(&path);
+                }
+            }
+            UiCommand::OpenRom(path) => self.load_rom(&path),
+            UiCommand::Quit => event_loop.exit(),
+        }
+    }
+
+    fn load_rom(&mut self, path: &Path) {
+        let cart = match Cartridge::load(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("vibenes: failed to load {}: {e:#}", path.display());
+                return;
+            }
+        };
+        eprintln!("loaded: {}", cart.describe());
+        if let Err(e) = self.nes.swap_cartridge(cart) {
+            eprintln!("vibenes: swap failed: {e:#}");
+            return;
+        }
+        // The new ROM may have a different TV system; re-pin the frame
+        // deadline to its cadence and reset the deadline anchor so we
+        // don't eat the full delta at once.
+        self.frame_period = frame_period_for(self.nes.region());
+        self.next_frame_deadline = None;
+        self.halted_notice_shown = false;
+        self.recent_roms.push(path.to_path_buf());
+        eprintln!(
+            "vibenes: loaded {} (region={:?} PC=${:04X})",
+            path.display(),
+            self.nes.region(),
+            self.nes.cpu.pc
+        );
+    }
+
     /// Map keyboard keys to NES controller-1 bits. The NES shifter
     /// reads LSB-first in this order: A, B, Select, Start, Up, Down,
     /// Left, Right (see `Controller::read`). Layout mirrors the
