@@ -16,6 +16,7 @@ use vibenes::clock::Region;
 use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
+use vibenes::ui::UiLayer;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -105,6 +106,7 @@ struct App {
     nes: Nes,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    ui: Option<UiLayer>,
     halted_notice_shown: bool,
     /// Per-region frame period (NTSC ≈ 16.639 ms, PAL ≈ 19.997 ms).
     /// Seeded from the cartridge's TV-system at construction.
@@ -129,6 +131,7 @@ impl App {
             nes,
             window: None,
             renderer: None,
+            ui: None,
             halted_notice_shown: false,
             frame_period,
             next_frame_deadline: None,
@@ -164,7 +167,20 @@ impl App {
         self.nes.end_audio_frame();
 
         renderer.upload_framebuffer(&self.nes.bus.ppu.frame_buffer);
-        match renderer.render() {
+        // Build the UI outside the overlay closure so we can borrow
+        // `self.ui` mutably here and again inside the closure without
+        // a conflicting double-borrow of `self`.
+        if let (Some(ui), Some(window)) = (self.ui.as_mut(), self.window.as_ref()) {
+            ui.run(window);
+        }
+        let ui_window = self.window.clone();
+        let ui = self.ui.as_mut();
+        let outcome = renderer.render_with(|device, queue, view, encoder, size| {
+            if let (Some(ui), Some(window)) = (ui, ui_window.as_ref()) {
+                ui.paint(device, queue, view, encoder, size, window);
+            }
+        });
+        match outcome {
             PresentOutcome::Presented | PresentOutcome::Skipped => {}
             PresentOutcome::NeedsReconfigure => renderer.reconfigure(),
             PresentOutcome::Fatal(msg) => {
@@ -240,8 +256,10 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        let ui = UiLayer::new(renderer.device(), renderer.surface_format(), &window);
         self.window = Some(window);
         self.renderer = Some(renderer);
+        self.ui = Some(ui);
     }
 
     fn window_event(
@@ -250,8 +268,21 @@ impl ApplicationHandler for App {
         _id: WindowId,
         event: WindowEvent,
     ) {
+        // egui gets first look at every event so text fields, menu
+        // navigation, clipboard, etc. work. If it consumes the event
+        // we skip emulator-side handling entirely. Escape is a hard
+        // override — we always want it to exit the app.
+        let consumed_by_ui = match (self.ui.as_mut(), self.window.as_ref()) {
+            (Some(ui), Some(window)) => ui.on_window_event(window, &event).consumed,
+            _ => false,
+        };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.on_scale_factor_changed(scale_factor as f32);
+                }
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -264,6 +295,9 @@ impl ApplicationHandler for App {
             } => {
                 if code == KeyCode::Escape && state == ElementState::Pressed {
                     event_loop.exit();
+                } else if consumed_by_ui {
+                    // egui owns this event (text field, menu nav, etc.).
+                    // Do not forward to the NES controller or reset.
                 } else if code == KeyCode::KeyR && state == ElementState::Pressed {
                     self.nes.reset();
                     self.halted_notice_shown = false;

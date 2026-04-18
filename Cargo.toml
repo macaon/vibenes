@@ -25,6 +25,14 @@ pollster = "0.4"
 cpal = "0.15"
 blip_buf = "0.1"
 ringbuf = "0.4"
+# Phase 6C: menu overlay. egui is an immediate-mode UI toolkit; `egui-wgpu`
+# adapts it to our existing wgpu 29 pipeline as an extra render pass on the
+# same swapchain texture, and `egui-winit` translates winit events into the
+# egui input model (keyboard focus, cursor, clipboard). egui 0.34 is the
+# line that targets wgpu 29 + winit 0.30.
+egui = "0.34"
+egui-wgpu = { version = "0.34", features = ["winit"] }
+egui-winit = "0.34"
 
 [profile.dev]
 opt-level = 1

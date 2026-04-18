@@ -1,0 +1,143 @@
+//! egui-based menu overlay. Owns the egui context, the winit→egui
+//! event adapter, and the `egui-wgpu` renderer.
+//!
+//! Lifecycle per frame:
+//!
+//! 1. `on_window_event` — forward winit events to egui before the
+//!    emulator sees them. Returned `EventResponse::consumed` is the
+//!    signal to short-circuit emulator input handling.
+//! 2. `run` — build the UI by calling egui. Caches the resulting
+//!    `FullOutput` for the subsequent paint.
+//! 3. `paint` — called from inside [`crate::gfx::Renderer::render_with`]'s
+//!    overlay closure. Uploads egui texture deltas, encodes the UI
+//!    render pass with `LoadOp::Load` (preserving the NES blit
+//!    underneath), and frees textures egui has released.
+//!
+//! The menubar itself is just a list of `ui.menu_button` stubs; real
+//! actions land in the next sub-phase behind a `UiCommand` queue.
+
+use egui::{Context, ViewportId};
+use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
+use egui_winit::{EventResponse, State as EguiWinit};
+use winit::event::WindowEvent;
+use winit::window::Window;
+
+mod menus;
+
+pub struct UiLayer {
+    ctx: Context,
+    winit_state: EguiWinit,
+    renderer: EguiRenderer,
+    /// Captured after `run()`, consumed by `paint()`. None between
+    /// paint and the next run; a missing pending output at paint time
+    /// is a no-op (safer than panicking when a caller skips a frame).
+    pending: Option<egui::FullOutput>,
+}
+
+impl UiLayer {
+    pub fn new(
+        device: &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
+        window: &Window,
+    ) -> Self {
+        let ctx = Context::default();
+        let winit_state = EguiWinit::new(
+            ctx.clone(),
+            ViewportId::ROOT,
+            window,
+            Some(window.scale_factor() as f32),
+            None,
+            None,
+        );
+        let renderer = EguiRenderer::new(device, surface_format, RendererOptions::default());
+        Self {
+            ctx,
+            winit_state,
+            renderer,
+            pending: None,
+        }
+    }
+
+    /// Forward a winit event to egui. Callers should check the returned
+    /// `EventResponse::consumed` and skip their own handling when
+    /// egui has taken ownership (e.g. while a text field is focused).
+    pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> EventResponse {
+        self.winit_state.on_window_event(window, event)
+    }
+
+    /// Inform egui that the window's DPI scale changed. Called from the
+    /// `ScaleFactorChanged` event.
+    pub fn on_scale_factor_changed(&mut self, scale_factor: f32) {
+        self.ctx.set_pixels_per_point(scale_factor);
+    }
+
+    /// Build the UI for the current frame and stash the output for
+    /// `paint`. This sub-phase hard-codes the empty menubar; later
+    /// sub-phases will take a state reference + command queue.
+    pub fn run(&mut self, window: &Window) {
+        let raw_input = self.winit_state.take_egui_input(window);
+        let full_output = self.ctx.run_ui(raw_input, |ui| {
+            menus::build_top_menubar(ui);
+        });
+        self.pending = Some(full_output);
+    }
+
+    /// Paint the UI built by the last `run` into `view`, using the
+    /// already-recording `encoder`. Safe to call even if `run` was
+    /// skipped — returns silently with no overlay drawn.
+    pub fn paint(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        encoder: &mut wgpu::CommandEncoder,
+        surface_size: (u32, u32),
+        window: &Window,
+    ) {
+        let Some(full_output) = self.pending.take() else {
+            return;
+        };
+        // Clipboard / cursor icon / IME state back-propagation.
+        self.winit_state
+            .handle_platform_output(window, full_output.platform_output);
+        let pixels_per_point = full_output.pixels_per_point;
+        let paint_jobs = self.ctx.tessellate(full_output.shapes, pixels_per_point);
+        let screen = ScreenDescriptor {
+            size_in_pixels: [surface_size.0, surface_size.1],
+            pixels_per_point,
+        };
+        for (id, delta) in &full_output.textures_delta.set {
+            self.renderer.update_texture(device, queue, *id, delta);
+        }
+        let _user_cmds =
+            self.renderer
+                .update_buffers(device, queue, encoder, &paint_jobs, &screen);
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("vibenes.ui"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            // egui_wgpu::Renderer::render takes RenderPass<'static>.
+            // `forget_lifetime` drops the compile-time borrow of
+            // `encoder` — any accidental mid-pass encoder mutation
+            // becomes a runtime validation error instead.
+            let mut pass = pass.forget_lifetime();
+            self.renderer.render(&mut pass, &paint_jobs, &screen);
+        }
+        for id in &full_output.textures_delta.free {
+            self.renderer.free_texture(id);
+        }
+    }
+}

@@ -289,7 +289,40 @@ impl Renderer {
         );
     }
 
-    pub fn render(&mut self) -> PresentOutcome {
+    /// Underlying wgpu device. Used by overlay layers (egui) that need
+    /// to build their own pipelines and upload their own resources.
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// Underlying wgpu queue. See [`Renderer::device`].
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// Surface format in use. Overlay layers need this to match their
+    /// fragment output target.
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+
+    /// Current surface extent in physical pixels (width, height).
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
+    /// Acquire the next swapchain texture, blit the NES framebuffer into
+    /// it (clearing the surface first), invoke `on_overlay` with the
+    /// same encoder + view so an overlay can paint on top with
+    /// `LoadOp::Load`, then submit and present.
+    ///
+    /// The overlay closure is handed `(device, queue, view, encoder,
+    /// (surface_w, surface_h))` — everything an egui-style pass needs
+    /// to upload buffers and encode a second render pass.
+    pub fn render_with<F>(&mut self, on_overlay: F) -> PresentOutcome
+    where
+        F: FnOnce(&wgpu::Device, &wgpu::Queue, &wgpu::TextureView, &mut wgpu::CommandEncoder, (u32, u32)),
+    {
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
                 t
@@ -333,9 +366,22 @@ impl Renderer {
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+        on_overlay(
+            &self.device,
+            &self.queue,
+            &view,
+            &mut encoder,
+            (self.config.width, self.config.height),
+        );
         self.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
         PresentOutcome::Presented
+    }
+
+    /// Convenience wrapper around `render_with` for callers that have no
+    /// overlay to encode. Equivalent to `render_with(|_, _, _, _, _| {})`.
+    pub fn render(&mut self) -> PresentOutcome {
+        self.render_with(|_, _, _, _, _| {})
     }
 }
 
