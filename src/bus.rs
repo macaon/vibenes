@@ -106,7 +106,7 @@ impl Bus {
     /// CPU's read complete. DMA does not start during writes — a request
     /// raised during a write cycle waits for the next read.
     pub fn read(&mut self, addr: u16) -> u8 {
-        self.service_pending_dmc_dma();
+        self.service_pending_dmc_dma(addr);
         self.tick_pre_access();
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
@@ -312,16 +312,27 @@ impl Bus {
 
     /// Consume a pending DMC DMA request, if any, and insert the stall
     /// cycles required to fetch the sample byte. Called at the top of
-    /// [`Bus::read`] so the halt cycle lines up with the CPU's next read.
+    /// [`Bus::read`] with the CPU's pending read address so the halt
+    /// cycle can replay the read on the bus — real hardware behavior
+    /// that causes one extra `$4016` / `$4017` shift when DMC DMA
+    /// fires during a controller read (`dmc_dma_during_read4/
+    /// dma_4016_read`).
     ///
-    /// Nesdev "DMC DMA" cycle model: the CPU is halted (1 cycle), then
-    /// runs one dummy re-read (1 cycle), then one alignment idle if the
-    /// next "get" cycle is a full cycle away (1 cycle), then the DMC's
-    /// read takes place (1 cycle) — typical **4 CPU cycles**. We use a
-    /// fixed 4-cycle stall for simplicity; this is within the 2..=4
-    /// range all documented tests observe, and matches Mesen2's worst
-    /// case which is what blargg's apu_test expects.
-    fn service_pending_dmc_dma(&mut self) {
+    /// Nesdev "DMC DMA" cycle model (`DMC_NORMAL` case, 4 cycles):
+    /// 1. **Halt** — RDY drops; CPU still drives the bus and reads
+    ///    its pending address one more time. This is the cycle that
+    ///    produces the controller double-read bug.
+    /// 2. **Dummy** — DMA controller has the bus; idle cycle with
+    ///    no externally-visible side effects.
+    /// 3. **Align** — optional extra idle to align to the DMC read.
+    /// 4. **DMC read** — the sample byte fetch at `DMC.current_addr`
+    ///    (always in `$8000..=$FFFF`, so a plain mapper read).
+    ///
+    /// We use the fixed 4-cycle worst case. puNES's more detailed
+    /// 4-way taxonomy (`DMC_NORMAL` / `DMC_CPU_WRITE` / `DMC_R4014` /
+    /// `DMC_NNL_DMA`) is a later-phase refinement; for the current
+    /// test suite, replaying on the halt cycle only is sufficient.
+    fn service_pending_dmc_dma(&mut self, pending_addr: u16) {
         if self.dmc_dma_active {
             return;
         }
@@ -329,14 +340,17 @@ impl Bus {
             return;
         };
         self.dmc_dma_active = true;
-        // Halt + dummy + align: 3 idle CPU cycles. We do not replay the
-        // CPU's pending read here; the controller/MMIO double-read bug
-        // and its interaction with $4016/$4017 is a later phase.
+        // Cycle 1 — halt: re-read the CPU's pending address. The
+        // `dmc_dma_active` guard set above keeps this nested `read`
+        // from re-entering DMA servicing. We discard the value — the
+        // side effects (open-bus update, controller shift, $4015
+        // frame-IRQ clear, etc.) are the observable part.
+        let _ = self.read(pending_addr);
+        // Cycles 2-3 — dummy + align: the DMA controller owns the
+        // bus but drives no read, so no side effects. Plain ticks.
         self.tick_cycle();
         self.tick_cycle();
-        self.tick_cycle();
-        // Fourth cycle: the DMC bus-master read. Sample addresses always
-        // live in $8000..=$FFFF, so this is a pure mapper read.
+        // Cycle 4 — DMC read at the sample byte.
         let byte = self.mapper.cpu_read(req.addr);
         self.tick_cycle();
         self.apu.dmc_dma_complete(byte);
