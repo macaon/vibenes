@@ -115,7 +115,18 @@ impl Bus {
             0x4016 => 0x40 | (self.controllers[0].read() & 1),
             0x4017 => 0x40 | (self.controllers[1].read() & 1),
             0x4018..=0x401F => self.open_bus,
-            0x4020..=0xFFFF => self.mapper.cpu_read(addr),
+            // $4020-$5FFF is cartridge-claimable expansion space. On
+            // carts that don't decode it (every mapper we currently
+            // support: NROM / MMC1 / UxROM / CNROM / AxROM), reads
+            // return open bus — the last value the CPU put on the
+            // data lines. Required by
+            // `cpu_exec_space/test_cpu_exec_space_apu` which fetches
+            // opcodes from this region and expects the just-written
+            // test-scaffold byte to come back. Mappers that DO claim
+            // the range (MMC5, FDS) will need a revisit of the
+            // mapper trait to distinguish "decoded" from "open bus".
+            0x4020..=0x5FFF => self.open_bus,
+            0x6000..=0xFFFF => self.mapper.cpu_read(addr),
             _ => self.open_bus,
         };
         self.open_bus = value;
