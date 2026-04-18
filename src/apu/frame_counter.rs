@@ -44,23 +44,23 @@ struct PendingWrite {
 
 impl FrameCounter {
     pub fn new(region: Region) -> Self {
-        // Nesdev: "After reset or power-up, APU acts as if $4017 were
-        // written with $00 from 9 to 12 clocks before the first
-        // instruction begins." Mesen2 models this as a pending $4017
-        // write with a 3-cycle apply delay scheduled at cycle 3.
-        // Without this, the first frame IRQ on power fires 3 cycles
-        // too early and blargg's 4017_timing measures count=5 instead
-        // of count≈8.
-        let pending_write = Some(PendingWrite {
-            value: 0x00,
-            apply_at: 3,
-        });
+        // Power-on matches puNES's model: no pending $4017 apply delay
+        // — the divider simply starts counting from cycle 0. `Cpu::reset`
+        // then burns 7 bus ticks before the first opcode fetch, which
+        // places the first step-4 event (counter == 29828) 29821 CPU
+        // cycles after the first instruction. That lands inside the
+        // "9 to 12 clocks before first instruction + 29829" window
+        // that blargg_apu_2005.07.30/09.reset_timing probes. Earlier
+        // revisions scheduled a pending_write with `apply_at: 3`
+        // intending to emulate the nesdev "$4017 written from 9–12
+        // clocks before first instruction" phrasing, but that produced
+        // only a 4-cycle offset and failed test 9.
         Self {
             region,
             mode: Mode::FourStep,
             irq_inhibit: false,
             counter: 0,
-            pending_write,
+            pending_write: None,
             block_ticks_until: 0,
         }
     }

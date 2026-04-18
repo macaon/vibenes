@@ -103,7 +103,6 @@ fn rom_08_irq_timing() {
 }
 
 #[test]
-#[ignore = "phase 3.2 — power-on $4017 pre-write offset off (reports code=4 'fourth step too late')"]
 fn rom_09_reset_timing() {
     assert_pass("09.reset_timing.nes");
 }
