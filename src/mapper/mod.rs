@@ -6,6 +6,7 @@ pub mod axrom;
 pub mod cnrom;
 pub mod mmc1;
 pub mod mmc3;
+pub mod mmc5;
 pub mod nrom;
 pub mod uxrom;
 
@@ -19,6 +20,13 @@ pub trait Mapper: Send {
     /// so mappers with read side effects don't accidentally leak state.
     fn cpu_peek(&self, _addr: u16) -> u8 {
         0
+    }
+    /// Read from cartridge expansion space `$4020-$5FFF`. Most carts
+    /// don't decode this range and return open bus; mappers that DO
+    /// claim it (MMC5, FDS) override and return `Some(value)`. The
+    /// bus falls through to `open_bus` when this returns `None`.
+    fn cpu_read_ex(&mut self, _addr: u16) -> Option<u8> {
+        None
     }
     /// Called once per CPU cycle by the bus. Lets mappers with timing-sensitive
     /// behavior (MMC1 consecutive-write filter) advance.
@@ -44,6 +52,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         2 => Ok(Box::new(uxrom::Uxrom::new(cart))),
         3 => Ok(Box::new(cnrom::Cnrom::new(cart))),
         4 => Ok(Box::new(mmc3::Mmc3::new(cart))),
+        5 => Ok(Box::new(mmc5::Mmc5::new(cart))),
         7 => Ok(Box::new(axrom::Axrom::new(cart))),
         other => bail!("unsupported mapper {}", other),
     }
