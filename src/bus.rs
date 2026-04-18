@@ -367,20 +367,43 @@ impl Bus {
             return;
         };
         self.dmc_dma_active = true;
-        // Cycle 1 — halt: re-read the CPU's pending address. The
-        // `dmc_dma_active` guard set above keeps this nested `read`
-        // from re-entering DMA servicing. We discard the value — the
-        // side effects (open-bus update, controller shift, $4015
-        // frame-IRQ clear, etc.) are the observable part.
+        // Mesen2's `skipDummyReads` distinction (`NesCpu.cpp:349-352,
+        // 423-425`): on NES (not Famicom), `$4016`/`$4017` only
+        // register the FIRST DMA dummy read as a controller shift;
+        // subsequent DMA dummy reads don't pulse `/OE` through to the
+        // controller latch. Every other address (including `$2007`)
+        // registers each dummy read as a real bus transaction. We
+        // model this by always replaying the halt cycle, then doing
+        // ONE additional dummy-cycle replay only when the target is
+        // not a controller register. `dmc_dma_during_read4/
+        // dma_2007_read` wants two buffer advances (`33 44` or
+        // `44 55`); `dma_4016_read` wants one bit deletion.
+        let is_controller = matches!(pending_addr & 0xFFFE, 0x4016);
+        // Cycle 1 — halt: always replays pending_addr. Full bus read
+        // with side effects (open-bus, controller shift, $4015
+        // frame-IRQ clear, PPU buffer advance).
         let _ = self.read(pending_addr);
-        // Cycles 2-3 — dummy + align: the DMA controller owns the
-        // bus but drives no read, so no side effects. Plain ticks.
+        // Cycle 2 — dummy: replay at pending_addr again for
+        // non-controller targets (the PPU $2007 buffer advances
+        // every DMA read); idle for $4016/$4017.
+        if is_controller {
+            self.tick_cycle();
+        } else {
+            let _ = self.read(pending_addr);
+        }
+        // Cycle 3 — align: idle (plain tick). The DMA controller
+        // holds the bus here; no CPU-driven read.
         self.tick_cycle();
-        self.tick_cycle();
-        // Cycle 4 — DMC read at the sample byte.
+        // Cycle 4 — DMC read at the sample byte. The DMC commits the
+        // fetched byte into its buffer (and asserts `dmc_irq` on the
+        // last byte of a non-looping sample) BEFORE this cycle's
+        // `tick_cycle` so the APU-tick inside the tick observes the
+        // committed state — required for `sync_dmc`-aligned tests
+        // where the exact cycle `dmc_irq` becomes visible to `$4015`
+        // controls downstream timing.
         let byte = self.mapper.cpu_read(req.addr);
-        self.tick_cycle();
         self.apu.dmc_dma_complete(byte);
+        self.tick_cycle();
         self.dmc_dma_active = false;
     }
 }

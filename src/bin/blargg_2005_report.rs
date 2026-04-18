@@ -37,11 +37,15 @@ fn main() -> ExitCode {
                 println!("{}: {}", path.display(), outcome.summary);
                 if !outcome.passed {
                     overall = 1;
-                    if !outcome.transcript.is_empty() {
-                        eprintln!("--- nametable dump ---");
-                        eprintln!("{}", outcome.transcript);
-                        eprintln!("----------------------");
-                    }
+                }
+                // Always dump the nametable if `VERBOSE=1`, otherwise
+                // only on failure — useful for debugging tests that
+                // print raw data without a pass/fail keyword.
+                let verbose = std::env::var_os("VERBOSE").is_some();
+                if !outcome.transcript.is_empty() && (!outcome.passed || verbose) {
+                    eprintln!("--- nametable dump ---");
+                    eprintln!("{}", outcome.transcript);
+                    eprintln!("----------------------");
                 }
             }
             Err(e) => {
@@ -115,7 +119,7 @@ fn run_one(rom_path: &Path, cycle_limit: u64) -> Result<Outcome> {
             return Ok(Outcome {
                 passed,
                 summary,
-                transcript: if passed { String::new() } else { text },
+                transcript: text,
             });
         }
     }
