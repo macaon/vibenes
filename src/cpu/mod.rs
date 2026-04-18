@@ -53,13 +53,25 @@ impl Default for Cpu {
 
 impl Cpu {
     pub fn new() -> Self {
+        // Power-on register values. The 6502 datasheet says most
+        // registers are indeterminate at power, but the 2A03 in an
+        // NES (and every emulator test that checks) treats SP as
+        // starting at $00 with the 3-cycle reset decrement wrapping
+        // it to $FD. Initializing SP to $00 here instead of $FD keeps
+        // `Cpu::reset`'s `sp -= 3` idempotent: after the first
+        // (power-on) reset SP lands at $FD, and subsequent warm
+        // resets decrement from there ($FD → $FA → $F7 ...), which is
+        // what blargg `cpu_reset/registers.nes` expects.
+        //
+        // A, X, Y start at 0; P = $34 (I=1, B=1, unused=1, others
+        // clear — also per `cpu_reset`'s expected-power-on snapshot).
         Self {
             a: 0,
             x: 0,
             y: 0,
-            sp: 0xFD,
+            sp: 0x00,
             pc: 0,
-            p: StatusFlags::from_bits(0x24),
+            p: StatusFlags::from_bits(0x34),
             cycles: 0,
             halted: false,
             halt_reason: None,
