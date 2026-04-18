@@ -1,6 +1,7 @@
 pub mod apu;
 pub mod app;
 pub mod audio;
+pub mod blargg_2005_scan;
 pub mod bus;
 pub mod clock;
 pub mod cpu;
