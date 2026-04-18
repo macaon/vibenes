@@ -89,6 +89,15 @@ pub struct Ppu {
     /// the semantics of Mesen2's `_preventVblFlag` (NesPpu.cpp:585,
     /// 1340) routed through our pre/post-access split.
     nmi_suppress_hint: bool,
+    /// Armed when a `$2002` read observes the PPU one PPU-dot before
+    /// the VBlank flag would be set (scanline 241, dot 0 or 1 with VBL
+    /// not yet set this frame). The upcoming VBlank-set tick sees this
+    /// and skips both the status-flag set and the `vbl_just_set`
+    /// marker — so both the current read AND any follow-up read in the
+    /// same frame observe bit 7 = 0, and NMI never asserts. Matches
+    /// Mesen2's `_preventVblFlag` (NesPpu.cpp:592, 1340). Required by
+    /// `ppu_vbl_nmi/02-vbl_set_time.nes`.
+    prevent_vbl: bool,
 
     oam: [u8; 256],
     palette: [u8; 32],
@@ -180,6 +189,7 @@ impl Ppu {
             nmi_edge: false,
             vbl_just_set: false,
             nmi_suppress_hint: false,
+            prevent_vbl: false,
             oam: [0; 256],
             palette: [0; 32],
             vram: [0; 0x800],
@@ -280,12 +290,19 @@ impl Ppu {
 
         // VBlank / status flag edges.
         if self.scanline == VBLANK_SCANLINE && self.dot == 1 {
-            self.status |= 0x80;
-            // Mark this CPU cycle as the VBlank-set race window. The
-            // flag persists across the remaining dots of this cycle
-            // and is cleared at the start of the next CPU cycle by
-            // `begin_cpu_cycle`, called from the bus.
-            self.vbl_just_set = true;
+            if !self.prevent_vbl {
+                self.status |= 0x80;
+                // Mark this CPU cycle as the VBlank-set race window. The
+                // flag persists across the remaining dots of this cycle
+                // and is cleared at the start of the next CPU cycle by
+                // `begin_cpu_cycle`, called from the bus.
+                self.vbl_just_set = true;
+            }
+            // `prevent_vbl` is a one-shot: it applies only to this
+            // frame's VBL-set tick. Whether we honored it or the flag
+            // never set anyway (status already clear), reset so the
+            // next frame can set normally.
+            self.prevent_vbl = false;
         }
         if is_pre && self.dot == 1 {
             // Clear VBlank, sprite-0 hit, sprite overflow.
@@ -904,15 +921,36 @@ impl Ppu {
         let reg = addr & 0x0007;
         let value = match reg {
             0x02 => {
-                // Arm NMI suppression but don't mask the returned bit 7.
-                // sync_vbl polls bit 7 to sync to VBlank; hiding it would
-                // add one iteration of delay and shift downstream timing.
-                // The suppression hint cancels the NMI (if any) without
-                // disturbing sync loops.
+                // Two distinct $2002/VBlank races, matching nesdev wiki
+                // and Mesen2 NesPpu.cpp:585,1340 (`_preventVblFlag`):
+                //
+                // 1. Post-set race (`in_race` via `vbl_just_set`): the
+                //    CPU reads `$2002` in the same CPU cycle that ticked
+                //    (241, 1) during pre-access. Bit 7 returned = 1 (the
+                //    flag is live at read time), but the read clears it
+                //    AND cancels the NMI that was latched this cycle.
+                //    sync_vbl depends on seeing bit 7 = 1 here to land.
+                //
+                // 2. Pre-set race (`pre_vbl_race`): the CPU reads
+                //    `$2002` on a cycle whose post-access tick would
+                //    otherwise set VBL. State is (241, 0) or (241, 1)
+                //    with neither `vbl_just_set` nor `status.bit7`
+                //    asserted. Bit 7 returned = 0 AND `prevent_vbl` is
+                //    armed so the upcoming (241, 1) tick skips the
+                //    status-set and the `vbl_just_set` marker. VBlank
+                //    (and NMI) never assert for this frame.
                 let in_race = self.vbl_just_set;
-                let v = (self.status & 0xE0) | (self.open_bus & 0x1F);
+                let pre_vbl_race = !in_race
+                    && self.scanline == VBLANK_SCANLINE
+                    && self.dot == 1
+                    && (self.status & 0x80) == 0;
+                let status_bit7 = if pre_vbl_race { 0 } else { self.status & 0x80 };
+                let v = status_bit7 | (self.status & 0x60) | (self.open_bus & 0x1F);
                 if in_race {
                     self.nmi_suppress_hint = true;
+                }
+                if pre_vbl_race {
+                    self.prevent_vbl = true;
                 }
                 self.status &= !0x80;
                 self.w_latch = false;
