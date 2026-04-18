@@ -177,6 +177,14 @@ pub fn extract_result_code(text: &str) -> Option<u8> {
     if lower.contains("failed") {
         return Some(2);
     }
+    // `blargg_nes_cpu_test5/official.nes` (and a few others) print
+    // "All tests complete" on success with per-sub-test failures
+    // inlined above it. By this point in the match we've already
+    // ruled out an explicit "failed" / "error" keyword, so a bare
+    // "complete" is a pass signal.
+    if lower.contains("complete") {
+        return Some(1);
+    }
     if let Some(pos) = lower.find("result") {
         let after = &text[pos..];
         if let Some(d) = after.chars().find(|c| c.is_ascii_digit()) {
@@ -307,6 +315,19 @@ mod tests {
         // Hex still wins when both are present (debug_byte output is
         // more specific than a generic keyword).
         assert_eq!(extract_result_code("Failed #3\n$03"), Some(3));
+    }
+
+    #[test]
+    fn extract_result_code_recognizes_all_tests_complete_as_pass() {
+        // blargg_nes_cpu_test5/official.nes finishes with this line
+        // and lists per-sub-test failures above it. When there are no
+        // failure keywords, "complete" means every sub-test passed.
+        let happy = "Running tests...\n01-implied\n02-immediate\nAll tests complete";
+        assert_eq!(extract_result_code(happy), Some(1));
+
+        // But a failure keyword higher up wins over "complete".
+        let sad = "Failed #5\nAll tests complete";
+        assert_eq!(extract_result_code(sad), Some(2));
     }
 
     #[test]
