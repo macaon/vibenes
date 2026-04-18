@@ -17,7 +17,7 @@
 //!   sprite-0 five-part predicate (for 6B).
 
 use crate::clock::Region;
-use crate::mapper::Mapper;
+use crate::mapper::{Mapper, PpuFetchKind};
 use crate::rom::Mirroring;
 
 pub const FRAME_WIDTH: usize = 256;
@@ -334,14 +334,16 @@ impl Ppu {
                         // MASK+OR here is equivalent to Mesen2's `|=`.
                         self.reload_bg_shifters();
                         let addr = 0x2000 | (self.v & 0x0FFF);
-                        self.bg_next_nt = self.ppu_bus_read(addr, mapper);
+                        self.bg_next_nt =
+                            self.ppu_bus_read(addr, PpuFetchKind::BgNametable, mapper);
                     }
                     2 => {
                         let at_addr = 0x23C0
                             | (self.v & 0x0C00)
                             | ((self.v >> 4) & 0x38)
                             | ((self.v >> 2) & 0x07);
-                        let at_byte = self.ppu_bus_read(at_addr, mapper);
+                        let at_byte =
+                            self.ppu_bus_read(at_addr, PpuFetchKind::BgAttribute, mapper);
                         // Pre-extract the 2-bit palette selector for
                         // this tile's quadrant so the reload step
                         // doesn't need v after it's been incremented.
@@ -350,11 +352,13 @@ impl Ppu {
                     }
                     4 => {
                         let addr = self.bg_pattern_addr(self.bg_next_nt);
-                        self.bg_next_pat_lo = self.ppu_bus_read(addr, mapper);
+                        self.bg_next_pat_lo =
+                            self.ppu_bus_read(addr, PpuFetchKind::BgPattern, mapper);
                     }
                     6 => {
                         let addr = self.bg_pattern_addr(self.bg_next_nt) + 8;
-                        self.bg_next_pat_hi = self.ppu_bus_read(addr, mapper);
+                        self.bg_next_pat_hi =
+                            self.ppu_bus_read(addr, PpuFetchKind::BgPattern, mapper);
                     }
                     7 => {
                         self.inc_coarse_x();
@@ -391,9 +395,12 @@ impl Ppu {
                 let slot = ((self.dot - 257) / 8) as usize;
                 match (self.dot - 257) % 8 {
                     1 => {
-                        // Garbage NT fetch — drives A12 low.
+                        // Garbage NT fetch — drives A12 low. Tagged
+                        // as a SpriteNametable so MMC5's IRQ detector
+                        // (sub-C) can ignore it and only count the
+                        // real BG NT reads at dots 337/339/1.
                         let addr = 0x2000 | (self.v & 0x0FFF);
-                        let _ = self.ppu_bus_read(addr, mapper);
+                        let _ = self.ppu_bus_read(addr, PpuFetchKind::SpriteNametable, mapper);
                     }
                     3 => {
                         // Garbage AT fetch — drives A12 low.
@@ -401,7 +408,8 @@ impl Ppu {
                             | (self.v & 0x0C00)
                             | ((self.v >> 4) & 0x38)
                             | ((self.v >> 2) & 0x07);
-                        let _ = self.ppu_bus_read(at_addr, mapper);
+                        let _ =
+                            self.ppu_bus_read(at_addr, PpuFetchKind::SpriteAttribute, mapper);
                     }
                     5 => self.fetch_sprite_pattern_slot(slot, false, mapper),
                     7 => self.fetch_sprite_pattern_slot(slot, true, mapper),
@@ -414,11 +422,12 @@ impl Ppu {
                 self.v = (self.v & !0x7BE0) | (self.t & 0x7BE0);
             }
             // Garbage NT fetches at dots 337 and 339 keep the address
-            // bus honest — MMC5 uses these slots, MMC3 sees the same
-            // A12 timeline it would on hardware.
+            // bus honest — MMC5 uses these as part of its 3-same-NT
+            // scanline signature (tagged BgNametable), MMC3 sees the
+            // same A12 timeline it would on hardware.
             if self.dot == 337 || self.dot == 339 {
                 let addr = 0x2000 | (self.v & 0x0FFF);
-                let _ = self.ppu_bus_read(addr, mapper);
+                let _ = self.ppu_bus_read(addr, PpuFetchKind::BgNametable, mapper);
             }
         }
 
@@ -873,7 +882,17 @@ impl Ppu {
         };
 
         let addr = if high { addr + 8 } else { addr };
-        let byte = self.ppu_bus_read(addr, mapper);
+        // MMC5 only routes through its sprite CHR bank set in 8×16
+        // sprite mode; in 8×8 mode a "sprite" pattern fetch is
+        // behaviorally a BG-side fetch (same bank set). Baking that
+        // decision into the fetch tag keeps the mapper dumb — it
+        // simply trusts the kind.
+        let kind = if height == 16 {
+            PpuFetchKind::SpritePattern
+        } else {
+            PpuFetchKind::BgPattern
+        };
+        let byte = self.ppu_bus_read(addr, kind, mapper);
         if slot < self.sprite_count as usize {
             if high {
                 self.sprite_pat_hi[slot] = byte;
@@ -966,18 +985,19 @@ impl Ppu {
             0x07 => {
                 let addr = self.v & 0x3FFF;
                 let result = if addr >= 0x3F00 {
-                    self.data_buffer = self.ppu_bus_read(addr.wrapping_sub(0x1000), mapper);
+                    self.data_buffer =
+                        self.ppu_bus_read(addr.wrapping_sub(0x1000), PpuFetchKind::Idle, mapper);
                     self.read_palette(addr)
                 } else {
                     let buffered = self.data_buffer;
-                    self.data_buffer = self.ppu_bus_read(addr, mapper);
+                    self.data_buffer = self.ppu_bus_read(addr, PpuFetchKind::Idle, mapper);
                     buffered
                 };
                 self.increment_v();
                 // Post-increment v appears on the PPU address bus
                 // outside rendering — gives MMC3's A12 watcher another
                 // rise/fall edge to observe.
-                mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle);
+                mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
                 result
             }
             _ => self.open_bus,
@@ -1026,18 +1046,22 @@ impl Ppu {
                     // write, so A12-sensitive mappers (MMC3) observe
                     // the bit-12 toggle. Without this notification the
                     // mmc3_test "clocked via PPUADDR" gate fails.
-                    mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle);
+                    mapper.on_ppu_addr(
+                        self.v & 0x3FFF,
+                        self.master_ppu_cycle,
+                        PpuFetchKind::Idle,
+                    );
                 }
                 self.w_latch = !self.w_latch;
             }
             0x07 => {
                 let addr = self.v & 0x3FFF;
-                self.ppu_bus_write(addr, data, mapper);
+                self.ppu_bus_write(addr, data, PpuFetchKind::Idle, mapper);
                 self.increment_v();
                 // Post-increment `v` is placed on the address bus
                 // outside rendering — another A12 opportunity for
                 // MMC3 (Mesen2 NesPpu.cpp ProcessPpuDataAccess).
-                mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle);
+                mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
             }
             _ => {}
         }
@@ -1048,11 +1072,13 @@ impl Ppu {
         self.v = self.v.wrapping_add(step) & 0x7FFF;
     }
 
-    fn ppu_bus_read(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
+    fn ppu_bus_read(&mut self, addr: u16, kind: PpuFetchKind, mapper: &mut dyn Mapper) -> u8 {
         let addr = addr & 0x3FFF;
         // Every address the PPU drives on its bus is a chance for an
-        // A12-sensitive mapper (MMC3, MMC5) to count the edge.
-        mapper.on_ppu_addr(addr, self.master_ppu_cycle);
+        // A12-sensitive mapper (MMC3, MMC5) to count the edge. MMC5
+        // also uses the fetch `kind` to route between its BG and
+        // sprite CHR bank sets.
+        mapper.on_ppu_addr(addr, self.master_ppu_cycle, kind);
         match addr {
             0x0000..=0x1FFF => mapper.ppu_read(addr),
             0x2000..=0x3EFF => {
@@ -1064,9 +1090,9 @@ impl Ppu {
         }
     }
 
-    fn ppu_bus_write(&mut self, addr: u16, data: u8, mapper: &mut dyn Mapper) {
+    fn ppu_bus_write(&mut self, addr: u16, data: u8, kind: PpuFetchKind, mapper: &mut dyn Mapper) {
         let addr = addr & 0x3FFF;
-        mapper.on_ppu_addr(addr, self.master_ppu_cycle);
+        mapper.on_ppu_addr(addr, self.master_ppu_cycle, kind);
         match addr {
             0x0000..=0x1FFF => mapper.ppu_write(addr, data),
             0x2000..=0x3EFF => {
