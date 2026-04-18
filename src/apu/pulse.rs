@@ -62,8 +62,11 @@ impl Pulse {
 
     pub fn write_ctrl(&mut self, data: u8) {
         self.duty = data >> 6;
-        // Length halt + envelope loop are the same bit.
-        self.length.set_halt((data & 0x20) != 0);
+        // Length halt + envelope loop are the same bit. Halt is
+        // staged (committed at end of cycle, after any same-cycle
+        // half-frame clock) to preserve blargg's "halt applies AFTER
+        // the length clock" rule.
+        self.length.stage_halt((data & 0x20) != 0);
         self.envelope.write_ctrl(data);
     }
 
@@ -77,12 +80,25 @@ impl Pulse {
         self.sweep.update_target(self.period);
     }
 
-    pub fn write_timer_hi(&mut self, data: u8, length_clocked: bool) {
+    pub fn write_timer_hi(&mut self, data: u8) {
         self.period = (self.period & 0x00FF) | (((data & 0x07) as u16) << 8);
         self.sweep.update_target(self.period);
-        self.length.load(data >> 3, length_clocked);
+        // Length reload is staged; commit drops it if a half-frame
+        // clock fires this cycle AND the counter was non-zero at
+        // write time. Sequencer-pos reset and envelope restart
+        // happen immediately (nesdev: "duty cycle is NOT reset on
+        // $4003 write" is false — sequencer IS reset — but those
+        // bits are not part of the same-cycle length race).
+        self.length.stage_reload(data >> 3);
         self.sequencer_pos = 0;
         self.envelope.restart();
+    }
+
+    /// End-of-cycle commit. Applied by the APU after any same-cycle
+    /// half-frame clock has run, giving staged halt/reload writes
+    /// their hardware-correct visibility window.
+    pub fn commit_length_pending(&mut self) {
+        self.length.commit_pending();
     }
 
     pub fn clock_quarter_frame(&mut self) {

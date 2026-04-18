@@ -47,20 +47,31 @@ impl Triangle {
 
     /// $4008: CRRRRRRR — control flag + linear counter reload value.
     pub fn write_linear(&mut self, data: u8) {
+        // The control-flag bit drives two pieces of state that behave
+        // differently on a same-cycle write:
+        //   * `control_flag` itself gates the linear-counter reload
+        //     suppression inside `clock_quarter_frame`; this is NOT
+        //     staged — per nesdev, linear-counter suppression follows
+        //     the most-recently-written control value immediately.
+        //   * the shared length halt — this IS staged, matching the
+        //     pulse/noise rule (see length.rs).
         self.control_flag = (data & 0x80) != 0;
         self.linear_reload_value = data & 0x7F;
-        // Control flag doubles as length halt.
-        self.length.set_halt(self.control_flag);
+        self.length.stage_halt(self.control_flag);
     }
 
     pub fn write_timer_lo(&mut self, data: u8) {
         self.period = (self.period & 0xFF00) | data as u16;
     }
 
-    pub fn write_timer_hi(&mut self, data: u8, length_clocked: bool) {
+    pub fn write_timer_hi(&mut self, data: u8) {
         self.period = (self.period & 0x00FF) | (((data & 0x07) as u16) << 8);
-        self.length.load(data >> 3, length_clocked);
+        self.length.stage_reload(data >> 3);
         self.linear_reload_flag = true;
+    }
+
+    pub fn commit_length_pending(&mut self) {
+        self.length.commit_pending();
     }
 
     pub fn clock_quarter_frame(&mut self) {

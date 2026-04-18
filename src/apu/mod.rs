@@ -50,10 +50,6 @@ pub struct Apu {
     dmc: Dmc,
     frame_irq: bool,
     dmc_irq: bool,
-    /// Set inside length_counter half-frame clock. Cleared at the start
-    /// of each CPU tick. Used by channel length-load writes to detect the
-    /// "write on the same cycle as the clock" race.
-    length_clocked: bool,
 }
 
 impl Apu {
@@ -69,7 +65,6 @@ impl Apu {
             dmc: Dmc::new(region),
             frame_irq: false,
             dmc_irq: false,
-            length_clocked: false,
         }
     }
 
@@ -115,8 +110,6 @@ impl Apu {
 
     /// Advance one CPU cycle. Must be called after every CPU bus access.
     pub fn tick_cpu_cycle(&mut self) {
-        self.length_clocked = false;
-
         let event = self.frame_counter.tick(self.cycle);
         if event.set_frame_irq {
             self.frame_irq = true;
@@ -127,6 +120,17 @@ impl Apu {
         if event.half {
             self.clock_half();
         }
+
+        // Commit any staged halt/length-reload writes now that the
+        // frame counter has had its chance to fire a half-frame
+        // clock for this cycle. Ordering is load-bearing: commits
+        // must run strictly after `clock_half` (blargg tests 10 and
+        // 11) and strictly before channel timer ticks (so a staged
+        // reload that survives is audible immediately).
+        self.pulse1.commit_length_pending();
+        self.pulse2.commit_length_pending();
+        self.triangle.commit_length_pending();
+        self.noise.commit_length_pending();
 
         // Triangle timer + sequencer tick every CPU cycle.
         self.triangle.tick_cpu();
@@ -154,7 +158,6 @@ impl Apu {
     }
 
     fn clock_half(&mut self) {
-        self.length_clocked = true;
         self.pulse1.clock_half_frame();
         self.pulse2.clock_half_frame();
         self.triangle.clock_half_frame();
@@ -208,20 +211,20 @@ impl Apu {
             0x4000 => self.pulse1.write_ctrl(data),
             0x4001 => self.pulse1.write_sweep(data),
             0x4002 => self.pulse1.write_timer_lo(data),
-            0x4003 => self.pulse1.write_timer_hi(data, self.length_clocked),
+            0x4003 => self.pulse1.write_timer_hi(data),
 
             0x4004 => self.pulse2.write_ctrl(data),
             0x4005 => self.pulse2.write_sweep(data),
             0x4006 => self.pulse2.write_timer_lo(data),
-            0x4007 => self.pulse2.write_timer_hi(data, self.length_clocked),
+            0x4007 => self.pulse2.write_timer_hi(data),
 
             0x4008 => self.triangle.write_linear(data),
             0x400A => self.triangle.write_timer_lo(data),
-            0x400B => self.triangle.write_timer_hi(data, self.length_clocked),
+            0x400B => self.triangle.write_timer_hi(data),
 
             0x400C => self.noise.write_ctrl(data),
             0x400E => self.noise.write_period(data),
-            0x400F => self.noise.write_length(data, self.length_clocked),
+            0x400F => self.noise.write_length(data),
 
             0x4010 => {
                 self.dmc.write_ctrl(data);

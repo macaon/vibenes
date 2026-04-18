@@ -108,13 +108,11 @@ fn rom_09_reset_timing() {
 }
 
 #[test]
-#[ignore = "phase 3.3 — halt write applied before same-cycle length clock (reports code=3)"]
 fn rom_10_len_halt_timing() {
     assert_pass("10.len_halt_timing.nes");
 }
 
 #[test]
-#[ignore = "phase 3.4 — length reload not deferred past same-cycle length clock (reports code=3)"]
 fn rom_11_len_reload_timing() {
     assert_pass("11.len_reload_timing.nes");
 }

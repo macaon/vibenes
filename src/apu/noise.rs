@@ -60,7 +60,8 @@ impl Noise {
     }
 
     pub fn write_ctrl(&mut self, data: u8) {
-        self.length.set_halt((data & 0x20) != 0);
+        // Halt is staged — same rule as pulse. See length.rs.
+        self.length.stage_halt((data & 0x20) != 0);
         self.envelope.write_ctrl(data);
     }
 
@@ -70,9 +71,13 @@ impl Noise {
         self.period = self.period_table()[idx];
     }
 
-    pub fn write_length(&mut self, data: u8, length_clocked: bool) {
-        self.length.load(data >> 3, length_clocked);
+    pub fn write_length(&mut self, data: u8) {
+        self.length.stage_reload(data >> 3);
         self.envelope.restart();
+    }
+
+    pub fn commit_length_pending(&mut self) {
+        self.length.commit_pending();
     }
 
     pub fn clock_quarter_frame(&mut self) {
