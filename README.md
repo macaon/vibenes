@@ -35,17 +35,27 @@ Every ROM in these suites passes:
 - `apu_test/*` (8/8), `apu_reset/*` (6/6)
 - `blargg_apu_2005.07.30/*` (11/11) — gated by the `blargg_apu_2005`
   integration test
+- `dmc_dma_during_read4/*` (5/5) — gated by the
+  `dmc_dma_during_read4` integration test against hardware-behavior
+  invariants (see "Not yet" below for the remaining CRC-strict
+  alignment issue)
 
 ### Not yet
 
-- **DMC DMA double-read bug** (3 `dmc_dma_during_read4/*` ROMs fail):
-  the halt/dummy cycles of a DMC DMA don't replay the CPU's pending
-  read address, so $4016/$4017 controller shifts aren't
-  double-consumed.
+- **DMC DMA 1-cycle alignment** — `dmc_dma_during_read4/
+  dma_4016_read` and `dma_2007_read` produce the correct hardware
+  *behavior* (halt-cycle replay consumes one controller bit or
+  advances the $2007 buffer by two) but the DMC→DMA timing aligns
+  one iteration later in the test's 5-iter sweep than real
+  hardware. Integration tests pass on pattern invariants; the ROM's
+  internal CRC check differs. Full write-up in
+  `notes/phase9/follow_ups.md §F1`.
 - **OAM + DMC DMA interleave** (2 `sprdma_and_dmc_dma` ROMs fail):
-  when both DMAs arm, the combined cycle count alternates 528/529
-  where it should be stable. Likely the same root cause as the
-  double-read bug.
+  `run_oam_dma` runs as an opaque 513/514-cycle block and doesn't
+  interleave DMC DMA read cycles the way real hardware does.
+  Requires rewriting OAM DMA as an explicit get/put-cycle loop per
+  Mesen2 `NesCpu.cpp:399-447`. Write-up in
+  `notes/phase9/follow_ups.md §F2`.
 - **PPU edge-timing sub-tests** — `ppu_vbl_nmi` 6/10, plus
   `oam_stress` and `ppu_open_bus`. These probe per-dot-precise
   edges of VBL / odd-frame skip / NMI on/off.
