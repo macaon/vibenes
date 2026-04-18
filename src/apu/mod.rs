@@ -167,16 +167,16 @@ impl Apu {
     /// `$4015` read: returns channel-status bits, clears frame IRQ.
     ///
     /// Same-cycle race (nesdev "Frame IRQ flag"): if the frame counter
-    /// sets `frame_irq` on the same CPU cycle as a $4015 read, hardware
-    /// must return the bit set and clear it after. Our bus ticks the
-    /// APU at the *end* of every bus access (see `Bus::tick_cycle`), so
-    /// in practice `read_status` observes the frame_irq state as of the
-    /// previous cycle — any setting event on "this" cycle is deferred
-    /// to the next read. Frame IRQ stays level-asserted for 3 CPU
-    /// cycles (29828..=29830), so this off-by-one does not drop the
-    /// flag and `apu_test/6-irq_flag_timing` passes. If a future test
-    /// catches the race we must move the APU tick to the start of the
-    /// bus op (or split it into pre/post halves).
+    /// sets `frame_irq` on the same CPU cycle as a `$4015` read,
+    /// hardware must return the bit set and clear it after. `Bus::
+    /// tick_pre_access` advances the APU *before* the CPU's bus
+    /// access, so by the time `read_status` runs, any frame IRQ
+    /// event for the current cycle has already set `frame_irq` and
+    /// is observable here. `blargg_apu_2005.07.30/08.irq_timing`
+    /// relies on this ordering — the older post-access model
+    /// dispatched IRQ one cycle early because the CPU's
+    /// `prev_irq_line` snapshot saw the flag a cycle before the
+    /// `$4015` read could see it.
     pub fn read_status(&mut self) -> u8 {
         let mut status = 0u8;
         if self.pulse1.length_nonzero() {

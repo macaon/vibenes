@@ -97,7 +97,6 @@ fn rom_07_irq_flag_timing() {
 }
 
 #[test]
-#[ignore = "phase 3.1 — irq dispatch arrives 1 cycle late (reports code=2 'too soon')"]
 fn rom_08_irq_timing() {
     assert_pass("08.irq_timing.nes");
 }

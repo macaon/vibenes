@@ -189,20 +189,29 @@ impl Bus {
         if self.ppu.poll_nmi() {
             self.nmi_pending = true;
         }
+
+        // APU ticks BEFORE the bus access so that:
+        //   * a `$4015` read on the cycle the frame counter asserts
+        //     `frame_irq` sees the flag set and clears it in one go
+        //     (matches real hardware; `blargg_apu_2005.07.30/08.irq_timing`
+        //     requires this to avoid dispatching IRQ one cycle early);
+        //   * `apu.cycle` during the bus write equals the current CPU
+        //     cycle (was lagging by one under the post-access model).
+        // Mapper tick stays co-located with the APU tick so the IRQ-line
+        // refresh sees both subsystems' latest state before the CPU's
+        // penultimate-cycle poll snapshot is taken. Audio sampling
+        // stays in `tick_post_access` — it reads output for the cycle
+        // just finished, not one about to start.
+        self.apu.tick_cpu_cycle();
+        self.mapper.on_cpu_cycle();
+        self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
     }
 
     /// Second half of a CPU cycle — runs after the bus access.
     ///
-    /// APU + mapper tick here so writes to $4000–$4017 that trigger
-    /// them (length loads, frame-counter reset, MMC3 A12 filter) land
-    /// on the same cycle as the write. Re-samples the IRQ line after
-    /// APU updates. /IRQ is open-drain / wire-ORed on real hardware,
-    /// so cart-side IRQs (MMC3 scanline, FME-7 timer, VRC4/6/7) merge
-    /// with the APU frame IRQ and DMC IRQ via a simple OR.
+    /// Audio sample emission only; APU + mapper + IRQ-line refresh
+    /// moved to `tick_pre_access` (see blargg 08 fix).
     fn tick_post_access(&mut self) {
-        self.apu.tick_cpu_cycle();
-        self.mapper.on_cpu_cycle();
-        self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
         if let Some(sink) = self.audio_sink.as_mut() {
             sink.on_cpu_cycle(self.apu.output_sample());
         }
