@@ -290,6 +290,16 @@ fn cmp_a_combine(cpu: &mut Cpu, value: u8) {
 
 fn branch(cpu: &mut Cpu, bus: &mut Bus, condition: bool) {
     let offset = cpu.fetch_byte(bus) as i8;
+    // `bus.prev_irq_line` is the IRQ-line snapshot captured at the
+    // start of the current bus cycle. The operand fetch above is the
+    // branch's cycle 2; when it returns, `prev_irq_line` reflects
+    // the line state at the end of cycle 1 — one cycle before the
+    // penultimate. The 6502's "branch-delays-IRQ" quirk only
+    // suppresses recognition when IRQ was newly asserted *during*
+    // the penultimate cycle (i.e. low at end-of-1, high at end-of-2),
+    // matching Mesen2's `_prevRunIrq` sample inside `BranchRelative`
+    // and puNES's `.before` in the `BRC` macro.
+    let irq_before_penult = bus.prev_irq_line;
     if condition {
         bus.read(cpu.pc); // dummy read before branching
         let new_pc = (cpu.pc as i32).wrapping_add(offset as i32) as u16;
@@ -300,9 +310,11 @@ fn branch(cpu: &mut Cpu, bus: &mut Bus, condition: bool) {
             bus.read(bad);
         }
         cpu.pc = new_pc;
-        if !page_crossed {
-            // 3-cycle taken branch form — flag the branch-delays-IRQ
-            // quirk for end-of-instruction polling.
+        // 3-cycle taken branch form → apply the quirk iff IRQ was
+        // still low one cycle before the penultimate. A branch that
+        // started with IRQ already asserted doesn't get the free
+        // pass — it polls normally on its penultimate.
+        if !page_crossed && !irq_before_penult {
             cpu.mark_branch_taken_no_cross();
         }
     }

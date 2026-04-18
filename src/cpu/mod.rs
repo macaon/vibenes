@@ -36,16 +36,12 @@ pub struct Cpu {
 
     pending_interrupt: Option<Interrupt>,
 
-    /// IRQ line level captured at the start of the current instruction
-    /// (before the opcode fetch). Used by the branch-delays-IRQ quirk:
-    /// a taken-no-cross branch suppresses its own IRQ poll only when
-    /// the line was low at entry and high at the penultimate — i.e.
-    /// the IRQ was newly asserted *during* the branch.
-    irq_line_at_start: bool,
-
-    /// Set by `branch()` when the current instruction is a taken
-    /// branch with no page cross (3-cycle form). Consumed and cleared
-    /// by `poll_interrupts_at_end`.
+    /// Set by `ops::branch()` when the current instruction is a taken
+    /// branch with no page cross (3-cycle form) AND the IRQ line was
+    /// still low one cycle before the penultimate. Consumed and
+    /// cleared by `poll_interrupts_at_end`. Gates the "branch-delays-
+    /// IRQ" suppression — see `ops::branch` for the sample window
+    /// rationale and the Mesen2/puNES references.
     branch_taken_no_cross: bool,
 }
 
@@ -68,7 +64,6 @@ impl Cpu {
             halted: false,
             halt_reason: None,
             pending_interrupt: None,
-            irq_line_at_start: false,
             branch_taken_no_cross: false,
         }
     }
@@ -101,7 +96,6 @@ impl Cpu {
         self.halted = false;
         self.halt_reason = None;
         self.branch_taken_no_cross = false;
-        self.irq_line_at_start = false;
     }
 
     /// Run one instruction (or service a pending interrupt).
@@ -133,11 +127,6 @@ impl Cpu {
             return Ok(());
         }
         let i_flag_before = self.p.interrupt();
-        // Snapshot IRQ line at instruction entry — needed by the
-        // branch-delays-IRQ quirk (taken-no-cross branch suppresses
-        // its own IRQ poll only when IRQ was newly asserted during
-        // the branch, not before it started).
-        self.irq_line_at_start = bus.irq_line;
         let op = self.fetch_byte(bus);
         ops::execute(self, bus, op).map_err(|msg| {
             self.halted = true;
@@ -174,17 +163,18 @@ impl Cpu {
         };
 
         // Branch-delays-IRQ quirk: on a taken branch with no page
-        // cross (3-cycle form), if IRQ was low at instruction entry
-        // but is set at the penultimate, the IRQ was newly asserted
-        // during the branch and the 6502 skips the poll for this
-        // instruction. IRQ is level-held by the APU so the next
-        // instruction's penultimate poll will still see it and fire.
+        // cross (3-cycle form), the 6502 suppresses IRQ recognition
+        // when the IRQ was newly asserted *during the penultimate
+        // cycle*. The gate that decides whether the quirk applies
+        // lives in `branch()` itself — it compares the IRQ line
+        // one cycle before the penultimate; `branch_taken_no_cross`
+        // is only set when that check passes. Here at the final
+        // poll, suppression is unconditional once the flag is set
+        // and IRQ is high at the penultimate (the usual poll input).
         // References:
         //   Mesen2 NesCpu.h:432-448 (BranchRelative)
         //   puNES cpu.c:114-144 (BRC macro)
-        let suppress_by_branch = self.branch_taken_no_cross
-            && !self.irq_line_at_start
-            && bus.prev_irq_line;
+        let suppress_by_branch = self.branch_taken_no_cross && bus.prev_irq_line;
         self.branch_taken_no_cross = false;
 
         if bus.prev_irq_line && !i_for_poll && !suppress_by_branch {
@@ -315,59 +305,42 @@ mod tests {
         (cpu, bus)
     }
 
-    /// Taken branch with no page cross: the 6502 suppresses IRQ
-    /// recognition on the branch's final cycle when IRQ is newly
-    /// asserted during the branch. The IRQ then fires one instruction
-    /// later. Reference: puNES cpu.c BRC macro; Mesen2 NesCpu.h
-    /// BranchRelative.
+    /// IRQ already asserted before a taken-no-cross branch is NOT
+    /// suppressed — the branch-delays-IRQ quirk only applies when
+    /// the line rises *during* the branch's penultimate cycle. An
+    /// IRQ that was already high at entry polls normally.
+    ///
+    /// `cpu_interrupts_v2/5-branch_delays_irq.nes` is the full
+    /// quirk oracle (it rotates the IRQ-assert cycle across every
+    /// position in the branch); this unit test only guards the
+    /// already-high lower edge so a regression flags here before
+    /// the ROM-level sweep.
     #[test]
-    fn taken_no_cross_branch_delays_irq_by_one_instruction() {
-        // $8000: CLC          (2 cycles)
-        // $8001: BCC +$02     (3 cycles taken, no page cross → $8005)
-        // $8003..$8004: NOP   (skipped by branch)
-        // $8005..: NOP        (branch target)
+    fn taken_no_cross_branch_with_irq_already_high_fires_normally() {
+        // $8000: BCC +$02  (carry clear after reset → taken to $8004)
+        // $8002..$8003: NOP (skipped)
+        // $8004..: NOP      (target)
         let (mut cpu, mut bus) = build_cpu_and_bus(&[
-            0x18, // CLC
             0x90, 0x02, // BCC +$02
             0xEA, 0xEA, // NOPs (skipped)
             0xEA, 0xEA, // NOP (target), NOP
         ]);
-        // Reset leaves I=1; clear it so IRQ can fire.
         cpu.p.set_interrupt(false);
 
-        // CLC — IRQ line is low throughout.
-        cpu.step(&mut bus).expect("CLC");
-        assert_eq!(cpu.pc, 0x8001);
-        assert!(cpu.pending_interrupt.is_none());
-        assert!(!bus.irq_line, "no IRQ after CLC");
-
-        // Assert frame IRQ between CLC and BCC. bus.irq_line still
-        // reads false (last tick_post_access ran with frame_irq=false)
-        // — so `cpu.irq_line_at_start` captured inside BCC's step()
-        // will also be false, then the line goes high during BCC.
+        // Force IRQ high before BCC starts. The first bus tick of
+        // BCC's opcode fetch picks frame_irq up through the APU
+        // tick, so by the end of cycle 1 `bus.irq_line` is high —
+        // i.e. `branch()`'s "one cycle before penultimate" sample
+        // (taken right after the operand fetch) sees the line
+        // already asserted, and does NOT mark the quirk.
         bus.apu.set_frame_irq_for_test(true);
 
-        // BCC — taken, no page cross. IRQ newly asserted → suppressed.
         cpu.step(&mut bus).expect("BCC");
-        assert_eq!(cpu.pc, 0x8005, "BCC taken to $8005");
-        assert!(
-            cpu.pending_interrupt.is_none(),
-            "branch-delays-IRQ quirk: IRQ must not latch on a taken \
-             no-cross branch when it was newly asserted during the branch"
-        );
-
-        // NOP at $8005 — IRQ stays asserted (level-held); normal poll
-        // at the penultimate cycle should now latch.
-        cpu.step(&mut bus).expect("NOP");
-        assert_eq!(cpu.pc, 0x8006, "NOP ran before IRQ service");
+        assert_eq!(cpu.pc, 0x8004, "BCC taken, no page cross");
         assert!(
             matches!(cpu.pending_interrupt, Some(Interrupt::Irq)),
-            "IRQ should latch on the instruction after the branch"
+            "IRQ high before the penultimate must latch normally"
         );
-
-        // Service the IRQ — vector at $9000.
-        cpu.step(&mut bus).expect("IRQ service");
-        assert_eq!(cpu.pc, 0x9000);
     }
 
     /// A not-taken branch is 2 cycles; no quirk applies. IRQ asserted
