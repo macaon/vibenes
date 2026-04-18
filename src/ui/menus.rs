@@ -7,8 +7,15 @@ use egui::{MenuBar, Panel, Ui};
 
 use crate::ui::{RecentRoms, UiCommand};
 
-pub fn build_top_menubar(ui: &mut Ui, recent: &RecentRoms, cmds: &mut Vec<UiCommand>) {
-    Panel::top("vibenes.menubar").show_inside(ui, |ui| {
+/// Returns the menubar's rendered height in logical points so the
+/// caller can reserve that strip of the swapchain and letterbox the
+/// NES render below it.
+pub fn build_top_menubar(
+    ui: &mut Ui,
+    recent: &RecentRoms,
+    cmds: &mut Vec<UiCommand>,
+) -> f32 {
+    let response = Panel::top("vibenes.menubar").show_inside(ui, |ui| {
         MenuBar::new().ui(ui, |ui| {
             file_menu(ui, recent, cmds);
             ui.menu_button("Emulation", |ui| {
@@ -30,6 +37,7 @@ pub fn build_top_menubar(ui: &mut Ui, recent: &RecentRoms, cmds: &mut Vec<UiComm
             });
         });
     });
+    response.response.rect.height()
 }
 
 fn file_menu(ui: &mut Ui, recent: &RecentRoms, cmds: &mut Vec<UiCommand>) {

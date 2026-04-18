@@ -37,6 +37,10 @@ pub struct UiLayer {
     /// paint and the next run; a missing pending output at paint time
     /// is a no-op (safer than panicking when a caller skips a frame).
     pending: Option<egui::FullOutput>,
+    /// Height of the top menubar in physical pixels as of the last
+    /// `run()`. Callers use this to letterbox the NES render below
+    /// the menubar so it doesn't get overdrawn.
+    menubar_height_px: u32,
 }
 
 impl UiLayer {
@@ -60,7 +64,15 @@ impl UiLayer {
             winit_state,
             renderer,
             pending: None,
+            menubar_height_px: 0,
         }
+    }
+
+    /// Physical-pixel height of the menubar as of the last `run()`.
+    /// Callers use this to inset the NES render so it sits below the
+    /// menubar instead of being overdrawn by it.
+    pub fn menubar_height_px(&self) -> u32 {
+        self.menubar_height_px
     }
 
     /// Forward a winit event to egui. Callers should check the returned
@@ -78,12 +90,21 @@ impl UiLayer {
 
     /// Build the UI for the current frame and stash the output for
     /// `paint`. Widgets push `UiCommand` variants into `cmds`; the host
-    /// drains them after `paint` returns.
+    /// drains them after `paint` returns. The menubar's rendered
+    /// height is captured so the host can letterbox the NES render
+    /// below it.
     pub fn run(&mut self, window: &Window, recent: &RecentRoms, cmds: &mut Vec<UiCommand>) {
         let raw_input = self.winit_state.take_egui_input(window);
+        let mut menubar_height_points = 0.0_f32;
         let full_output = self.ctx.run_ui(raw_input, |ui| {
-            menus::build_top_menubar(ui, recent, cmds);
+            menubar_height_points = menus::build_top_menubar(ui, recent, cmds);
         });
+        // egui reports layout in logical "points"; scale to physical
+        // pixels and round up so we reserve a whole-pixel strip (a
+        // fractional viewport offset produces a one-pixel bleed at
+        // HiDPI).
+        let ppp = full_output.pixels_per_point;
+        self.menubar_height_px = (menubar_height_points * ppp).ceil() as u32;
         self.pending = Some(full_output);
     }
 

@@ -215,9 +215,10 @@ impl App {
         if let (Some(ui), Some(window)) = (self.ui.as_mut(), self.window.as_ref()) {
             ui.run(window, &self.recent_roms, &mut cmds);
         }
+        let menubar_h = self.ui.as_ref().map(UiLayer::menubar_height_px).unwrap_or(0);
         let ui_window = self.window.clone();
         let ui = self.ui.as_mut();
-        let outcome = renderer.render_with(|device, queue, view, encoder, size| {
+        let outcome = renderer.render_with(menubar_h, |device, queue, view, encoder, size| {
             if let (Some(ui), Some(window)) = (ui, ui_window.as_ref()) {
                 ui.paint(device, queue, view, encoder, size, window);
             }
