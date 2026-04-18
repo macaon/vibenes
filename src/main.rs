@@ -264,6 +264,10 @@ impl ApplicationHandler for App {
             } => {
                 if code == KeyCode::Escape && state == ElementState::Pressed {
                     event_loop.exit();
+                } else if code == KeyCode::KeyR && state == ElementState::Pressed {
+                    self.nes.reset();
+                    self.halted_notice_shown = false;
+                    eprintln!("vibenes: reset (PC=${:04X})", self.nes.cpu.pc);
                 } else {
                     self.apply_controller_input(code, state);
                 }
@@ -298,6 +302,9 @@ impl App {
     /// | Right Shift         | Select     |
     /// | Enter / Return      | Start      |
     /// | Arrow keys          | D-pad      |
+    ///
+    /// `R` triggers a warm reset (the console's Reset button) and is
+    /// handled in `window_event` before this function runs.
     ///
     /// Key-repeat events are ignored (filtered at the call site) so
     /// holding a button doesn't toggle it. Only physical press/release
