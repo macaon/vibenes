@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use vibenes::app;
 use vibenes::audio;
 use vibenes::clock::Region;
@@ -50,34 +50,50 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let rom_path = parse_args()?;
-    let cart = Cartridge::load(&rom_path)
-        .with_context(|| format!("loading ROM {}", rom_path.display()))?;
-    eprintln!("loaded: {}", cart.describe());
-    let mut nes = app::build_nes(cart)?;
-    eprintln!("region={:?} reset PC=${:04X}", nes.region(), nes.cpu.pc);
+    let rom_path = parse_args();
 
-    // Try to open a host audio stream. If the host has no audio device
-    // (headless CI, WSL without PulseAudio, etc.) we still want the
-    // emulator to run — just silently.
-    let audio_stream = match audio::start(nes.region().cpu_clock_hz()) {
+    // Audio stream opens eagerly with the NTSC clock. If the user
+    // later loads a PAL ROM the sink is re-tuned inside swap_cartridge
+    // so pitch stays correct. Opening up-front (before any ROM is
+    // loaded) means the cpal device handle is ready the moment the
+    // first ROM is chosen from the File menu — no perceptible delay.
+    let (audio_sink, audio_stream) = match audio::start(Region::Ntsc.cpu_clock_hz()) {
         Ok((sink, stream)) => {
-            eprintln!(
-                "audio: {} Hz × {} ch",
-                stream.sample_rate, stream.channels
-            );
-            nes.attach_audio(sink);
-            Some(stream)
+            eprintln!("audio: {} Hz × {} ch", stream.sample_rate, stream.channels);
+            (Some(sink), Some(stream))
         }
         Err(e) => {
             eprintln!("vibenes: audio disabled ({e:#})");
+            (None, None)
+        }
+    };
+
+    let initial_nes = match rom_path.as_deref() {
+        Some(path) => match Cartridge::load(path)
+            .with_context(|| format!("loading ROM {}", path.display()))
+        {
+            Ok(cart) => {
+                eprintln!("loaded: {}", cart.describe());
+                let nes = app::build_nes(cart)?;
+                eprintln!("region={:?} reset PC=${:04X}", nes.region(), nes.cpu.pc);
+                Some(nes)
+            }
+            Err(e) => {
+                // Fall back to a no-ROM launch so the user can pick a
+                // valid ROM from the File menu instead of exiting.
+                eprintln!("vibenes: {e:#}");
+                None
+            }
+        },
+        None => {
+            eprintln!("vibenes: no ROM specified — use File → Open ROM…");
             None
         }
     };
 
     let event_loop = EventLoop::new().context("create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut handler = App::new(nes, audio_stream, rom_path);
+    let mut handler = App::new(initial_nes, audio_sink, audio_stream, rom_path);
     event_loop.run_app(&mut handler).context("winit event loop")?;
     Ok(())
 }
@@ -89,48 +105,62 @@ fn frame_period_for(region: Region) -> Duration {
     }
 }
 
-fn parse_args() -> Result<PathBuf> {
-    let mut args = std::env::args_os().skip(1);
-    match args.next() {
-        Some(p) => Ok(PathBuf::from(p)),
-        None => bail!("usage: vibenes <rom.nes>"),
-    }
+fn parse_args() -> Option<PathBuf> {
+    std::env::args_os().skip(1).next().map(PathBuf::from)
 }
 
-/// Window + renderer + NES owner. Each RedrawRequested drives the NES
-/// for one PPU frame and presents `nes.bus.ppu.frame_buffer`.
+/// Window + renderer + optional NES owner. Each RedrawRequested drives
+/// the NES (if loaded) for one PPU frame and presents the PPU frame
+/// buffer, or a black surface when no ROM has been loaded yet.
 struct App {
-    nes: Nes,
+    nes: Option<Nes>,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     ui: Option<UiLayer>,
     halted_notice_shown: bool,
     /// Per-region frame period (NTSC ≈ 16.639 ms, PAL ≈ 19.997 ms).
-    /// Seeded from the cartridge's TV-system at construction; updated
-    /// when a ROM swap changes regions.
+    /// Defaults to NTSC when no ROM is loaded so the idle repaint rate
+    /// still matches a reasonable cadence. Updated on ROM load / swap.
     frame_period: Duration,
     /// Deadline for the next frame's present. Advanced by one
     /// `frame_period` each completed frame so drift stays pinned to
     /// wall-clock rather than accumulating.
     next_frame_deadline: Option<Instant>,
+    /// Host audio sink. Held here until the first ROM loads, at which
+    /// point it moves into the `Nes`. On subsequent swaps it stays
+    /// inside `Nes` and is re-tuned via `swap_cartridge`.
+    pending_audio_sink: Option<audio::AudioSink>,
     /// Keeps the cpal output stream alive. Dropping this silences the
     /// device — hence why it lives on the App owner rather than a
     /// local inside `run()`.
     _audio_stream: Option<audio::AudioStream>,
     /// Most-recently-loaded ROMs, shown in the File menu. Seeded with
-    /// the path passed on the command line.
+    /// the path passed on the command line (if any).
     recent_roms: RecentRoms,
 }
 
 impl App {
     fn new(
-        nes: Nes,
+        nes: Option<Nes>,
+        audio_sink: Option<audio::AudioSink>,
         audio_stream: Option<audio::AudioStream>,
-        initial_rom: PathBuf,
+        initial_rom: Option<PathBuf>,
     ) -> Self {
-        let frame_period = frame_period_for(nes.region());
+        let frame_period = frame_period_for(nes.as_ref().map_or(Region::Ntsc, Nes::region));
         let mut recent_roms = RecentRoms::default();
-        recent_roms.push(initial_rom);
+        if let Some(p) = initial_rom {
+            recent_roms.push(p);
+        }
+        // If a ROM was loaded at startup, attach the sink to it now so
+        // the first frame already produces audio. Otherwise hold the
+        // sink here until load_rom fires on the first File → Open.
+        let (nes, pending_audio_sink) = match (nes, audio_sink) {
+            (Some(mut nes), Some(sink)) => {
+                nes.attach_audio(sink);
+                (Some(nes), None)
+            }
+            (nes, sink) => (nes, sink),
+        };
         Self {
             nes,
             window: None,
@@ -139,6 +169,7 @@ impl App {
             halted_notice_shown: false,
             frame_period,
             next_frame_deadline: None,
+            pending_audio_sink,
             _audio_stream: audio_stream,
             recent_roms,
         }
@@ -150,28 +181,31 @@ impl App {
             None => return,
         };
 
-        if !self.nes.cpu.halted {
-            if let Err(msg) = self.nes.step_until_frame() {
-                if !self.halted_notice_shown {
-                    eprintln!("vibenes: CPU error: {msg}");
+        if let Some(nes) = self.nes.as_mut() {
+            if !nes.cpu.halted {
+                if let Err(msg) = nes.step_until_frame() {
+                    if !self.halted_notice_shown {
+                        eprintln!("vibenes: CPU error: {msg}");
+                        self.halted_notice_shown = true;
+                    }
+                } else if nes.cpu.halted && !self.halted_notice_shown {
+                    let reason = nes
+                        .cpu
+                        .halt_reason
+                        .clone()
+                        .unwrap_or_else(|| "halted".to_string());
+                    eprintln!("vibenes: CPU halted: {reason}");
                     self.halted_notice_shown = true;
                 }
-            } else if self.nes.cpu.halted && !self.halted_notice_shown {
-                let reason = self
-                    .nes
-                    .cpu
-                    .halt_reason
-                    .clone()
-                    .unwrap_or_else(|| "halted".to_string());
-                eprintln!("vibenes: CPU halted: {reason}");
-                self.halted_notice_shown = true;
             }
+            // Hand the frame's audio to the ring so the cpal callback
+            // can drain it before the next wakeup.
+            nes.end_audio_frame();
+            renderer.upload_framebuffer(&nes.bus.ppu.frame_buffer);
         }
-        // Hand the frame's audio to the ring so the cpal callback can
-        // drain it before the next wakeup.
-        self.nes.end_audio_frame();
-
-        renderer.upload_framebuffer(&self.nes.bus.ppu.frame_buffer);
+        // Without a ROM loaded we skip the upload entirely; the blit
+        // pass still runs and clears the surface to black via
+        // LoadOp::Clear. The menubar paints on top.
         // Build the UI outside the overlay closure so we can borrow
         // `self.ui` mutably here and again inside the closure without
         // a conflicting double-borrow of `self`. Commands produced by
@@ -310,9 +344,11 @@ impl ApplicationHandler for App {
                     // egui owns this event (text field, menu nav, etc.).
                     // Do not forward to the NES controller or reset.
                 } else if code == KeyCode::KeyR && state == ElementState::Pressed {
-                    self.nes.reset();
-                    self.halted_notice_shown = false;
-                    eprintln!("vibenes: reset (PC=${:04X})", self.nes.cpu.pc);
+                    if let Some(nes) = self.nes.as_mut() {
+                        nes.reset();
+                        self.halted_notice_shown = false;
+                        eprintln!("vibenes: reset (PC=${:04X})", nes.cpu.pc);
+                    }
                 } else {
                     self.apply_controller_input(code, state);
                 }
@@ -359,22 +395,48 @@ impl App {
             }
         };
         eprintln!("loaded: {}", cart.describe());
-        if let Err(e) = self.nes.swap_cartridge(cart) {
-            eprintln!("vibenes: swap failed: {e:#}");
-            return;
-        }
+        let region = match self.nes.as_mut() {
+            Some(nes) => {
+                if let Err(e) = nes.swap_cartridge(cart) {
+                    eprintln!("vibenes: swap failed: {e:#}");
+                    return;
+                }
+                nes.region()
+            }
+            None => {
+                // First-load path: build a fresh Nes and attach the
+                // audio sink we've been holding since startup. Tune the
+                // sink to this ROM's clock before handing it over so
+                // the very first sample is correctly pitched.
+                let mut nes = match Nes::from_cartridge(cart) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("vibenes: build failed: {e:#}");
+                        return;
+                    }
+                };
+                if let Some(mut sink) = self.pending_audio_sink.take() {
+                    sink.set_cpu_clock(nes.region().cpu_clock_hz());
+                    nes.attach_audio(sink);
+                }
+                let region = nes.region();
+                self.nes = Some(nes);
+                region
+            }
+        };
         // The new ROM may have a different TV system; re-pin the frame
         // deadline to its cadence and reset the deadline anchor so we
         // don't eat the full delta at once.
-        self.frame_period = frame_period_for(self.nes.region());
+        self.frame_period = frame_period_for(region);
         self.next_frame_deadline = None;
         self.halted_notice_shown = false;
         self.recent_roms.push(path.to_path_buf());
+        let pc = self.nes.as_ref().map(|n| n.cpu.pc).unwrap_or(0);
         eprintln!(
             "vibenes: loaded {} (region={:?} PC=${:04X})",
             path.display(),
-            self.nes.region(),
-            self.nes.cpu.pc
+            region,
+            pc,
         );
     }
 
@@ -409,7 +471,8 @@ impl App {
             KeyCode::ArrowRight => 0x80,
             _ => return,
         };
-        let c = &mut self.nes.bus.controllers[0];
+        let Some(nes) = self.nes.as_mut() else { return };
+        let c = &mut nes.bus.controllers[0];
         match state {
             ElementState::Pressed => c.buttons |= bit,
             ElementState::Released => c.buttons &= !bit,
