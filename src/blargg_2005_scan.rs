@@ -139,19 +139,44 @@ fn tile_byte_to_ascii(b: u8) -> char {
     }
 }
 
-/// Pull a result code from scanned text. The 2005-era ROMs use the
-/// `report_final_result` routine in blargg's devcart loader, which
-/// prints the byte via `debug_byte` as `$hh` (lowercase hex). That's
-/// the primary path.
+/// Pull a result code from scanned text. Covers three blargg
+/// reporting conventions in decreasing order of precedence:
 ///
-/// Fallback: if no `$hh` marker is present, look for a `result: N`
-/// label (some ROMs label explicitly), then for the first standalone
-/// ASCII digit. These cover every pre-$6000 ROM in the APU suite.
+/// 1. **Newer ca65 framework** (`common/shell.inc`): prints the
+///    word `Passed` / `Failed` / `Error <N>` on its own line.
+///    These tests would normally also report via `$6000` but the
+///    ROMs in `cpu_dummy_reads/`, `cpu_reset/`, and a handful of
+///    others either skip the `$6000` handshake or complete before
+///    our `test_runner` times out — the nametable text is the
+///    reliable signal. We map `Passed → 1`, `Failed → 2`,
+///    `Error <N> → N`.
+///
+/// 2. **2005-era devcart loader**: `report_final_result` prints the
+///    byte via `debug_byte` as `$hh` (lowercase hex).
+///
+/// 3. **Fallback**: a `result: N` label, then the first standalone
+///    ASCII digit on screen.
 pub fn extract_result_code(text: &str) -> Option<u8> {
+    // $hh (2005-era devcart `debug_byte`) wins over text keywords
+    // because the hex byte encodes the specific failure mode (2 = too
+    // soon, 3 = too late, etc.); the keyword-based fallback would
+    // collapse every failure to `2`.
     if let Some(byte) = first_hex_byte(text) {
         return Some(byte);
     }
     let lower = text.to_ascii_lowercase();
+    if let Some(pos) = lower.find("error") {
+        let after = &text[pos..];
+        if let Some(d) = after.chars().find(|c| c.is_ascii_digit()) {
+            return Some(d.to_digit(10).unwrap() as u8);
+        }
+    }
+    if lower.contains("passed") {
+        return Some(1);
+    }
+    if lower.contains("failed") {
+        return Some(2);
+    }
     if let Some(pos) = lower.find("result") {
         let after = &text[pos..];
         if let Some(d) = after.chars().find(|c| c.is_ascii_digit()) {
@@ -272,6 +297,16 @@ mod tests {
         assert_eq!(extract_result_code("  $01  \n"), Some(1));
         assert_eq!(extract_result_code("result: $04\n"), Some(4));
         assert_eq!(extract_result_code("  $ff  \n"), Some(0xff));
+    }
+
+    #[test]
+    fn extract_result_code_reads_passed_and_failed_keywords() {
+        assert_eq!(extract_result_code("cpu_dummy_reads\nPassed"), Some(1));
+        assert_eq!(extract_result_code("cpu_reset\nFailed"), Some(2));
+        assert_eq!(extract_result_code("test\nError 5"), Some(5));
+        // Hex still wins when both are present (debug_byte output is
+        // more specific than a generic keyword).
+        assert_eq!(extract_result_code("Failed #3\n$03"), Some(3));
     }
 
     #[test]
