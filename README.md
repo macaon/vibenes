@@ -39,15 +39,21 @@ opcodes and mapper quirks) but not for source.
   when NMI is asserted during the service sequence; late NMIs are
   deferred to after the handler's first instruction (matches the
   `_prevNeedNmi = false` suppression in Mesen2's BRK).
-- **Bus cycle split** into `tick_pre_access` (PPU + NMI edge latch,
-  APU + mapper tick, IRQ-line refresh) and `tick_post_access`
-  (audio sample emission only). PPU register reads see mid-cycle
-  PPU state, needed for `cpu_interrupts_v2` iterations that sync to
-  specific VBlank dots. The APU tick runs *before* the bus access
-  so a `$4015` read on the same cycle as a frame-IRQ assertion
-  sees the flag set (required by blargg `08.irq_timing`) and the
-  CPU's penultimate-cycle `prev_irq_line` snapshot captures the
-  right state for dispatch.
+- **Bus cycle split** into `tick_pre_access` (APU + mapper tick,
+  IRQ-line refresh, and all-but-the-last PPU dot) and
+  `tick_post_access` (the final PPU dot + NMI poll + audio
+  sampling). NTSC's 3 dots per CPU cycle run 2-pre + 1-post,
+  matching Mesen2's master-clock arithmetic and required by
+  `cpu_interrupts_v2/3-nmi_and_irq`: if dot 1 of scanline 241
+  lands as the third dot of a CPU cycle, the VBL flag must not
+  be visible to a same-cycle `$2002` read (otherwise `sync_vbl`
+  exits one cycle early and every downstream timing drifts).
+  The APU tick stays in the pre-access half so a `$4015` read
+  on the same cycle as a frame-IRQ assertion sees the flag set
+  (required by `blargg_apu_2005/08.irq_timing`). OAM DMA
+  snapshots and restores `prev_irq_line`/`prev_nmi_pending`
+  across its 513/514 stall cycles so STA `$4014`'s poll sees
+  its own penultimate, not end-of-DMA state.
 - **Mappers** — NROM (0), MMC1/SxROM (1) with serial shift and the
   consecutive-write filter, UxROM (2) with `$8000-$BFFF` switchable /
   `$C000-$FFFF` fixed-to-last split and CHR-RAM, CNROM (3), AxROM (7)
@@ -158,21 +164,12 @@ captured headlessly by `blargg_2005_report` and gated by
 |---|---|
 | `1-cli_latency.nes` | PASS |
 | `2-nmi_and_brk.nes` | PASS (NMI-hijack-BRK fully working) |
-| `3-nmi_and_irq.nes` | FAIL — oscillating row pattern (some iterations NMI 1 instruction late, others early, others miss the hijack). Investigation in progress. |
-| `4-irq_and_dma.nes` | FAIL — IRQ recognition appears ~1 CPU cycle early relative to test expectations; flat shift (not oscillating like test 3). |
-| `5-branch_delays_irq.nes` | FAIL — branch-delays-IRQ quirk implemented + unit-tested, but the ROM's `test_jmp` subtest (pure JMP, no branches) fails with the same class of bug as test 3. |
+| `3-nmi_and_irq.nes` | PASS (fixed in phase 7: PPU tick split 2-pre/1-post) |
+| `4-irq_and_dma.nes` | PASS (fixed in phase 7: save/restore IRQ poll state across OAM DMA + correct alignment parity) |
+| `5-branch_delays_irq.nes` | PASS (fixed in phase 7: branch-IRQ quirk sample narrowed to end-of-cycle-1) |
 
 ### Not yet
 
-- **cpu_interrupts_v2 tests 3 / 4 / 5** — three failing ROMs that all
-  exercise cycle-exact interrupt-detection timing. Test 3 shows an
-  *oscillating* pattern across iterations (NMI sometimes late, sometimes
-  early, hijack sometimes missed). Test 4 shows a *flat* 1-cycle early
-  IRQ recognition — different signature, likely a different root cause.
-  Test 5's `test_jmp` subtest matches test 3's shape. Work lives on
-  branch `phase5-interrupt-polling`; the phase-6 APU reorder (APU
-  tick moved to pre-access) may have shifted the test-3 symptom and
-  should be re-measured on rebase.
 - **`$4016/$4017` DMC double-read bug** — the halt/dummy cycles of a
   DMC DMA don't replay the CPU's pending read address yet, so the
   controller-bit-deletion behavior checked by `dmc_dma_during_read4`
