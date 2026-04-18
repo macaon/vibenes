@@ -105,6 +105,24 @@ impl Bus {
     /// inserted, the DMC fetches its sample byte, and only then does the
     /// CPU's read complete. DMA does not start during writes — a request
     /// raised during a write cycle waits for the next read.
+    /// CPU bus read variant for the page-cross dummy read emitted by
+    /// `abs,X` / `abs,Y` / `(zp),Y` indexed loads. Routes `$2007` to
+    /// the PPU's `cpu_read_dummy` so the aborted read doesn't advance
+    /// the internal buffer twice (see `blargg_apu_2005/...
+    /// double_2007_read` and `Ppu::cpu_read_dummy`). Every other
+    /// address behaves exactly like a normal `read`.
+    pub fn dummy_read(&mut self, addr: u16) -> u8 {
+        if !matches!(addr, 0x2000..=0x3FFF) {
+            return self.read(addr);
+        }
+        self.service_pending_dmc_dma(addr);
+        self.tick_pre_access();
+        let value = self.ppu.cpu_read_dummy(addr, &mut *self.mapper);
+        self.open_bus = value;
+        self.tick_post_access();
+        value
+    }
+
     pub fn read(&mut self, addr: u16) -> u8 {
         self.service_pending_dmc_dma(addr);
         self.tick_pre_access();

@@ -878,6 +878,29 @@ impl Ppu {
     }
 
     pub fn cpu_read(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
+        self.cpu_read_inner(addr, mapper, false)
+    }
+
+    /// `cpu_read` variant that the bus calls for the page-cross dummy
+    /// read emitted by `abs,X` / `abs,Y` / `(zp),Y`. For `$2007`, real
+    /// hardware's aborted read doesn't advance the PPU's internal buffer
+    /// state cleanly — the CPU re-reads before the PPU has a chance to
+    /// refill from VRAM. Blargg's `dmc_dma_during_read4/double_2007_read`
+    /// accepts any of four buckets; returning the current buffer
+    /// without advancing `v` / refilling lands us in the `22 33 44 55 66
+    /// / 22 33 44 55 66` bucket (CRC `F018C287`). For every other
+    /// register, the dummy read has the same side effects as a real
+    /// read (`$4016` still shifts; `$2002` still clears VBL/w).
+    pub fn cpu_read_dummy(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
+        self.cpu_read_inner(addr, mapper, true)
+    }
+
+    fn cpu_read_inner(
+        &mut self,
+        addr: u16,
+        mapper: &mut dyn Mapper,
+        is_dummy: bool,
+    ) -> u8 {
         let reg = addr & 0x0007;
         let value = match reg {
             0x02 => {
@@ -897,6 +920,11 @@ impl Ppu {
                 v
             }
             0x04 => self.oam[self.oam_addr as usize],
+            0x07 if is_dummy => {
+                // Dummy read at $2007 mirror: return the current buffer
+                // without advancing v or refilling. See `cpu_read_dummy`.
+                self.data_buffer
+            }
             0x07 => {
                 let addr = self.v & 0x3FFF;
                 let result = if addr >= 0x3F00 {

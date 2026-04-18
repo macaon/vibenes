@@ -34,9 +34,12 @@ fn addr_abs_indexed_read(cpu: &mut Cpu, bus: &mut Bus, index: u8) -> u16 {
     let effective = base.wrapping_add(index as u16);
     if (base & 0xFF00) != (effective & 0xFF00) {
         // Page crossed: the real chip first reads from the bad (un-carried)
-        // high byte, then re-reads from the correct address. Emit the dummy.
+        // high byte, then re-reads from the correct address. Emit the
+        // dummy via `bus.dummy_read` so the page-cross-to-$2007 quirk
+        // (buffer doesn't advance twice) is modelled — see
+        // `Ppu::cpu_read_dummy`.
         let bad = (base & 0xFF00) | (effective & 0x00FF);
-        bus.read(bad);
+        bus.dummy_read(bad);
     }
     effective
 }
@@ -67,7 +70,7 @@ fn addr_ind_y_read(cpu: &mut Cpu, bus: &mut Bus) -> u16 {
     let effective = base.wrapping_add(cpu.y as u16);
     if (base & 0xFF00) != (effective & 0xFF00) {
         let bad = (base & 0xFF00) | (effective & 0x00FF);
-        bus.read(bad);
+        bus.dummy_read(bad);
     }
     effective
 }
