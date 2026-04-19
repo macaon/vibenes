@@ -17,15 +17,15 @@ use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
 use vibenes::ui::{RecentRoms, UiCommand, UiLayer};
+use vibenes::video::VideoSettings;
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 const WINDOW_TITLE: &str = "vibenes";
-const DEFAULT_WINDOW_WIDTH: u32 = 512;
-const DEFAULT_WINDOW_HEIGHT: u32 = 480;
 
 /// NTSC NES frame period: 1 / (master 21477272 Hz ÷ 4 dots ÷ 89342
 /// dots per frame) ≈ 16.639 ms. We pace the emulation loop to this
@@ -137,6 +137,15 @@ struct App {
     /// Most-recently-loaded ROMs, shown in the File menu. Seeded with
     /// the path passed on the command line (if any).
     recent_roms: RecentRoms,
+    /// Integer scale + pixel aspect ratio. Window inner size equals
+    /// `video.content_size(region)` exactly — no chrome to subtract,
+    /// no fractional scales.
+    video: VideoSettings,
+    /// Set when video settings or region change so the post-frame hook
+    /// requests a window resize once and clears. Avoids per-frame
+    /// `request_inner_size` calls that on some compositors cause a
+    /// resize-storm and disrupt frame pacing.
+    pending_window_resize: bool,
 }
 
 impl App {
@@ -172,53 +181,117 @@ impl App {
             pending_audio_sink,
             _audio_stream: audio_stream,
             recent_roms,
+            video: VideoSettings::default(),
+            pending_window_resize: false,
         }
     }
 
+    fn region_opt(&self) -> Option<Region> {
+        self.nes.as_ref().map(Nes::region)
+    }
+
+    /// Physical inner size of the window — exactly the NES content
+    /// area at the current scale + effective PAR. No menubar reserve;
+    /// the in-game overlay paints on top of the framebuffer.
+    fn desired_window_size(&self) -> PhysicalSize<u32> {
+        let (cw, ch) = self.video.content_size(self.region_opt());
+        PhysicalSize::new(cw, ch)
+    }
+
+    /// One-shot window resize triggered by the `pending_window_resize`
+    /// flag. Set the flag from any code path that changes the desired
+    /// size: scale / PAR commands, ROM region change.
+    ///
+    /// Fires immediately. The overlay re-centers itself on the new
+    /// window size every frame, so mid-menu scale / aspect changes
+    /// just redraw the card in the resized window without visual
+    /// glitches.
+    fn apply_pending_resize(&mut self) {
+        if !self.pending_window_resize {
+            return;
+        }
+        self.pending_window_resize = false;
+        let Some(window) = self.window.as_ref() else { return };
+        let _ = window.request_inner_size(self.desired_window_size());
+    }
+
     fn advance_and_present(&mut self, event_loop: &ActiveEventLoop) {
+        // Snapshot inputs before grabbing mutable borrows.
+        let region = self.region_opt();
+        let nes_loaded = self.nes.is_some();
+        let overlay_open = self
+            .ui
+            .as_ref()
+            .is_some_and(|ui| ui.is_overlay_open());
+
         let renderer = match self.renderer.as_mut() {
             Some(r) => r,
             None => return,
         };
 
-        if let Some(nes) = self.nes.as_mut() {
-            if !nes.cpu.halted {
-                if let Err(msg) = nes.step_until_frame() {
-                    if !self.halted_notice_shown {
-                        eprintln!("vibenes: CPU error: {msg}");
+        // Defensive surface sync. `WindowEvent::Resized` is not always
+        // delivered on Wayland after `request_inner_size` (the
+        // compositor may transition size via `Configured` without
+        // winit surfacing a Resized event). If we render at stale
+        // surface dimensions while `window.inner_size()` has moved
+        // on, egui lays out the overlay in one coord space but paints
+        // into a smaller swapchain, and pointer hit-tests drift by
+        // the inner/surface ratio. Re-configuring before the frame
+        // keeps surface ≡ window at all times.
+        if let Some(window) = self.window.as_ref() {
+            let inner = window.inner_size();
+            let (sw, sh) = renderer.surface_size();
+            if inner.width != sw || inner.height != sh {
+                renderer.resize(inner);
+            }
+        }
+
+        // Step + audio only when not paused by the overlay. The
+        // framebuffer freezes on the last presented frame, which the
+        // overlay then dims via a translucent pass.
+        if !overlay_open {
+            if let Some(nes) = self.nes.as_mut() {
+                if !nes.cpu.halted {
+                    if let Err(msg) = nes.step_until_frame() {
+                        if !self.halted_notice_shown {
+                            eprintln!("vibenes: CPU error: {msg}");
+                            self.halted_notice_shown = true;
+                        }
+                    } else if nes.cpu.halted && !self.halted_notice_shown {
+                        let reason = nes
+                            .cpu
+                            .halt_reason
+                            .clone()
+                            .unwrap_or_else(|| "halted".to_string());
+                        eprintln!("vibenes: CPU halted: {reason}");
                         self.halted_notice_shown = true;
                     }
-                } else if nes.cpu.halted && !self.halted_notice_shown {
-                    let reason = nes
-                        .cpu
-                        .halt_reason
-                        .clone()
-                        .unwrap_or_else(|| "halted".to_string());
-                    eprintln!("vibenes: CPU halted: {reason}");
-                    self.halted_notice_shown = true;
                 }
+                // Hand the frame's audio to the ring so the cpal
+                // callback can drain it before the next wakeup.
+                nes.end_audio_frame();
             }
-            // Hand the frame's audio to the ring so the cpal callback
-            // can drain it before the next wakeup.
-            nes.end_audio_frame();
+        }
+        if let Some(nes) = self.nes.as_ref() {
             renderer.upload_framebuffer(&nes.bus.ppu.frame_buffer);
         }
-        // Without a ROM loaded we skip the upload entirely; the blit
-        // pass still runs and clears the surface to black via
-        // LoadOp::Clear. The menubar paints on top.
-        // Build the UI outside the overlay closure so we can borrow
-        // `self.ui` mutably here and again inside the closure without
-        // a conflicting double-borrow of `self`. Commands produced by
-        // egui widgets are drained after paint so emulator mutations
-        // don't race with any in-flight borrows.
+
         let mut cmds: Vec<UiCommand> = Vec::new();
+        let surface_size = renderer.surface_size();
         if let (Some(ui), Some(window)) = (self.ui.as_mut(), self.window.as_ref()) {
-            ui.run(window, &self.recent_roms, &mut cmds);
+            ui.run(
+                window,
+                surface_size,
+                &self.recent_roms,
+                &self.video,
+                region,
+                nes_loaded,
+                &mut cmds,
+            );
         }
-        let menubar_h = self.ui.as_ref().map(UiLayer::menubar_height_px).unwrap_or(0);
         let ui_window = self.window.clone();
         let ui = self.ui.as_mut();
-        let outcome = renderer.render_with(menubar_h, |device, queue, view, encoder, size| {
+        let outcome = renderer.render_with(|device, queue, view, encoder, size| {
             if let (Some(ui), Some(window)) = (ui, ui_window.as_ref()) {
                 ui.paint(device, queue, view, encoder, size, window);
             }
@@ -234,6 +307,7 @@ impl App {
         for cmd in cmds {
             self.apply_ui_command(cmd, event_loop);
         }
+        self.apply_pending_resize();
 
         // Advance the frame deadline for NTSC/PAL-accurate pacing. If
         // we've fallen more than a couple of frames behind (heavy host
@@ -280,12 +354,13 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
+        // Initial inner size = NES content area at the current scale +
+        // effective PAR. No menubar reserve — the in-game overlay
+        // paints on top of the framebuffer when opened.
         let attrs = Window::default_attributes()
             .with_title(WINDOW_TITLE)
-            .with_inner_size(winit::dpi::LogicalSize::new(
-                DEFAULT_WINDOW_WIDTH,
-                DEFAULT_WINDOW_HEIGHT,
-            ));
+            .with_resizable(false)
+            .with_inner_size(self.desired_window_size());
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -339,17 +414,39 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
-                if code == KeyCode::Escape && state == ElementState::Pressed {
-                    event_loop.exit();
-                } else if consumed_by_ui {
-                    // egui owns this event (text field, menu nav, etc.).
-                    // Do not forward to the NES controller or reset.
-                } else if code == KeyCode::KeyR && state == ElementState::Pressed {
-                    if let Some(nes) = self.nes.as_mut() {
-                        nes.reset();
-                        self.halted_notice_shown = false;
-                        eprintln!("vibenes: reset (PC=${:04X})", nes.cpu.pc);
+                let overlay_open = self
+                    .ui
+                    .as_ref()
+                    .is_some_and(|ui| ui.is_overlay_open());
+
+                // F1 always toggles the overlay regardless of state —
+                // the user expects a single "menu" key to work both
+                // ways.
+                if code == KeyCode::F1 && state == ElementState::Pressed {
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.toggle_overlay();
                     }
+                } else if code == KeyCode::Escape && state == ElementState::Pressed {
+                    // Esc backs out of the overlay (or closes it from
+                    // root); when the overlay is closed it quits the
+                    // app, matching the prior behavior.
+                    if overlay_open {
+                        if let Some(ui) = self.ui.as_mut() {
+                            ui.back_or_close_overlay();
+                        }
+                    } else {
+                        event_loop.exit();
+                    }
+                } else if overlay_open {
+                    // Overlay handles arrow / Enter / Backspace inside
+                    // its egui pass via `consume_key`. NES controller
+                    // input is gated off so Z/X/Enter etc. don't leak
+                    // into the cartridge while the menu is up.
+                } else if consumed_by_ui {
+                    // egui owns this event (e.g. clipboard). Don't
+                    // forward to the NES.
+                } else if code == KeyCode::KeyR && state == ElementState::Pressed {
+                    self.reset_nes();
                 } else {
                     self.apply_controller_input(code, state);
                 }
@@ -384,6 +481,23 @@ impl App {
             }
             UiCommand::OpenRom(path) => self.load_rom(&path),
             UiCommand::Quit => event_loop.exit(),
+            UiCommand::SetScale(n) => {
+                self.video = self.video.with_scale(n);
+                self.pending_window_resize = true;
+            }
+            UiCommand::SetAspectRatio(par_mode) => {
+                self.video = self.video.with_par_mode(par_mode);
+                self.pending_window_resize = true;
+            }
+            UiCommand::Reset => self.reset_nes(),
+        }
+    }
+
+    fn reset_nes(&mut self) {
+        if let Some(nes) = self.nes.as_mut() {
+            nes.reset();
+            self.halted_notice_shown = false;
+            eprintln!("vibenes: reset (PC=${:04X})", nes.cpu.pc);
         }
     }
 
@@ -427,10 +541,13 @@ impl App {
         };
         // The new ROM may have a different TV system; re-pin the frame
         // deadline to its cadence and reset the deadline anchor so we
-        // don't eat the full delta at once.
+        // don't eat the full delta at once. The window may also need
+        // to resize when PAR is Auto and the region flipped between
+        // NTSC and PAL.
         self.frame_period = frame_period_for(region);
         self.next_frame_deadline = None;
         self.halted_notice_shown = false;
+        self.pending_window_resize = true;
         self.recent_roms.push(path.to_path_buf());
         let pc = self.nes.as_ref().map(|n| n.cpu.pc).unwrap_or(0);
         eprintln!(

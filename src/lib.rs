@@ -13,3 +13,4 @@ pub mod nes;
 pub mod ppu;
 pub mod rom;
 pub mod ui;
+pub mod video;

@@ -319,13 +319,7 @@ impl Renderer {
     /// The overlay closure is handed `(device, queue, view, encoder,
     /// (surface_w, surface_h))` — everything an egui-style pass needs
     /// to upload buffers and encode a second render pass.
-    ///
-    /// `top_reserve_px` is a strip at the top of the swapchain the
-    /// NES blit pass won't draw into — used to letterbox the emulator
-    /// frame below an egui menubar. The clear still covers the whole
-    /// surface so the reserved area stays black until the overlay
-    /// paints over it.
-    pub fn render_with<F>(&mut self, top_reserve_px: u32, on_overlay: F) -> PresentOutcome
+    pub fn render_with<F>(&mut self, on_overlay: F) -> PresentOutcome
     where
         F: FnOnce(&wgpu::Device, &wgpu::Queue, &wgpu::TextureView, &mut wgpu::CommandEncoder, (u32, u32)),
     {
@@ -368,26 +362,9 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            // Letterbox: constrain the blit to the strip below the
-            // reserved top-pixel area. The fullscreen-triangle shader
-            // maps NDC to the viewport rect, so shrinking the viewport
-            // shrinks the output rect while the top strip stays at the
-            // cleared background until the overlay paints over it.
-            let reserve = top_reserve_px.min(self.config.height);
-            let draw_h = self.config.height.saturating_sub(reserve);
-            if draw_h > 0 {
-                pass.set_viewport(
-                    0.0,
-                    reserve as f32,
-                    self.config.width as f32,
-                    draw_h as f32,
-                    0.0,
-                    1.0,
-                );
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.draw(0..3, 0..1);
-            }
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.draw(0..3, 0..1);
         }
         on_overlay(
             &self.device,
@@ -402,9 +379,9 @@ impl Renderer {
     }
 
     /// Convenience wrapper around `render_with` for callers that have no
-    /// overlay to encode. Equivalent to `render_with(0, |_, _, _, _, _| {})`.
+    /// overlay to encode.
     pub fn render(&mut self) -> PresentOutcome {
-        self.render_with(0, |_, _, _, _, _| {})
+        self.render_with(|_, _, _, _, _| {})
     }
 }
 
