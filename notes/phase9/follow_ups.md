@@ -127,3 +127,67 @@ Both follow-ups share the same DMC state-machine surface. If F1's
 fix requires granular `_needHalt`/`_needDummyRead`-style flags
 (hypothesis #2 above), F2's rewrite naturally re-uses them. Good
 odds they land together.
+
+---
+
+## Refactor attempt — 2026-04-20 (dropped)
+
+Spent a session on a `dma-refactor` branch trying to port Mesen2's
+`ProcessPendingDma`/get-put-loop model. Branch deleted — no commits
+worth keeping. Concrete lessons so the next attempt skips them:
+
+1. **Mesen2's parity model alone is insufficient.** Mesen's rule —
+   halt-cycle even → 4-cycle DMA, odd → 3-cycle — converges to one
+   parity across sync_dmc iters. With iter length 3421 + 3 = 3424
+   (DMC period), halt parity is preserved every iter, so drift is
+   zero and sync_dmc loops forever. The pre-refactor "always
+   4-cycle" model happens to produce iter = 3425 which gives
+   drift = 1 cycle/iter — that's why it reaches the "forever:"
+   loop at all (just at a 1-iter-off alignment).
+
+2. **The three references disagree on the cycle-count rule.**
+
+   | ref | normal | CPU write | on $4014 | mid-OAM | OAM cyc 254 | OAM cyc 255 |
+   |---|---|---|---|---|---|---|
+   | Nestopia `NstApu.cpp:2282-2330` | 4 | 3 | — | 2 | 1 | 3 |
+   | puNES `apu.h:210-220` | 4 (DMC_NORMAL) | 3 (DMC_CPU_WRITE) | 2 (DMC_R4014) | — | 1 (DMC_NNL_DMA) | — |
+   | Mesen2 `NesCpu.cpp:399-447` | 3 or 4 (get/put parity) | — | — | absorbed into sprite DMA cycles | — | — |
+
+   Nestopia and puNES converge on a case-taxonomy; Mesen2 uses a
+   uniform get/put loop that the sprite-DMA path splices into.
+   For our tests the case-taxonomy is easier to verify
+   incrementally (each case has a clear symptom: `dma_4016_read`
+   iteration, OAM-overlap cycle count, etc.).
+
+3. **Nestopia's extra-Peek rule is the cleanest $2007 model.**
+   `NstApu.cpp:2313-2328`: when DMC DMA collides with a CPU read
+   AT THE SAME cycle, the DMA unit does `Peek(readAddress)` two
+   extra times (for non-$4xxx addresses) plus one `Peek` for the
+   halt — totalling **3 buffer advances** at $2007. The
+   `readAddress & 0xF000 != 0x4000` check elides those advances
+   for $4016/$4017, where `/OE` is held through the dummy reads
+   and the controller only shifts on the halt.
+
+4. **Structural ordering matters more than I expected.** Our
+   `Bus::read` runs `tick_pre_access` first (advancing cpu_cycles
+   for the CPU's "original read" cycle) and then services DMA
+   inline. Mesen runs `ProcessPendingDma` before `StartCpuCycle`,
+   so DMA cycles end with cpu_cycles positioned at the halt
+   address, and the original read is cycle N+DMA_len. Moving
+   service before `tick_pre_access` (as the refactor did) aligned
+   the halt cycle with Mesen's model but broke sync_dmc for the
+   parity-convergence reason above.
+
+### Recommended next-session setup
+
+- Start from the "nestopia cycle-steal" model, not Mesen's get/put
+  loop. Cheaper to get right per-test: the 5 nestopia cases map
+  directly to the 5 ROMs in `dmc_dma_during_read4`.
+- Plumb the CPU's `IsWriteCycle` / `GetOamDMACycle` equivalents
+  into the APU so `DoDMA` can pick the right case. This requires
+  a small CPU↔Bus API addition we don't have today.
+- Keep the structural `Bus::read` layout unchanged. The fix is
+  in `service_pending_dmc_dma`: vary cycle count by case, do the
+  right number of `Peek(readAddress)` calls per case.
+- Accept that this is a 1–2 day job with several test regressions
+  to chase. Don't start it unless there's time to finish it.
