@@ -124,8 +124,15 @@ impl Bus {
     }
 
     pub fn read(&mut self, addr: u16) -> u8 {
-        self.tick_pre_access();
+        // Service DMC DMA BEFORE this cycle's `tick_pre_access`, per
+        // Mesen2's `MemoryRead` order
+        // (`NesCpu.cpp:261-265`: `ProcessPendingDma → StartCpuCycle
+        // → Read`). Halt cycle BECOMES the cycle the CPU would
+        // have read; the post-service `tick_pre_access` is the
+        // original read. Matches Mesen's cycle-count positioning
+        // of the CPU's bus operation after DMA service.
         self.service_pending_dmc_dma(addr);
+        self.tick_pre_access();
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
