@@ -397,16 +397,19 @@ impl Bus {
         // Cycle 4 — DMC read at the sample byte. Match Mesen2's
         // `StartCpuCycle → ProcessDmaRead → SetDmcReadBuffer →
         // EndCpuCycle` ordering (`NesCpu.cpp:396-411`): tick_pre
-        // first (this cycle's APU tick happens before the fetch),
-        // then mapper fetch, then commit (which asserts `dmc_irq`
-        // on the last byte of a non-looping sample), then tick_post.
-        // Shifts DMC-IRQ visibility by one cycle vs the prior
-        // "commit-before-tick" order — required to align
-        // `sync_dmc`'s BIT/$4015 poll with Mesen.
+        // first, then mapper fetch, then `dma_complete`, then
+        // tick_post. `SetDmcReadBuffer` is called AFTER
+        // `EndCpuCycle` in Mesen — meaning the DMC IRQ flag set by
+        // this cycle isn't visible in `_runIrq` until the NEXT
+        // `EndCpuCycle`, and not in `_prevRunIrq` until the one
+        // after. Our `bus.irq_line` refresh lives inside the NEXT
+        // cycle's `tick_pre_access`, which gives the same two-cycle
+        // latency to the CPU's `prev_irq_line` poll. So we do NOT
+        // refresh `irq_line` here — letting the natural refresh
+        // carry the transition.
         self.tick_pre_access();
         let byte = self.mapper.cpu_read(req.addr);
         self.apu.dmc_dma_complete(byte);
-        self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
         self.tick_post_access();
         self.dmc_dma_active = false;
     }
