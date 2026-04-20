@@ -163,8 +163,13 @@ impl App {
         // If a ROM was loaded at startup, attach the sink to it now so
         // the first frame already produces audio. Otherwise hold the
         // sink here until load_rom fires on the first File → Open.
+        // The sink is tuned to NTSC at `audio::start` time; a PAL ROM
+        // on the command line must retune before attach, otherwise
+        // BlipBuf resamples at the wrong CPU clock rate (pitch ~7.6%
+        // off, and the ring drains faster than it fills).
         let (nes, pending_audio_sink) = match (nes, audio_sink) {
-            (Some(mut nes), Some(sink)) => {
+            (Some(mut nes), Some(mut sink)) => {
+                sink.set_cpu_clock(nes.region().cpu_clock_hz());
                 nes.attach_audio(sink);
                 (Some(nes), None)
             }
