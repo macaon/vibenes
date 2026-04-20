@@ -135,9 +135,10 @@ impl Dmc {
         self.current_addr = self.sample_addr_start;
         self.bytes_remaining = self.sample_length_cfg;
         if self.buffer.is_none() && self.dma_pending.is_none() && self.bytes_remaining > 0 {
-            // Mesen: even cycle → delay 2, odd cycle → delay 3. Our
-            // `tick_cpu` decrements once per CPU cycle so the pending
-            // fetch fires exactly N cycles after enable.
+            // Mesen2 `DeltaModulationChannel.cpp:266-270`: even cycle
+            // → delay 2, odd cycle → delay 3. Our `tick_cpu`
+            // decrements once per CPU cycle so the pending fetch
+            // fires exactly N cycles after the enable.
             self.enable_dma_delay = if cpu_cycle_odd { 3 } else { 2 };
             self.enable_dma_addr = self.current_addr;
         }

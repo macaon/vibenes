@@ -125,15 +125,6 @@ impl Bus {
 
     pub fn read(&mut self, addr: u16) -> u8 {
         self.tick_pre_access();
-        // Service DMC DMA AFTER the APU tick inside `tick_pre_access`
-        // so a DMA that the DMC arms on THIS cycle's APU step is
-        // visible this cycle — matches Mesen2's
-        // `StartCpuCycle → ProcessPendingDma → Read` order
-        // (`NesCpu.cpp:256-268`). The pre-phase-6 order had APU
-        // ticking post-access, which made "service before tick"
-        // equivalent; under the phase-6 pre-access APU tick, we
-        // must service after. Required so `dma_4016_read`'s DMA
-        // aligns on the correct iteration.
         self.service_pending_dmc_dma(addr);
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
@@ -391,19 +382,32 @@ impl Bus {
         } else {
             let _ = self.read(pending_addr);
         }
-        // Cycle 3 — align: idle (plain tick). The DMA controller
-        // holds the bus here; no CPU-driven read.
-        self.tick_cycle();
-        // Cycle 4 — DMC read at the sample byte. The DMC commits the
-        // fetched byte into its buffer (and asserts `dmc_irq` on the
-        // last byte of a non-looping sample) BEFORE this cycle's
-        // `tick_cycle` so the APU-tick inside the tick observes the
-        // committed state — required for `sync_dmc`-aligned tests
-        // where the exact cycle `dmc_irq` becomes visible to `$4015`
-        // controls downstream timing.
+        // Cycle 3 — align: for non-controller targets, another bus
+        // read at pending_addr (Nestopia `NstApu.cpp:2321-2327` does
+        // two extra `Peek(readAddress)` calls plus the halt Peek =
+        // 3 total buffer advances for $2007; puNES `apu.h:172` same
+        // via `DMC_NORMAL` with 4 wall-clock cycles). For $4016/
+        // $4017, `/OE` stays held through dummy cycles so the
+        // controller only shifts on the halt cycle — align is idle.
+        if is_controller {
+            self.tick_cycle();
+        } else {
+            let _ = self.read(pending_addr);
+        }
+        // Cycle 4 — DMC read at the sample byte. Match Mesen2's
+        // `StartCpuCycle → ProcessDmaRead → SetDmcReadBuffer →
+        // EndCpuCycle` ordering (`NesCpu.cpp:396-411`): tick_pre
+        // first (this cycle's APU tick happens before the fetch),
+        // then mapper fetch, then commit (which asserts `dmc_irq`
+        // on the last byte of a non-looping sample), then tick_post.
+        // Shifts DMC-IRQ visibility by one cycle vs the prior
+        // "commit-before-tick" order — required to align
+        // `sync_dmc`'s BIT/$4015 poll with Mesen.
+        self.tick_pre_access();
         let byte = self.mapper.cpu_read(req.addr);
         self.apu.dmc_dma_complete(byte);
-        self.tick_cycle();
+        self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
+        self.tick_post_access();
         self.dmc_dma_active = false;
     }
 }
