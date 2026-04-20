@@ -312,10 +312,16 @@ fn paint_dim_layer(ctx: &Context) {
 const VW: f32 = 192.0;
 // Vertical metrics (virtual px). `row_h` is the cell height; text is
 // centered inside it. `title_h` is a slightly taller top strip that
-// also holds the separator rule below the title.
-const TITLE_H: f32 = 20.0;
-const ROW_H: f32 = 14.0;
-const MARGIN: f32 = 6.0;
+// also holds the separator rule below the title. Sized for VT323 —
+// its em-box is tall, so rows stay legible even at the tight pitch.
+const TITLE_H: f32 = 16.0;
+const ROW_H: f32 = 11.0;
+const MARGIN: f32 = 5.0;
+// Virtual-pixel font sizes. The painter multiplies by the integer
+// scale `s`, so text lands on whole-pixel baselines at any window
+// size. Keep title ≥ item so the hierarchy is obvious at a glance.
+const TITLE_PX: f32 = 10.0;
+const ITEM_PX: f32 = 8.0;
 
 /// Integer scale + origin for the virtual canvas this frame.
 ///
@@ -410,7 +416,7 @@ fn draw_card(
         vpos(origin, s, VW / 2.0, TITLE_H / 2.0 + 1.0),
         Align2::CENTER_CENTER,
         title,
-        FontId::monospace(10.0 * s),
+        FontId::monospace(TITLE_PX * s),
         palette::TITLE,
     );
     // Separator rule under the title.
@@ -478,7 +484,7 @@ fn draw_row(
         vpos(origin, s, 14.0, row_y + ROW_H / 2.0 + 1.0),
         Align2::LEFT_CENTER,
         &item.label,
-        FontId::monospace(8.0 * s),
+        FontId::monospace(ITEM_PX * s),
         text_color,
     );
     if let Some(badge) = item.badge.as_ref() {
@@ -486,7 +492,7 @@ fn draw_row(
             vpos(origin, s, VW - 6.0, row_y + ROW_H / 2.0 + 1.0),
             Align2::RIGHT_CENTER,
             badge,
-            FontId::monospace(8.0 * s),
+            FontId::monospace(ITEM_PX * s),
             badge_color,
         );
     }

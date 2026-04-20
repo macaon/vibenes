@@ -49,6 +49,7 @@ impl UiLayer {
         window: &Window,
     ) -> Self {
         let ctx = Context::default();
+        register_pixel_font(&ctx);
         let winit_state = EguiWinit::new(
             ctx.clone(),
             ViewportId::ROOT,
@@ -210,4 +211,24 @@ impl UiLayer {
             self.renderer.free_texture(id);
         }
     }
+}
+
+/// Install VT323 (SIL OFL 1.1) as the first family for
+/// `FontFamily::Monospace`. The overlay uses `FontId::monospace(...)`
+/// for all its text, so this pins our pixel-font look without
+/// touching call sites. License + copyright travel with the font in
+/// `assets/fonts/VT323-OFL.txt`.
+fn register_pixel_font(ctx: &Context) {
+    const VT323_TTF: &[u8] = include_bytes!("../../assets/fonts/VT323-Regular.ttf");
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "vt323".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(VT323_TTF)),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, "vt323".to_owned());
+    ctx.set_fonts(fonts);
 }
