@@ -455,7 +455,30 @@ impl Ppu {
 
         self.master_ppu_cycle = self.master_ppu_cycle.wrapping_add(1);
         self.dot += 1;
-        if self.dot >= DOTS_PER_SCANLINE {
+        // NTSC odd-frame dot skip: when rendering is enabled, the
+        // pre-render scanline is 340 dots long instead of 341 — dot
+        // 339 advances directly to dot 0 of scanline 0 of the next
+        // frame, skipping dot 340. PAL and Dendy do not skip.
+        // `rendering` sampled at the top of this tick is the right
+        // edge of the decision (checking again here would miss a
+        // mid-scanline mask write that already committed into the
+        // frame's rendering state). Gated by `ppu_vbl_nmi/
+        // 09-even_odd_frames` and `10-even_odd_timing`.
+        // Sample `self.mask` here (not the `rendering` local from the
+        // top of tick) so a `$2001` write that enables rendering
+        // during dot 339 still counts toward the skip decision, per
+        // `ppu_vbl_nmi/10-even_odd_timing`.
+        let skip_last_dot = self.region == Region::Ntsc
+            && is_pre
+            && self.odd_frame
+            && (self.mask & 0x18) != 0
+            && self.dot == 340;
+        if skip_last_dot {
+            self.dot = 0;
+            self.scanline = 0;
+            self.frame = self.frame.wrapping_add(1);
+            self.odd_frame = !self.odd_frame;
+        } else if self.dot >= DOTS_PER_SCANLINE {
             self.dot = 0;
             self.scanline += 1;
             if self.scanline >= scanlines {
