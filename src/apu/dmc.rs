@@ -83,7 +83,16 @@ impl Dmc {
             current_addr: 0xC000,
             bytes_remaining: 0,
             shift_reg: 0,
-            bits_remaining: 0,
+            // Nesdev APU DMC: "8 bits are used up before another sample
+            // byte is required" — at reset the counter is at 8, so the
+            // first bit-shift won't drain the buffer until a full byte
+            // (8 × period = 3424 NTSC cycles at rate 0) has elapsed.
+            // Matches Mesen2 `DeltaModulationChannel.cpp:36` and puNES
+            // `apu.c` init. Was 0 here; that caused the first drain to
+            // fire on the FIRST timer underflow (~428 cycles) instead
+            // of after 8 underflows, throwing DMC-period-sensitive
+            // tests (`dmc_dma_during_read4/sync_dmc`) off alignment.
+            bits_remaining: 8,
             silence: true,
             buffer: None,
             dma_pending: None,
