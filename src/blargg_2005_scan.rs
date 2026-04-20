@@ -112,6 +112,29 @@ pub fn nametable_has_text(nes: &Nes) -> bool {
     false
 }
 
+/// Stricter than [`nametable_has_text`]: true only if the scanned text
+/// contains a recognized pass/fail marker.
+///
+/// A printed title like `6502 TIMING TEST (16 SECONDS)` counts as
+/// "text" but not as "done" — the stuck-PC heuristic can fire during
+/// a long test's NMI-wait loop while that header is the only thing on
+/// screen. Gating the runner on a marker keeps it polling until the
+/// test actually writes its verdict.
+///
+/// Markers:
+///  * `$hh` two-digit debug byte (2005-era devcart `debug_byte`)
+///  * ca65 framework keywords: `Passed`, `Failed`, `Error`, `complete`
+///  * blargg 2005-suite keywords: `PASSED`, `FAILED`, `FAIL OP`
+pub fn has_result_marker(text: &str) -> bool {
+    if first_hex_byte(text).is_some() {
+        return true;
+    }
+    let lower = text.to_ascii_lowercase();
+    ["passed", "failed", "error", "complete", "fail op"]
+        .iter()
+        .any(|kw| lower.contains(kw))
+}
+
 /// Read nametable 0 (32 columns × 30 rows) and return the text. Each
 /// tile byte is emitted as a character: printable ASCII bytes pass
 /// through, `$00` becomes `' '` (blargg fills the untouched area with
@@ -328,6 +351,24 @@ mod tests {
         // But a failure keyword higher up wins over "complete".
         let sad = "Failed #5\nAll tests complete";
         assert_eq!(extract_result_code(sad), Some(2));
+    }
+
+    #[test]
+    fn has_result_marker_ignores_bare_digits() {
+        // A test title with digits but no keyword is NOT done.
+        assert!(!has_result_marker("6502 TIMING TEST (16 SECONDS)"));
+        assert!(!has_result_marker("Running tests..."));
+        assert!(!has_result_marker(""));
+    }
+
+    #[test]
+    fn has_result_marker_recognizes_keywords_and_hex() {
+        assert!(has_result_marker("PASSED"));
+        assert!(has_result_marker("FAIL OP : LDA"));
+        assert!(has_result_marker("cpu_dummy_reads\nPassed"));
+        assert!(has_result_marker("Error 5"));
+        assert!(has_result_marker("All tests complete"));
+        assert!(has_result_marker("  $04  "));
     }
 
     #[test]

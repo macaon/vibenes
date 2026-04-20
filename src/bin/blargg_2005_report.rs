@@ -14,7 +14,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use vibenes::blargg_2005_scan::{
-    extract_result_code, nametable_has_text, read_nametable_ascii, StuckPcDetector,
+    extract_result_code, has_result_marker, read_nametable_ascii, StuckPcDetector,
 };
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
@@ -103,8 +103,16 @@ fn run_one(rom_path: &Path, cycle_limit: u64) -> Result<Outcome> {
         }
 
         let pc_stuck = detector.observe(nes.cpu.pc);
-        if pc_stuck && nametable_has_text(&nes) {
+        if pc_stuck {
             let text = read_nametable_ascii(&nes);
+            // Gate on a recognized marker — otherwise a long test like
+            // `cpu_timing_test6` fires the stuck-PC heuristic during
+            // its 16-second NMI-wait loop while only the "6502 TIMING
+            // TEST" header is on screen, and the first-digit fallback
+            // in `extract_result_code` would mis-report `6`.
+            if !has_result_marker(&text) {
+                continue;
+            }
             let code = extract_result_code(&text);
             let passed = code == Some(1);
             let summary = match code {
