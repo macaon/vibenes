@@ -15,7 +15,7 @@ for hardware specifics and describe the model in my own words.
 | iNES 1.0 / NES 2.0 loader | Complete, CRC32-keyed game DB for region + chip detection |
 | 6502 CPU core | All 256 opcodes (official + stable unofficial + ANE/XAA), cycle-accurate, full interrupt model including NMI hijack and branch-delays-IRQ quirk |
 | Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot pre/post-access split |
-| PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, VBlank-race suppression |
+| PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, VBlank-race suppression, NTSC odd-frame dot skip |
 | APU | 5 channels, frame counter with `$4017` write delay, DMC DMA with halt-cycle replay, staged length-counter writes, non-linear mixer |
 | Host audio | cpal + blip_buf, band-limited resampling, pre-filled ring buffer |
 | Windowed runtime | wgpu/wgsl renderer, NTSC/PAL-paced, keyboard input |
@@ -84,9 +84,17 @@ Every ROM in these suites passes:
   is implemented (`alt_irq_behavior` flag, unit-tested) but has no
   runtime activation path; iNES 1.0 can't carry submapper info.
   Write-up in `notes/phase10/follow_ups.md §F2`.
-- **PPU edge-timing sub-tests** — `ppu_vbl_nmi` 6/10, plus
-  `oam_stress` and `ppu_open_bus`. These probe per-dot-precise
-  edges of VBL / odd-frame skip / NMI on/off.
+- **PPU edge-timing sub-tests** — `ppu_vbl_nmi` 6/10 (01–05 + 09
+  pass). Remaining:
+  - `06-suppression`, `07-nmi_on_timing`, `08-nmi_off_timing` —
+    per-dot NMI edge cases. Our NMI fires at positions where
+    hardware suppresses, and vice versa.
+  - `10-even_odd_timing` #3 — the odd-frame skip decision samples
+    `$2001` state ~1 PPU clock "too late" relative to an enabling
+    write on one side of the boundary. Likely coupled to the 2/1
+    pre/post PPU tick split around the write; needs a trace diff
+    vs Mesen2 in the same spirit as the phase-9 DMC alignment.
+  - `oam_stress` and `ppu_open_bus` — not yet investigated.
 - **Additional mappers** — MMC1/3/5 + NROM/UxROM/CNROM/AxROM
   cover a large slice of the commercial library; VRC family (2/4/6/7)
   and FDS are the next meaningful unlocks.
