@@ -12,19 +12,21 @@ for hardware specifics and describe the model in my own words.
 
 | Subsystem | State |
 |---|---|
-| iNES 1.0 / NES 2.0 loader | Complete |
-| 6502 CPU core | All 256 opcodes, cycle-accurate, full interrupt model |
-| Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot split |
-| PPU | Full render pipeline, sprite-0, VBlank-race suppression |
-| APU | 5 channels, frame counter, DMC DMA, staged length writes |
-| Host audio | cpal + blip_buf, band-limited resampling |
+| iNES 1.0 / NES 2.0 loader | Complete, CRC32-keyed game DB for region + chip detection |
+| 6502 CPU core | All 256 opcodes (official + stable unofficial + ANE/XAA), cycle-accurate, full interrupt model including NMI hijack and branch-delays-IRQ quirk |
+| Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot pre/post-access split |
+| PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, VBlank-race suppression |
+| APU | 5 channels, frame counter with `$4017` write delay, DMC DMA with halt-cycle replay, staged length-counter writes, non-linear mixer |
+| Host audio | cpal + blip_buf, band-limited resampling, pre-filled ring buffer |
 | Windowed runtime | wgpu/wgsl renderer, NTSC/PAL-paced, keyboard input |
-| Mappers | NROM (0), MMC1/SxROM (1), UxROM (2), CNROM (3), MMC3/TxROM (4), AxROM (7) |
+| Overlay UI | egui-based NES-mini-style menu (F1) — scale, aspect ratio, recent ROMs, file swap, reset |
+| Mappers | NROM (0), MMC1/SxROM (1), UxROM (2), CNROM (3), MMC3/TxROM (4), MMC5/ExROM (5), AxROM (7) |
 
 ### Tested green
 
 Every ROM in these suites passes:
 
+**CPU**
 - `instr_test-v5/*` (16/16), `instr_test-v3`, `instr_misc` (4/4)
 - `instr_timing` (2/2), `nes_instr_test` (11/11)
 - `cpu_dummy_reads`, `cpu_dummy_writes/*` (2/2)
@@ -32,6 +34,10 @@ Every ROM in these suites passes:
 - `cpu_reset/{ram_after_reset, registers}` (2/2)
 - `blargg_nes_cpu_test5/{official, cpu}` (2/2)
 - `cpu_interrupts_v2/*` (5/5)
+- `cpu_timing_test6/cpu_timing_test` (1/1) — 16-second per-opcode timing test
+- `branch_timing_tests/*` (3/3)
+
+**APU**
 - `apu_test/*` (8/8), `apu_reset/*` (6/6)
 - `blargg_apu_2005.07.30/*` (11/11) — gated by the `blargg_apu_2005`
   integration test
@@ -39,6 +45,12 @@ Every ROM in these suites passes:
   `dmc_dma_during_read4` integration test against hardware-behavior
   invariants (see "Not yet" below for the remaining CRC-strict
   alignment issue)
+
+**PPU**
+- `sprite_hit_tests_2005.10.05/*` (11/11)
+- `sprite_overflow_tests/*` (5/5)
+
+**Mappers**
 - `mmc3_test/{1-clocking, 2-details, 3-A12_clocking, 5-MMC3}` (4/6)
   and `mmc3_test_2/{1-clocking, 2-details, 3-A12_clocking, 5-MMC3}`
   (4/6) — banking + A12-filtered IRQ counter + Rev B firing. See
@@ -75,12 +87,9 @@ Every ROM in these suites passes:
 - **PPU edge-timing sub-tests** — `ppu_vbl_nmi` 6/10, plus
   `oam_stress` and `ppu_open_bus`. These probe per-dot-precise
   edges of VBL / odd-frame skip / NMI on/off.
-- **Screen-protocol test suites** — `sprite_hit_tests_2005.10.05`,
-  `sprite_overflow_tests`, `branch_timing_tests`, `cpu_timing_test6`
-  use a nametable format our reporter doesn't decode yet.
-- **Additional mappers** — MMC3 (mapper 4) is the highest-value
-  unlock (SMB3, Kirby, Mega Man 3-6, etc.); MMC5 / VRC / FDS behind
-  it.
+- **Additional mappers** — MMC1/3/5 + NROM/UxROM/CNROM/AxROM
+  cover a large slice of the commercial library; VRC family (2/4/6/7)
+  and FDS are the next meaningful unlocks.
 - **Second controller + rebinding** — player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
 
@@ -88,28 +97,48 @@ Every ROM in these suites passes:
 
 ```
 cargo build --release
-./target/release/vibenes path/to/rom.nes
+./target/release/vibenes [path/to/rom.nes]
 ```
 
+The binary can launch without a ROM; use the overlay's File menu to
+load one. Current region (NTSC/PAL) is detected from the iNES header
+and the built-in CRC32 game DB, and the host audio sample rate is
+matched to it.
+
 **Keys**: `Z`=B, `X`=A, `Enter`=Start, `RShift`=Select, arrows=D-pad,
-`R`=reset, `Esc`=quit.
+`R`=reset, `F1`=overlay menu, `Esc`=back/quit.
+
+The overlay menu (F1) pauses the emulator and shows a centered modal
+over a darkened freeze-frame: Scale (1×–6×), Aspect (Auto / 1:1 / 5:4
+/ 8:7 NTSC / 11:8 PAL), Recent ROMs, Load ROM, Reset, Quit. Navigate
+with ↑/↓/Enter/Esc or the mouse.
 
 ## Testing
 
 ```
-# Unit tests + integration suite
+# Unit tests + integration suites
 cargo test --release
 
-# Headless blargg runners (for ROMs not in the integration suite)
+# Headless blargg runners (for ROMs not in the integration suites)
 ./target/release/test_runner ROM.nes          # $6000/DE-B0-61 protocol
 ./target/release/blargg_2005_report ROM.nes   # pre-$6000 nametable scan
 ```
 
 `test_runner` handles the standard blargg `$6000` status-byte protocol
 including the `$81` reset request. `blargg_2005_report` watches for the
-CPU trapping in a `forever:` loop and scans nametable 0 — recognizes
-`$hh` debug bytes (2005-era devcart loader), ca65 framework keywords
-(`Passed` / `Failed` / `Error N`), and `All tests complete`.
+CPU trapping in a `forever:` loop and scans nametable 0 for a result —
+recognizes `$hh` debug bytes (2005-era devcart loader), ca65 framework
+keywords (`Passed` / `Failed` / `Error N`), blargg keywords (`PASSED`
+/ `FAILED` / `FAIL OP`), and `All tests complete`. The scanner gates
+on a recognized marker so a long test's header text (e.g.
+`cpu_timing_test6`'s 16-second countdown) can't be mis-parsed as a
+result digit.
+
+Integration test suites gate against curated ROM sets:
+- `tests/blargg_apu_2005.rs` — the 11-ROM 2005 APU suite
+- `tests/dmc_dma_during_read4.rs` — 5 DMC/DMA interaction ROMs
+  validated against hardware-behavior invariants (pattern shape,
+  replay count) rather than ROM-internal CRC
 
 ## Notable design decisions
 
@@ -147,6 +176,31 @@ iff the IRQ line rose *during* the penultimate cycle. The gate lives in
 fetch (end-of-cycle-1) and only marks the quirk when the line was
 still low. Matches Mesen2 `BranchRelative` + puNES `BRC`.
 
+### NMI hijack on BRK / IRQ
+
+After the push phase of BRK or IRQ service, if an NMI is pending the
+vector fetch is redirected from `$FFFE` to `$FFFA` (and the NMI latch
+cleared). `prev_nmi_pending` is always cleared at the end of the
+service so a late NMI (cycles 6–7) is deferred until after the
+handler's first instruction — matches Mesen2's explicit
+`_prevNeedNmi = false` at the end of `BRK()`.
+
+### A12-filtered MMC3 IRQ counter
+
+MMC3's scanline counter clocks on A12 low→high transitions, filtered
+so two rises within three CPU cycles count as one (prevents rendering
+BG/sprite fetches from spuriously ticking the counter). `on_ppu_addr`
+in the mapper trait is called from `ppu_bus_read`/`write` before the
+dot advances, so the timestamp is "at the start of this dot".
+
+### Pixel-precise sprite-0 hit
+
+Sprite-0 hit fires per-pixel during the BG/sprite mux at dots 2–257,
+with all five hardware gates (both rendering enables, both left-8-col
+enables, non-transparent BG pixel, non-transparent sprite pixel,
+dot ≠ 256). Required by SMB's status-bar/playfield scroll split and
+NES Open Tournament Golf's title band.
+
 ## Layout
 
 ```
@@ -155,10 +209,17 @@ src/
 ├── bus.rs, clock.rs                  CPU bus + master clock
 ├── cpu/{mod,flags,ops}.rs            6502 core, status, all opcodes
 ├── ppu.rs                            2C02 render pipeline
-├── apu/                              channels + frame counter
-├── mapper/                           5 mappers
-├── gfx/                              wgpu renderer + wgsl shaders
+├── apu/                              pulse × 2, triangle, noise, DMC,
+│                                     frame counter, envelope, sweep,
+│                                     length counter
+├── mapper/                           NROM, MMC1, UxROM, CNROM, MMC3,
+│                                     MMC5, AxROM
+├── gfx/                              wgpu renderer + wgsl passthrough
+├── ui/                               egui overlay (menus, commands,
+│                                     recent ROMs)
 ├── audio.rs                          cpal + blip_buf
+├── video.rs                          scale + pixel-aspect settings
+├── gamedb.rs, crc32.rs               CRC32-keyed region/chip DB
 ├── nes.rs, rom.rs                    system glue + iNES parser
 ├── blargg_2005_scan.rs               stuck-PC + nametable scanner
 └── bin/
@@ -167,8 +228,12 @@ src/
     └── frame_dump.rs                 framebuffer PNG dump
 
 tests/
-└── blargg_apu_2005.rs                integration suite (11 ROMs)
+├── blargg_apu_2005.rs                APU suite (11 ROMs)
+└── dmc_dma_during_read4.rs           DMC/DMA suite (5 ROMs)
+
+assets/fonts/                         VT323 pixel font (SIL OFL) for
+                                      the overlay menu
 
 notes/
-└── phase{6,7,8,...}/                 per-phase investigation notes
+└── phase{6,7,9,10}/                  per-phase investigation notes
 ```
