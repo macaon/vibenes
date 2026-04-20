@@ -191,3 +191,39 @@ worth keeping. Concrete lessons so the next attempt skips them:
   right number of `Peek(readAddress)` calls per case.
 - Accept that this is a 1–2 day job with several test regressions
   to chase. Don't start it unless there's time to finish it.
+
+---
+
+## Second refactor attempt — 2026-04-20 (partial landing)
+
+Second pass targeted only the semantic cleanups, not the full
+Mesen/puNES/Nestopia fix. Landed as `1f622dd`, `4e9bb07`,
+`21966d7`, `378cc3d`.
+
+What changed:
+- **Align cycle is now a bus read** at pending_addr for non-$4xxx
+  targets (Nestopia's 3-Peek rule). `dma_2007_read` output changes
+  from `33 44` to `44 55` — both accepted per the ROM source
+  comment, just the other sanctioned pattern.
+- **DMC-read cycle reordered** to match Mesen's `StartCpuCycle →
+  ProcessDmaRead → SetDmcReadBuffer → EndCpuCycle` sequence.
+- **DMC `bits_remaining` init = 8**, matching Mesen/puNES — was 0,
+  which made the first buffer drain fire at ~428 cycles instead of
+  ~3424.
+- **Service runs before `tick_pre_access`**, positioning the halt
+  cycle at the CPU's intended read cycle (Mesen's ordering).
+- **No eager `irq_line` refresh** in the DMC-read cycle — lets the
+  natural `tick_pre_access` refresh carry the DMC IRQ transition,
+  matching Mesen's two-cycle `_runIrq`→`_prevRunIrq` latency.
+
+What's still open:
+- `dma_4016_read` / `dma_2007_read` ROM-internal CRC still differs
+  — the aligned iteration lands one step later than hardware in
+  both (position 4 vs expected 3 in the 5-row output). Every
+  alignment lever I tried (enable_dma_delay 2/3 ↔ 1/2 ↔ 3/4,
+  service-before vs -after, irq refresh timing) left the
+  aligned-iter position unchanged. The remaining 1-cycle offset
+  is likely absorbed by `sync_dmc`'s drift loop and would shift
+  only with changes to DMA cycle-count semantics (Nestopia's
+  `IsWriteCycle` / `OamDMACycle` case taxonomy), not to any
+  1-cycle arming tweak. Third attempt should wire that plumbing.
