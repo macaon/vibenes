@@ -73,22 +73,16 @@ pub struct Ppu {
     fine_x: u8,
     data_buffer: u8,
 
-    nmi_previous: bool,
-    pub nmi_edge: bool,
-    /// Becomes true at scanline 241 dot 1 when VBlank is set, and
-    /// stays true for the rest of that CPU cycle. The bus clears it
-    /// at the start of the next CPU cycle (`begin_cpu_cycle`). A
-    /// `$2002` read while this is set is "inside the race cycle" —
-    /// the read returns VBlank=0, clears the flag, and arms the NMI
-    /// suppression hint so the bus cancels the NMI that was latched
-    /// this cycle.
-    vbl_just_set: bool,
-    /// One-shot flag set by a `$2002` read inside the VBlank-start
-    /// race cycle. Consumed by the bus after the CPU access (see
-    /// `take_nmi_suppress_hint`) to clear `bus.nmi_pending`. Matches
-    /// the semantics of Mesen2's `_preventVblFlag` (NesPpu.cpp:585,
-    /// 1340) routed through our pre/post-access split.
-    nmi_suppress_hint: bool,
+    /// Live NMI level signal. Mirrors Mesen2's `NmiFlag` on the CPU
+    /// (see `NesPpu.cpp:547-549, 588, 891, 1257`). Set by the
+    /// `(nmiScanline, 1)` VBlank-start tick when `ctrl & 0x80 != 0`,
+    /// by a `$2000` write with bit 7 set while VBlank is already set.
+    /// Cleared by a `$2000` write with bit 7 clear, by a `$2002` read
+    /// (together with clearing the VBlank status bit), and by the
+    /// pre-render VBlank-clear tick. Rising-edge detection lives on
+    /// the bus in `tick_post_access`, where a false→true transition
+    /// across CPU-cycle boundaries latches `bus.nmi_pending`.
+    nmi_flag: bool,
     /// Armed when a `$2002` read observes the PPU one PPU-dot before
     /// the VBlank flag would be set (scanline 241, dot 0 or 1 with VBL
     /// not yet set this frame). The upcoming VBlank-set tick sees this
@@ -185,10 +179,7 @@ impl Ppu {
             v: 0,
             fine_x: 0,
             data_buffer: 0,
-            nmi_previous: false,
-            nmi_edge: false,
-            vbl_just_set: false,
-            nmi_suppress_hint: false,
+            nmi_flag: false,
             prevent_vbl: false,
             oam: [0; 256],
             palette: [0; 32],
@@ -292,11 +283,15 @@ impl Ppu {
         if self.scanline == VBLANK_SCANLINE && self.dot == 1 {
             if !self.prevent_vbl {
                 self.status |= 0x80;
-                // Mark this CPU cycle as the VBlank-set race window. The
-                // flag persists across the remaining dots of this cycle
-                // and is cleared at the start of the next CPU cycle by
-                // `begin_cpu_cycle`, called from the bus.
-                self.vbl_just_set = true;
+                // VBL set + NMI enabled raises the NMI level signal
+                // (Mesen2 `TriggerNmi`, NesPpu.cpp:1254-1258). The
+                // bus's end-of-cycle edge detector latches this into
+                // `bus.nmi_pending`. A $2002 read in the SAME cycle
+                // clears this flag before the detector runs, which is
+                // how real hardware suppresses the NMI for that frame.
+                if (self.ctrl & 0x80) != 0 {
+                    self.nmi_flag = true;
+                }
             }
             // `prevent_vbl` is a one-shot: it applies only to this
             // frame's VBL-set tick. Whether we honored it or the flag
@@ -305,10 +300,12 @@ impl Ppu {
             self.prevent_vbl = false;
         }
         if is_pre && self.dot == 1 {
-            // Clear VBlank, sprite-0 hit, sprite overflow.
+            // Clear VBlank, sprite-0 hit, sprite overflow, and lower
+            // NMI level. Matches Mesen2 `ProcessScanline` case for
+            // scanline=-1, cycle=1 (NesPpu.cpp:889-892).
             self.status &= !0xE0;
+            self.nmi_flag = false;
         }
-        self.update_nmi_edge();
 
         // Order per dot on real hardware (Mesen2 NesPpu.cpp:867–957):
         //   1. LoadTileInfo (includes BG shifter reload at case 1).
@@ -928,14 +925,6 @@ impl Ppu {
         }
     }
 
-    fn update_nmi_edge(&mut self) {
-        let asserted = (self.ctrl & 0x80) != 0 && (self.status & 0x80) != 0;
-        if asserted && !self.nmi_previous {
-            self.nmi_edge = true;
-        }
-        self.nmi_previous = asserted;
-    }
-
     pub fn cpu_read(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
         self.cpu_read_inner(addr, mapper, false)
     }
@@ -963,40 +952,33 @@ impl Ppu {
         let reg = addr & 0x0007;
         let value = match reg {
             0x02 => {
-                // Two distinct $2002/VBlank races, matching nesdev wiki
-                // and Mesen2 NesPpu.cpp:585,1340 (`_preventVblFlag`):
-                //
-                // 1. Post-set race (`in_race` via `vbl_just_set`): the
-                //    CPU reads `$2002` in the same CPU cycle that ticked
-                //    (241, 1) during pre-access. Bit 7 returned = 1 (the
-                //    flag is live at read time), but the read clears it
-                //    AND cancels the NMI that was latched this cycle.
-                //    sync_vbl depends on seeing bit 7 = 1 here to land.
-                //
-                // 2. Pre-set race (`pre_vbl_race`): the CPU reads
-                //    `$2002` on a cycle whose post-access tick would
-                //    otherwise set VBL. State is (241, 0) or (241, 1)
-                //    with neither `vbl_just_set` nor `status.bit7`
-                //    asserted. Bit 7 returned = 0 AND `prevent_vbl` is
-                //    armed so the upcoming (241, 1) tick skips the
-                //    status-set and the `vbl_just_set` marker. VBlank
-                //    (and NMI) never assert for this frame.
-                let in_race = self.vbl_just_set;
-                let pre_vbl_race = !in_race
-                    && self.scanline == VBLANK_SCANLINE
-                    && self.dot == 1
-                    && (self.status & 0x80) == 0;
-                let status_bit7 = if pre_vbl_race { 0 } else { self.status & 0x80 };
-                let v = status_bit7 | (self.status & 0x60) | (self.open_bus & 0x1F);
-                if in_race {
-                    self.nmi_suppress_hint = true;
-                }
-                if pre_vbl_race {
+                // $2002 read maps to Mesen2's `UpdateStatusFlag`
+                // (NesPpu.cpp:585-594): return live status, clear VBL,
+                // clear NMI level. If the read lands at (241, 0) —
+                // the CPU cycle before VBL would be latched at (241,
+                // 1) — also arm `prevent_vbl` so the upcoming dot-1
+                // tick skips the VBL-set and nmi_flag-raise. The
+                // post-set race (reading at (241, 1..2) in the same
+                // cycle VBL was set) falls out for free: the dot-1
+                // tick raised `nmi_flag`, this read clears it, and
+                // the bus's end-of-cycle edge detector sees
+                // false→false, so no NMI is latched that frame.
+                let v = (self.status & 0xE0) | (self.open_bus & 0x1F);
+                // Arm `prevent_vbl` when the read lands in the CPU
+                // cycle whose remaining PPU dots will process (241, 1)
+                // — our `self.dot` at read time is the NEXT dot to
+                // process, so `dot == 1 && scanline == 241` means
+                // post-access is about to raise VBL. Matches Mesen2's
+                // `_cycle == 0 && _scanline == nmiScanline` check
+                // inside `UpdateStatusFlag` (NesPpu.cpp:590-593);
+                // Mesen's `_cycle` is the last-processed dot, so
+                // their 0 aligns with our "next = 1".
+                if self.scanline == VBLANK_SCANLINE && self.dot == 1 && (self.status & 0x80) == 0 {
                     self.prevent_vbl = true;
                 }
                 self.status &= !0x80;
+                self.nmi_flag = false;
                 self.w_latch = false;
-                self.update_nmi_edge();
                 v
             }
             0x04 => self.oam[self.oam_addr as usize],
@@ -1036,7 +1018,17 @@ impl Ppu {
             0x00 => {
                 self.ctrl = data;
                 self.t = (self.t & 0xF3FF) | (((data as u16) & 0x03) << 10);
-                self.update_nmi_edge();
+                // Mesen2 `SetControlRegister` (NesPpu.cpp:543-550):
+                // disabling NMI-on-VBlank immediately clears the NMI
+                // level; enabling it while VBlank is already set
+                // immediately raises it. Both effects are live inside
+                // the current CPU cycle, so the end-of-cycle edge
+                // detector sees the post-write state.
+                if (data & 0x80) == 0 {
+                    self.nmi_flag = false;
+                } else if (self.status & 0x80) != 0 {
+                    self.nmi_flag = true;
+                }
             }
             0x01 => {
                 self.mask = data;
@@ -1176,29 +1168,11 @@ impl Ppu {
         mapped * 0x0400 + inner
     }
 
-    pub fn poll_nmi(&mut self) -> bool {
-        let edge = self.nmi_edge;
-        self.nmi_edge = false;
-        edge
-    }
-
-    /// Consume a one-shot NMI-suppress hint set by a `$2002` read
-    /// inside the VBlank-start race cycle. The bus calls this after
-    /// each CPU bus access and clears `bus.nmi_pending` when true,
-    /// cancelling the NMI that was latched during this cycle's
-    /// `tick_pre_access`.
-    pub fn take_nmi_suppress_hint(&mut self) -> bool {
-        let v = self.nmi_suppress_hint;
-        self.nmi_suppress_hint = false;
-        v
-    }
-
-    /// Clear the `vbl_just_set` race marker. The bus calls this at
-    /// the start of every CPU cycle (before ticking PPU dots) so the
-    /// marker only remains set during the cycle in which VBlank was
-    /// actually latched.
-    pub fn begin_cpu_cycle(&mut self) {
-        self.vbl_just_set = false;
+    /// Live PPU NMI level signal. The bus samples this at the end of
+    /// every CPU cycle; a false→true transition across cycle boundaries
+    /// latches `bus.nmi_pending`.
+    pub fn nmi_flag(&self) -> bool {
+        self.nmi_flag
     }
 
     pub fn oam_write(&mut self, data: u8) {
