@@ -97,10 +97,11 @@ Every ROM in these suites passes:
     second". Open-bus decay timing (the PPU's capacitor-backed I/O
     bus bit decay) is not modeled; reads return the last driven
     value indefinitely.
-  - `blargg_ppu_tests_2005.09.15b/power_up_palette` — the runner
-    hits its cycle limit. Test is sensitive to the power-on palette
-    contents; our model zeroes the palette, which the test may
-    interpret as "stuck".
+  - `blargg_ppu_tests_2005.09.15b/power_up_palette` — **won't fix**.
+    Compares the power-on palette byte-for-byte against values
+    captured from blargg's specific NES unit; passing requires
+    hardcoding that unit's power-on contents, which isn't hardware
+    behavior worth reproducing.
 - **Additional mappers** — MMC1/3/5 + NROM/UxROM/CNROM/AxROM
   cover a large slice of the commercial library; VRC family (2/4/6/7)
   and FDS are the next meaningful unlocks.
