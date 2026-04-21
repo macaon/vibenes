@@ -51,7 +51,8 @@ Every ROM in these suites passes:
 - `sprite_overflow_tests/*` (5/5)
 - `ppu_vbl_nmi/*` (10/10) — VBlank set/clear timing, NMI
   control/suppression/on/off timing, even/odd frame dot-skip timing
-- `oam_read`, `ppu_read_buffer/test_ppu_read_buffer` (1/1 each)
+- `oam_read`, `oam_stress`, `ppu_read_buffer/test_ppu_read_buffer`
+  (1/1 each)
 - `ppu_open_bus` — I/O bus per-bit decay (~600 ms), per-register
   refresh masks, $2004 attribute-byte bit-2-4 masking
 - `blargg_ppu_tests_2005.09.15b/{palette_ram, sprite_ram,
@@ -92,15 +93,11 @@ Every ROM in these suites passes:
   is implemented (`alt_irq_behavior` flag, unit-tested) but has no
   runtime activation path; iNES 1.0 can't carry submapper info.
   Write-up in `notes/phase10/follow_ups.md §F2`.
-- **Remaining PPU sub-tests:**
-  - `oam_stress` — sprite render matrix shows alignment errors.
-    Likely a per-pixel rendering or OAM-eval edge case; needs a
-    trace diff vs Mesen2.
-  - `blargg_ppu_tests_2005.09.15b/power_up_palette` — **won't fix**.
-    Compares the power-on palette byte-for-byte against values
-    captured from blargg's specific NES unit; passing requires
-    hardcoding that unit's power-on contents, which isn't hardware
-    behavior worth reproducing.
+- **`blargg_ppu_tests_2005.09.15b/power_up_palette`** — **won't fix**.
+  Compares the power-on palette byte-for-byte against values
+  captured from blargg's specific NES unit; passing requires
+  hardcoding that unit's power-on contents, which isn't hardware
+  behavior worth reproducing.
 - **Additional mappers** — MMC1/3/5 + NROM/UxROM/CNROM/AxROM
   cover a large slice of the commercial library; VRC family (2/4/6/7)
   and FDS are the next meaningful unlocks.
