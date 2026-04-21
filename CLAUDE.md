@@ -78,78 +78,48 @@ surgical changes stay on `main`.
   standards (testing, git, Rust style). Project-specific rules above
   override those where they conflict.
 
-## Current phase handoff (Phase 5 — interrupt polling)
+## Current focus
 
-> Written so a fresh agent on another machine can resume without
-> backtracking. Last-confirmed state: branch `phase5-interrupt-polling`
-> at commit `3fecaef` (as of 2026-04-17). Verify with `git log
-> --oneline -3` before acting on it.
+CPU, PPU, and APU test suites are all green (see `README.md` §Status
+for the full breakdown — `cpu_interrupts_v2 5/5`, `ppu_vbl_nmi 10/10`,
+`oam_stress`, `apu_test 8/8`, `apu_reset 6/6`, `blargg_apu_2005 11/11`,
+etc.). The PPU is effectively complete; `power_up_palette` is the lone
+holdout and is won't-fix (unit-specific snapshot).
 
-**Where we are.** `cpu_interrupts_v2` progression is 2/5 passing:
-`1-cli_latency` ✅, `2-nmi_and_brk` ✅, `3-nmi_and_irq` ❌,
-`4-irq_and_dma` ❌, `5-branch_delays_irq` ❌. No regressions
-anywhere else (run the full sweep in §Tests before committing).
+Active correctness work is now in the DMA interleave and MMC3 timing
+corners, all pre-written up in `notes/phase{9,10}/follow_ups.md` —
+read the relevant note before picking one up:
 
-**Architectural change that unlocked test 2.** Bus cycle is now split
-into [`tick_pre_access`](src/bus.rs) (PPU tick + NMI edge latch) and
-[`tick_post_access`](src/bus.rs) (APU + mapper + IRQ line refresh).
-PPU register reads now see mid-cycle PPU state — required for
-sync_vbl-style sync loops to line up with real hardware. `tick_cycle`
-is kept as a combined entry for DMA stall cycles with no bus access.
+- **DMC DMA 1-cycle alignment** — `dmc_dma_during_read4/{dma_4016_read,
+  dma_2007_read}`. Integration tests pass on invariants but the 5-iter
+  sweep aligns one iteration late vs hardware, so ROM-internal CRC
+  differs. `notes/phase9/follow_ups.md §F1`.
+- **OAM + DMC DMA interleave** — 2 `sprdma_and_dmc_dma` ROMs fail.
+  `run_oam_dma` currently runs as an opaque 513/514-cycle block and
+  doesn't interleave DMC DMA read cycles. Needs rewriting as an
+  explicit get/put-cycle loop per Mesen2 `NesCpu.cpp:399-447`.
+  `notes/phase9/follow_ups.md §F2`.
+- **MMC3 scanline-timing off-by-one** — `mmc3_test/4-scanline_timing`
+  (both suites) fails #3 by ≥1 PPU cycle. Suspect: `on_ppu_addr`
+  timestamp boundary vs Mesen2's CPU-cycle-granular filter.
+  `notes/phase10/follow_ups.md §F1`.
+- **MMC3 Rev A / MMC6** — Rev A firing semantics implemented and
+  unit-tested, no runtime activation path (iNES 1.0 can't carry
+  submapper info). `notes/phase10/follow_ups.md §F2`.
 
-**NMI hijack model** (both BRK inline in [src/cpu/ops.rs](src/cpu/ops.rs)
-and IRQ service in [src/cpu/mod.rs](src/cpu/mod.rs)): after push phase,
-if `bus.prev_nmi_pending` is set, redirect vector to `$FFFA` and
-clear `bus.nmi_pending`. Always clear `bus.prev_nmi_pending` at end
-of the service so a late NMI (cycles 6–7) is deferred to after the
-handler's first instruction — this matches Mesen2's explicit
-`_prevNeedNmi = false` at end of `BRK()` ([NesCpu.cpp:238]).
+**Bigger unlocks beyond the corners:** VRC family (2/4/6/7) and FDS
+mappers; OAM DMA rewrite as get/put cycles (unblocks F2 above).
 
-**Remaining Phase 5 sub-items** (plan order — each its own commit):
+## Regression discipline
 
-1. **Sub-B: branch-delays-IRQ** (`5-branch_delays_irq`). On a taken
-   branch with no page cross, the IRQ poll on the final cycle is
-   suppressed. Snapshot `irq_line_at_start = bus.irq_line` in
-   `Cpu::step`, add `branch_taken_no_cross: bool` on `Cpu` set by
-   `branch()` in [src/cpu/ops.rs](src/cpu/ops.rs) around line 291,
-   then in `poll_interrupts_at_end` skip IRQ latch when the flag is
-   set AND IRQ was newly asserted during the branch. Reference:
-   puNES `BRC` macro (`cpu.c:114-144`), Mesen2 `NesCpu.h:432-448`.
-2. **Debug test 3 `3-nmi_and_irq`**. Hijack mechanism is correct,
-   but iterations alternate between pass/fail with anomalous early
-   NMI fires on odd iterations. Suspects: (a) APU frame-counter IRQ
-   assertion timing relative to mid-cycle PPU tick; (b) something
-   in how `cli` delay interacts with the new bus split. Worth
-   instrumenting before writing code — print (cycle, iter, nmi
-   state, irq state) to isolate which iter starts to diverge.
-3. **Sub-C: DMC-DMA ↔ IRQ** (`4-irq_and_dma`). Stall cycles in
-   `Bus::service_pending_dmc_dma` use `tick_cycle` — they snapshot
-   `prev_*` correctly. Test still fails; need to diagnose exact
-   failure (check output against test source). References:
-   `reference/apu.md §10 DMC DMA CPU stall`, `reference/punes-notes.md`
-   (4-way DMC DMA stall taxonomy).
+Before any commit, run the full sweep from §Tests (at minimum:
+instr_test-v5, instr_misc, apu_test 1–8, apu_reset 1–6,
+cpu_interrupts_v2 1–5, ppu_vbl_nmi, sprite_hit_tests, plus
+`cargo test --release`). Any drop in a previously-green suite is a
+stop-and-investigate signal — don't paper over it.
 
-**Do-before-starting checklist** (every commit on this branch):
-
-```
-cargo build --release && cargo test --lib --release
-for rom in ~/Git/nes-test-roms/instr_test-v5/official_only.nes \
-           ~/Git/nes-test-roms/instr_misc/instr_misc.nes \
-           ~/Git/nes-test-roms/apu_test/rom_singles/*.nes \
-           ~/Git/nes-test-roms/apu_reset/*.nes \
-           ~/Git/nes-test-roms/cpu_interrupts_v2/rom_singles/*.nes; do
-  printf "%-30s " "$(basename $rom)"
-  ./target/release/test_runner "$rom" 2>&1 | tail -1 | grep -oE 'PASS|FAIL'
-done
-```
-
-Any regression in the first four groups (instr, apu_test, apu_reset,
-first two cpu_interrupts) is a stop-and-investigate signal. Don't
-paper over it.
-
-**What worked well this session.** The user pushed back when we hit
-a "1-cycle shift" issue and almost punted. Investigating showed it
-was bus-access ordering (PPU tick after access vs Mesen2's split
-around). Keep that diagnostic habit — when a test is off by exactly
-one cycle, question whether sub-systems see the right state at the
-right moment, not just whether the CPU logic is right.
+When a test is off by exactly one cycle, first question is whether
+subsystems see the right state at the right moment (bus-access
+ordering, pre/post-access split), not whether the CPU logic is
+right. This pattern showed up repeatedly in Phase 5 and again in
+the PPU VBL/NMI work.
