@@ -175,8 +175,26 @@ pub struct Ppu {
     overflow_bug_counter: u8,
 
     pub frame_buffer: Vec<u8>,
+    /// PPU I/O open bus — the "decay register" (nesdev). CPU reads of
+    /// unimplemented / write-only register bits return the last value
+    /// this bus was driven with. Per-bit decay timers in
+    /// [`Ppu::open_bus_refresh`] track when each bit was last refreshed
+    /// and zero the bit after ~600ms of not being driven.
     open_bus: u8,
+    /// Timestamp (in master PPU dots) at which each bit of
+    /// [`Ppu::open_bus`] was last refreshed. A bit is considered
+    /// decayed once `master_ppu_cycle - open_bus_refresh[bit]` exceeds
+    /// [`OPEN_BUS_DECAY_PPU_DOTS`], after which reads that consult
+    /// that bit return 0 (the capacitor discharged).
+    open_bus_refresh: [u64; 8],
 }
+
+/// PPU open-bus decay threshold in PPU dots. NTSC PPU runs at
+/// ~5.369 MHz, so 3.2 M dots ≈ 596 ms — well inside the "< 1 second"
+/// window asserted by `ppu_open_bus` tests 3/5/7/9 while still longer
+/// than the 100 × 10 ms burst loops those tests use. Real hardware
+/// varies per unit and with temperature (~600 ms typical per nesdev).
+const OPEN_BUS_DECAY_PPU_DOTS: u64 = 3_200_000;
 
 impl Ppu {
     pub fn new(region: Region) -> Self {
@@ -228,7 +246,39 @@ impl Ppu {
             overflow_bug_counter: 0,
             frame_buffer: vec![0; FRAME_WIDTH * FRAME_HEIGHT * 4],
             open_bus: 0,
+            open_bus_refresh: [0; 8],
         }
+    }
+
+    /// Refresh the selected bits of the open-bus decay register.
+    /// For each bit of `mask` that's set, copy the corresponding bit
+    /// of `value` into [`Ppu::open_bus`] and reset that bit's decay
+    /// timer. Bits not in the mask keep both their stored value and
+    /// their last-refresh timestamp — i.e. they keep decaying.
+    fn refresh_open_bus_bits(&mut self, mask: u8, value: u8) {
+        let now = self.master_ppu_cycle;
+        self.open_bus = (self.open_bus & !mask) | (value & mask);
+        for i in 0..8 {
+            if (mask >> i) & 1 == 1 {
+                self.open_bus_refresh[i] = now;
+            }
+        }
+    }
+
+    /// Return the open-bus byte with per-bit decay applied — any bit
+    /// whose last refresh is older than [`OPEN_BUS_DECAY_PPU_DOTS`]
+    /// reads back as 0. Used when a read needs to source bits from
+    /// decay (e.g. low 5 bits of `$2002`) or to return pure decay for
+    /// write-only registers.
+    fn open_bus_decayed(&self) -> u8 {
+        let now = self.master_ppu_cycle;
+        let mut v = self.open_bus;
+        for i in 0..8 {
+            if now.saturating_sub(self.open_bus_refresh[i]) > OPEN_BUS_DECAY_PPU_DOTS {
+                v &= !(1 << i);
+            }
+        }
+        v
     }
 
     pub fn reset(&mut self) {
@@ -993,29 +1043,26 @@ impl Ppu {
         is_dummy: bool,
     ) -> u8 {
         let reg = addr & 0x0007;
-        let value = match reg {
+        match reg {
             0x02 => {
-                // $2002 read maps to Mesen2's `UpdateStatusFlag`
-                // (NesPpu.cpp:585-594): return live status, clear VBL,
-                // clear NMI level. If the read lands at (241, 0) —
-                // the CPU cycle before VBL would be latched at (241,
-                // 1) — also arm `prevent_vbl` so the upcoming dot-1
-                // tick skips the VBL-set and nmi_flag-raise. The
-                // post-set race (reading at (241, 1..2) in the same
-                // cycle VBL was set) falls out for free: the dot-1
-                // tick raised `nmi_flag`, this read clears it, and
-                // the bus's end-of-cycle edge detector sees
-                // false→false, so no NMI is latched that frame.
-                let v = (self.status & 0xE0) | (self.open_bus & 0x1F);
-                // Arm `prevent_vbl` when the read lands in the CPU
-                // cycle whose remaining PPU dots will process (241, 1)
-                // — our `self.dot` at read time is the NEXT dot to
-                // process, so `dot == 1 && scanline == 241` means
-                // post-access is about to raise VBL. Matches Mesen2's
-                // `_cycle == 0 && _scanline == nmiScanline` check
-                // inside `UpdateStatusFlag` (NesPpu.cpp:590-593);
-                // Mesen's `_cycle` is the last-processed dot, so
-                // their 0 aligns with our "next = 1".
+                // $2002 read: bits 5-7 come from PPU status (VBlank,
+                // sprite-0, sprite-overflow); bits 0-4 come from the
+                // open-bus decay register. The read refreshes bits
+                // 5-7 of decay with the status bits but LEAVES BITS
+                // 0-4 decaying — matches `ppu_open_bus` tests 6/7.
+                //
+                // Also clears VBL, clears NMI level, and resets the
+                // $2005/$2006 write toggle. Arms `prevent_vbl` when
+                // the read lands exactly on the CPU cycle whose
+                // post-access dot will raise VBL — Mesen2's
+                // `UpdateStatusFlag` `_cycle == 0` branch
+                // (NesPpu.cpp:590-593); their `_cycle` is the
+                // last-processed dot, so their 0 maps to our
+                // next-to-process dot 1.
+                let status_high = self.status & 0xE0;
+                let bus_low = self.open_bus_decayed() & 0x1F;
+                let v = status_high | bus_low;
+                self.refresh_open_bus_bits(0xE0, status_high);
                 if self.scanline == VBLANK_SCANLINE && self.dot == 1 && (self.status & 0x80) == 0 {
                     self.prevent_vbl = true;
                 }
@@ -1024,39 +1071,72 @@ impl Ppu {
                 self.w_latch = false;
                 v
             }
-            0x04 => self.oam[self.oam_addr as usize],
+            0x04 => {
+                // OAM read. Sprite attribute bytes (OAM[4n+2]) have
+                // bits 2-4 unimplemented in hardware and always read
+                // as 0; every other byte reads the stored value
+                // verbatim. The read refreshes all 8 bits of decay
+                // with the returned (masked) value — `ppu_open_bus`
+                // tests 10/11.
+                let raw = self.oam[self.oam_addr as usize];
+                let value = if self.oam_addr & 0x03 == 0x02 {
+                    raw & 0xE3
+                } else {
+                    raw
+                };
+                self.refresh_open_bus_bits(0xFF, value);
+                value
+            }
             0x07 if is_dummy => {
-                // Dummy read at $2007 mirror: return the current buffer
-                // without advancing v or refilling. See `cpu_read_dummy`.
-                self.data_buffer
+                // Dummy read at $2007 mirror: return the current
+                // buffer without advancing v or refilling (see
+                // `cpu_read_dummy`). Refresh decay with the returned
+                // value anyway — matches the read's observable
+                // effect on the I/O bus.
+                let v = self.data_buffer;
+                self.refresh_open_bus_bits(0xFF, v);
+                v
             }
             0x07 => {
-                let addr = self.v & 0x3FFF;
-                let result = if addr >= 0x3F00 {
+                let vram_addr = self.v & 0x3FFF;
+                let (returned, refresh_mask) = if vram_addr >= 0x3F00 {
+                    // Palette read: low 6 bits come from palette,
+                    // high 2 bits keep decaying. Buffer refills from
+                    // the mirrored nametable byte behind palette RAM.
                     self.data_buffer =
-                        self.ppu_bus_read(addr.wrapping_sub(0x1000), PpuFetchKind::Idle, mapper);
-                    self.read_palette(addr)
+                        self.ppu_bus_read(vram_addr.wrapping_sub(0x1000), PpuFetchKind::Idle, mapper);
+                    let palette = self.read_palette(vram_addr) & 0x3F;
+                    let bus_high = self.open_bus_decayed() & 0xC0;
+                    (palette | bus_high, 0x3Fu8)
                 } else {
+                    // Non-palette read: return buffered byte, refill
+                    // buffer from current v. All 8 bits of decay
+                    // refreshed with the returned value.
                     let buffered = self.data_buffer;
-                    self.data_buffer = self.ppu_bus_read(addr, PpuFetchKind::Idle, mapper);
-                    buffered
+                    self.data_buffer = self.ppu_bus_read(vram_addr, PpuFetchKind::Idle, mapper);
+                    (buffered, 0xFFu8)
                 };
+                self.refresh_open_bus_bits(refresh_mask, returned);
                 self.increment_v();
                 // Post-increment v appears on the PPU address bus
-                // outside rendering — gives MMC3's A12 watcher another
-                // rise/fall edge to observe.
+                // outside rendering — gives MMC3's A12 watcher
+                // another edge to observe.
                 mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
-                result
+                returned
             }
-            _ => self.open_bus,
-        };
-        self.open_bus = value;
-        value
+            // Write-only registers ($2000, $2001, $2003, $2005, $2006).
+            // Reads return pure decay with NO refresh — `ppu_open_bus`
+            // tests 3 and 5.
+            _ => self.open_bus_decayed(),
+        }
     }
 
     pub fn cpu_write(&mut self, addr: u16, data: u8, mapper: &mut dyn Mapper) {
         let reg = addr & 0x0007;
-        self.open_bus = data;
+        // Every CPU write to a PPU register drives all 8 bits of the
+        // I/O bus, so the decay register is fully refreshed with the
+        // written value — `ppu_open_bus` test 2.
+        self.refresh_open_bus_bits(0xFF, data);
         match reg {
             0x00 => {
                 self.ctrl = data;

@@ -15,7 +15,7 @@ for hardware specifics and describe the model in my own words.
 | iNES 1.0 / NES 2.0 loader | Complete, CRC32-keyed game DB for region + chip detection |
 | 6502 CPU core | All 256 opcodes (official + stable unofficial + ANE/XAA), cycle-accurate, full interrupt model including NMI hijack and branch-delays-IRQ quirk |
 | Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot pre/post-access split |
-| PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, level-triggered NMI signal (bus-side rising-edge detection), 1-cycle-delayed `rendering_enabled`, VBlank-race suppression, NTSC odd-frame dot skip |
+| PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, level-triggered NMI signal (bus-side rising-edge detection), 1-cycle-delayed `rendering_enabled`, VBlank-race suppression, NTSC odd-frame dot skip, per-bit I/O open-bus decay |
 | APU | 5 channels, frame counter with `$4017` write delay, DMC DMA with halt-cycle replay, staged length-counter writes, non-linear mixer |
 | Host audio | cpal + blip_buf, band-limited resampling, pre-filled ring buffer |
 | Windowed runtime | wgpu/wgsl renderer, NTSC/PAL-paced, keyboard input |
@@ -52,8 +52,11 @@ Every ROM in these suites passes:
 - `ppu_vbl_nmi/*` (10/10) — VBlank set/clear timing, NMI
   control/suppression/on/off timing, even/odd frame dot-skip timing
 - `oam_read`, `ppu_read_buffer/test_ppu_read_buffer` (1/1 each)
+- `ppu_open_bus` — I/O bus per-bit decay (~600 ms), per-register
+  refresh masks, $2004 attribute-byte bit-2-4 masking
 - `blargg_ppu_tests_2005.09.15b/{palette_ram, sprite_ram,
-  vbl_clear_time, vram_access}` (4/5 — `power_up_palette` still open)
+  vbl_clear_time, vram_access}` (4/5 — `power_up_palette` is
+  hardware-unit-specific, won't-fix)
 
 **Mappers**
 - `mmc3_test/{1-clocking, 2-details, 3-A12_clocking, 5-MMC3}` (4/6)
@@ -89,14 +92,10 @@ Every ROM in these suites passes:
   is implemented (`alt_irq_behavior` flag, unit-tested) but has no
   runtime activation path; iNES 1.0 can't carry submapper info.
   Write-up in `notes/phase10/follow_ups.md §F2`.
-- **Remaining PPU sub-tests not yet investigated:**
+- **Remaining PPU sub-tests:**
   - `oam_stress` — sprite render matrix shows alignment errors.
     Likely a per-pixel rendering or OAM-eval edge case; needs a
     trace diff vs Mesen2.
-  - `ppu_open_bus` #3 — "Decay value should become zero by one
-    second". Open-bus decay timing (the PPU's capacitor-backed I/O
-    bus bit decay) is not modeled; reads return the last driven
-    value indefinitely.
   - `blargg_ppu_tests_2005.09.15b/power_up_palette` — **won't fix**.
     Compares the power-on palette byte-for-byte against values
     captured from blargg's specific NES unit; passing requires
