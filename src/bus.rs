@@ -29,6 +29,11 @@ pub struct Bus {
     /// `nmi_pending` as of the end of the previous CPU cycle. Same
     /// rationale as `prev_irq_line`.
     pub prev_nmi_pending: bool,
+    /// PPU `nmi_flag` level at end of the previous CPU cycle. Feeds
+    /// the rising-edge detector in `tick_post_access`: a false→true
+    /// transition across cycle boundaries latches `nmi_pending`.
+    /// Mirrors Mesen2's `_prevNmiFlag` (NesCpu.cpp:306-309).
+    prev_nmi_flag: bool,
 
     open_bus: u8,
     /// True while we're servicing a DMC DMA fetch. Prevents re-entering
@@ -87,6 +92,7 @@ impl Bus {
             irq_line: false,
             prev_irq_line: false,
             prev_nmi_pending: false,
+            prev_nmi_flag: false,
             open_bus: 0,
             dmc_dma_active: false,
             pending_ppu_ticks: 0,
@@ -155,14 +161,6 @@ impl Bus {
             _ => self.open_bus,
         };
         self.open_bus = value;
-        // $2002 race: if the CPU read $2002 exactly during the VBlank-
-        // start dot window, the PPU arms a suppression hint. Clear the
-        // NMI that was latched in `tick_pre_access` before the CPU
-        // sees it — matches real hardware where reading $2002 at the
-        // race cycle cancels the frame's NMI.
-        if self.ppu.take_nmi_suppress_hint() {
-            self.nmi_pending = false;
-        }
         self.tick_post_access();
         value
     }
@@ -244,12 +242,6 @@ impl Bus {
         self.prev_irq_line = self.irq_line;
         self.prev_nmi_pending = self.nmi_pending;
 
-        // Let the PPU clear any per-cycle race markers (e.g.
-        // `vbl_just_set`) before we tick it for this CPU cycle. The
-        // markers re-arm if the corresponding dot is ticked in this
-        // cycle's PPU advance.
-        self.ppu.begin_cpu_cycle();
-
         // NTSC: 3 PPU dots per CPU cycle, split 2 pre-access + 1
         // post-access to match Mesen2's phase alignment (see
         // `NesCpu.cpp:73-75,296,319` for the master-clock math that
@@ -292,20 +284,24 @@ impl Bus {
     ///
     /// Runs the final PPU dot (the 3rd dot on NTSC / 4th on PAL when
     /// the ratio produces it) so register reads during the bus
-    /// access see the PPU state as of "2 dots into this cycle". NMI
-    /// poll lives here too so a `(241,1)` dot that lands as the
-    /// final dot sets `nmi_pending` *after* this cycle's access —
-    /// i.e. visible to the CPU no earlier than the next cycle's
-    /// penultimate poll, matching Mesen2's
-    /// `StartCpuCycle`/`EndCpuCycle` split.
+    /// access see the PPU state as of "2 dots into this cycle". At
+    /// end of cycle, samples the PPU's live `nmi_flag` and latches
+    /// `nmi_pending` on a false→true transition since the previous
+    /// cycle's end — matches Mesen2's `EndCpuCycle` edge detector
+    /// (`NesCpu.cpp:306-309`). Because the sample is taken here, a
+    /// $2002 read that clears `nmi_flag` within this same cycle
+    /// suppresses the edge, reproducing the post-set race on real
+    /// hardware.
     fn tick_post_access(&mut self) {
         for _ in 0..self.pending_ppu_ticks {
             self.ppu.tick(&mut *self.mapper);
         }
         self.pending_ppu_ticks = 0;
-        if self.ppu.poll_nmi() {
+        let nmi_flag = self.ppu.nmi_flag();
+        if !self.prev_nmi_flag && nmi_flag {
             self.nmi_pending = true;
         }
+        self.prev_nmi_flag = nmi_flag;
         if let Some(sink) = self.audio_sink.as_mut() {
             sink.on_cpu_cycle(self.apu.output_sample());
         }
