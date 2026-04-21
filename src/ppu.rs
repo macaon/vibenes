@@ -73,6 +73,23 @@ pub struct Ppu {
     fine_x: u8,
     data_buffer: u8,
 
+    /// Latched by the pre-render dot-339 tick on odd NTSC frames
+    /// when rendering was enabled at entry, consumed at end-of-tick
+    /// to skip dot 340 and wrap to (0, 0) of the next frame.
+    /// Sampling at dot-339 entry rather than at dot-340 exit gives
+    /// the same visibility window as Mesen2's cycle-339 branch
+    /// (NesPpu.cpp:946-954).
+    skip_last_dot_latched: bool,
+    /// Delayed view of `(mask & 0x18) != 0` — mirrors Mesen2's
+    /// `_renderingEnabled` (NesPpu.cpp:1458-1461). A `$2001` write
+    /// updates `mask` immediately but the effective "rendering
+    /// enabled" signal lags by one PPU cycle, because Mesen2 applies
+    /// the update via `UpdateState` at the END of the CURRENT tick.
+    /// Required by `ppu_vbl_nmi/10-even_odd_timing` #3/#5 where a
+    /// `$2001` write landing exactly at pre-render dot 339 must NOT
+    /// influence that same dot's skip decision.
+    rendering_enabled: bool,
+
     /// Live NMI level signal. Mirrors Mesen2's `NmiFlag` on the CPU
     /// (see `NesPpu.cpp:547-549, 588, 891, 1257`). Set by the
     /// `(nmiScanline, 1)` VBlank-start tick when `ctrl & 0x80 != 0`,
@@ -180,6 +197,8 @@ impl Ppu {
             fine_x: 0,
             data_buffer: 0,
             nmi_flag: false,
+            skip_last_dot_latched: false,
+            rendering_enabled: false,
             prevent_vbl: false,
             oam: [0; 256],
             palette: [0; 32],
@@ -305,6 +324,24 @@ impl Ppu {
             // scanline=-1, cycle=1 (NesPpu.cpp:889-892).
             self.status &= !0xE0;
             self.nmi_flag = false;
+        }
+
+        // Sample the odd-frame-skip decision at the START of dot 339
+        // processing, mirroring Mesen2 (`NesPpu.cpp:946-954` — the
+        // check lives inside the cycle-339 ProcessTileLoading branch,
+        // before any subsequent advance). Consumed at end-of-tick to
+        // skip dot 340.
+        // Use the 1-tick-delayed `rendering_enabled` (not `self.mask`
+        // directly) so a `$2001` write landing in the same CPU cycle
+        // as dot 339 does NOT influence this dot's skip decision —
+        // matches Mesen2's `UpdateState` deferral (NesPpu.cpp:1425).
+        if self.region == Region::Ntsc
+            && is_pre
+            && self.dot == 339
+            && self.odd_frame
+            && self.rendering_enabled
+        {
+            self.skip_last_dot_latched = true;
         }
 
         // Order per dot on real hardware (Mesen2 NesPpu.cpp:867–957):
@@ -452,25 +489,23 @@ impl Ppu {
 
         self.master_ppu_cycle = self.master_ppu_cycle.wrapping_add(1);
         self.dot += 1;
-        // NTSC odd-frame dot skip: when rendering is enabled, the
-        // pre-render scanline is 340 dots long instead of 341 — dot
-        // 339 advances directly to dot 0 of scanline 0 of the next
-        // frame, skipping dot 340. PAL and Dendy do not skip.
-        // `rendering` sampled at the top of this tick is the right
-        // edge of the decision (checking again here would miss a
-        // mid-scanline mask write that already committed into the
-        // frame's rendering state). Gated by `ppu_vbl_nmi/
-        // 09-even_odd_frames` and `10-even_odd_timing`.
-        // Sample `self.mask` here (not the `rendering` local from the
-        // top of tick) so a `$2001` write that enables rendering
-        // during dot 339 still counts toward the skip decision, per
-        // `ppu_vbl_nmi/10-even_odd_timing`.
-        let skip_last_dot = self.region == Region::Ntsc
-            && is_pre
-            && self.odd_frame
-            && (self.mask & 0x18) != 0
-            && self.dot == 340;
-        if skip_last_dot {
+        // NTSC odd-frame dot skip: when rendering is enabled at the
+        // START of dot 339 on the pre-render scanline of an odd
+        // frame, the last dot (340) is skipped — the pre-render ends
+        // at 339 instead of 340. Decision point matches Mesen2
+        // `ProcessTileLoading` (NesPpu.cpp:946-954), which samples
+        // `IsRenderingEnabled()` inside the cycle-339 branch before
+        // any subsequent tick advances. We latch the decision at the
+        // top of tick when entering dot 339 (before dot-339
+        // processing) so that an intervening mid-cycle `$2001` write
+        // that lands AFTER our pre-access dots of the containing CPU
+        // cycle does not retroactively flip the decision. Required by
+        // `ppu_vbl_nmi/10-even_odd_timing` #3/#5.
+        //
+        // `self.skip_last_dot_latched` is set above (when entering
+        // dot 339) — see the block earlier in tick().
+        if self.skip_last_dot_latched {
+            self.skip_last_dot_latched = false;
             self.dot = 0;
             self.scanline = 0;
             self.frame = self.frame.wrapping_add(1);
@@ -484,6 +519,14 @@ impl Ppu {
                 self.odd_frame = !self.odd_frame;
             }
         }
+
+        // Apply any `$2001` write that happened during this PPU cycle
+        // to the delayed `rendering_enabled` signal. Done at end of
+        // tick so the NEXT tick (and any rendering-dependent decision
+        // it makes) sees the new state — matching Mesen2's
+        // `UpdateState` running at the end of each Exec cycle
+        // (NesPpu.cpp:1361-1362, 1458-1461).
+        self.rendering_enabled = (self.mask & 0x18) != 0;
     }
 
     fn bg_pattern_addr(&self, tile: u8) -> u16 {

@@ -49,6 +49,7 @@ Every ROM in these suites passes:
 **PPU**
 - `sprite_hit_tests_2005.10.05/*` (11/11)
 - `sprite_overflow_tests/*` (5/5)
+- `ppu_vbl_nmi/*` (10/10) — VBlank set/clear timing, NMI control/suppression/on/off timing, even/odd frame dot-skip timing
 
 **Mappers**
 - `mmc3_test/{1-clocking, 2-details, 3-A12_clocking, 5-MMC3}` (4/6)
@@ -84,17 +85,8 @@ Every ROM in these suites passes:
   is implemented (`alt_irq_behavior` flag, unit-tested) but has no
   runtime activation path; iNES 1.0 can't carry submapper info.
   Write-up in `notes/phase10/follow_ups.md §F2`.
-- **PPU edge-timing sub-tests** — `ppu_vbl_nmi` 6/10 (01–05 + 09
-  pass). Remaining:
-  - `06-suppression`, `07-nmi_on_timing`, `08-nmi_off_timing` —
-    per-dot NMI edge cases. Our NMI fires at positions where
-    hardware suppresses, and vice versa.
-  - `10-even_odd_timing` #3 — the odd-frame skip decision samples
-    `$2001` state ~1 PPU clock "too late" relative to an enabling
-    write on one side of the boundary. Likely coupled to the 2/1
-    pre/post PPU tick split around the write; needs a trace diff
-    vs Mesen2 in the same spirit as the phase-9 DMC alignment.
-  - `oam_stress` and `ppu_open_bus` — not yet investigated.
+- **PPU edge-timing sub-tests** — `ppu_vbl_nmi` 10/10. `oam_stress`
+  and `ppu_open_bus` not yet investigated.
 - **Additional mappers** — MMC1/3/5 + NROM/UxROM/CNROM/AxROM
   cover a large slice of the commercial library; VRC family (2/4/6/7)
   and FDS are the next meaningful unlocks.
