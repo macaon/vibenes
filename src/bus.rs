@@ -39,6 +39,15 @@ pub struct Bus {
     /// True while we're servicing a DMC DMA fetch. Prevents re-entering
     /// the DMA service from `tick_cycle` inside the stall cycles.
     dmc_dma_active: bool,
+    /// True while OAM DMA is running (between the halt cycle at the
+    /// start of `run_oam_dma` and the last sprite write at the end).
+    /// When a DMC DMA request arms mid-OAM-DMA, the halt + dummy
+    /// stall cycles are absorbed into the sprite-DMA cycles that
+    /// were already going to run — the total DMC insertion drops
+    /// from 4 to 2 cycles (Nestopia's `DMC_R4014` case,
+    /// `NstApu.cpp:2297-2311`). Required by `sprdma_and_dmc_dma`
+    /// for a stable cycle count across iterations.
+    oam_dma_active: bool,
     /// Number of PPU dots left to run in the current CPU cycle's
     /// post-access phase. `tick_pre_access` advances the clock and
     /// runs all but the last dot; the remainder lives here until
@@ -95,6 +104,7 @@ impl Bus {
             prev_nmi_flag: false,
             open_bus: 0,
             dmc_dma_active: false,
+            oam_dma_active: false,
             pending_ppu_ticks: 0,
             audio_sink: None,
         }
@@ -167,6 +177,17 @@ impl Bus {
 
     /// One CPU bus write. Every write costs one CPU cycle.
     pub fn write(&mut self, addr: u16, data: u8) {
+        // DMC DMA firing during a CPU write costs 3 extra cycles
+        // instead of 4 — the write itself acts as the halt cycle so
+        // the DMA unit only needs dummy + align + DMC-fetch after it
+        // (Nestopia `NstApu.cpp:2295`, `IsWriteCycle(clock) ? 3 : 4`).
+        // Servicing here (BEFORE this write's `tick_pre_access`)
+        // means the DMC fetch lands before the CPU's actual write
+        // effect completes, shifting the drift accumulation inside
+        // `sync_dmc` when `sta SNDCHN` happens to coincide with a
+        // DMC arm — required by `dmc_dma_during_read4/dma_*.nes`
+        // to land on hardware's golden CRC iter.
+        self.service_pending_dmc_dma_on_write();
         self.open_bus = data;
         self.tick_pre_access();
         match addr {
@@ -227,6 +248,38 @@ impl Bus {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x6000..=0xFFFF => self.mapper.cpu_peek(addr),
             _ => 0,
+        }
+    }
+
+    /// Side-effect peek — performs the same register state mutations a
+    /// normal read would (controller shift, PPU buffer advance, frame
+    /// IRQ clear on `$4015`, PPU status read-clear, etc.) WITHOUT
+    /// advancing the master clock. Used by DMC DMA service to model
+    /// Nestopia's `Peek(readAddress)` behavior when DMA collides with a
+    /// CPU read in the same cycle (`NstApu.cpp:2313-2328`): the extra
+    /// buffer advances / controller shifts happen instantaneously
+    /// before the DMA's stall cycles run.
+    fn peek_with_side_effects(&mut self, addr: u16) {
+        match addr {
+            0x2000..=0x3FFF => {
+                let _ = self.ppu.cpu_read(addr, &mut *self.mapper);
+            }
+            0x4015 => {
+                let _ = self.apu.read_status();
+            }
+            0x4016 => {
+                let _ = self.controllers[0].read();
+            }
+            0x4017 => {
+                let _ = self.controllers[1].read();
+            }
+            _ => {
+                // Addresses without PPU/APU/controller side effects
+                // (RAM, PRG-ROM, WRAM, unmapped). The DMA's presence
+                // on the bus still broadcasts the address, but the
+                // devices on those ranges don't latch it as a new
+                // access.
+            }
         }
     }
 
@@ -320,6 +373,13 @@ impl Bus {
         //   - 1 alignment idle (always)
         //   - 1 extra idle if the DMA began on an odd CPU cycle
         //   - 256 read/write pairs = 512 cycles
+        //
+        // `oam_dma_active` is set across the whole window so
+        // `service_pending_dmc_dma` can cut its stall cycles from 4
+        // to 2 when DMC DMA fires mid-OAM — the halt + dummy cycles
+        // overlap with sprite-DMA's own bus-busy cycles (Nestopia
+        // `DMC_R4014`, `NstApu.cpp:2297-2311`).
+        self.oam_dma_active = true;
         self.tick_cycle();
         if extra_idle {
             self.tick_cycle();
@@ -329,6 +389,7 @@ impl Bus {
             let byte = self.read(base | i);
             self.write(0x2004, byte);
         }
+        self.oam_dma_active = false;
     }
 
     /// Consume a pending DMC DMA request, if any, and insert the stall
@@ -361,55 +422,75 @@ impl Bus {
             return;
         };
         self.dmc_dma_active = true;
-        // Mesen2's `skipDummyReads` distinction (`NesCpu.cpp:349-352,
-        // 423-425`): on NES (not Famicom), `$4016`/`$4017` only
-        // register the FIRST DMA dummy read as a controller shift;
-        // subsequent DMA dummy reads don't pulse `/OE` through to the
-        // controller latch. Every other address (including `$2007`)
-        // registers each dummy read as a real bus transaction. We
-        // model this by always replaying the halt cycle, then doing
-        // ONE additional dummy-cycle replay only when the target is
-        // not a controller register. `dmc_dma_during_read4/
-        // dma_2007_read` wants two buffer advances (`33 44` or
-        // `44 55`); `dma_4016_read` wants one bit deletion.
-        let is_controller = matches!(pending_addr & 0xFFFE, 0x4016);
-        // Cycle 1 — halt: always replays pending_addr. Full bus read
-        // with side effects (open-bus, controller shift, $4015
-        // frame-IRQ clear, PPU buffer advance).
-        let _ = self.read(pending_addr);
-        // Cycle 2 — dummy: replay at pending_addr again for
-        // non-controller targets (the PPU $2007 buffer advances
-        // every DMA read); idle for $4016/$4017.
-        if is_controller {
-            self.tick_cycle();
-        } else {
-            let _ = self.read(pending_addr);
+
+        // Nestopia-style Peek + StealCycles model (`NstApu.cpp:2282-
+        // 2333`): when DMC DMA collides with a CPU read in the same
+        // cycle, the side-effect reads at `pending_addr` happen
+        // *instantaneously* (before any CPU cycles tick), then the
+        // DMA stalls the CPU for a fixed number of cycles, then the
+        // DMC sample byte is fetched.
+        //
+        // Side-effect peeks per address class:
+        //   - `$4016` / `$4017` (controllers): ONE peek — the halt
+        //     cycle's read shifts the latch once. Subsequent dummy
+        //     cycles keep `/OE` asserted so no further shifts land.
+        //   - Every other address (incl. `$2007`): THREE peeks — the
+        //     halt replay PLUS two extra `Peek(readAddress)` calls
+        //     that model the PPU's buffer advancing on each DMA bus
+        //     cycle. Nestopia does exactly this in
+        //     `NstApu.cpp:2321-2325`.
+        //
+        // Stall cycle count per Nestopia's taxonomy
+        // (`NstApu.cpp:2286-2311`):
+        //   - `DMC_NORMAL`: 4 cycles (standalone DMA).
+        //   - `DMC_R4014`:  2 cycles (DMA fires during OAM DMA — the
+        //     halt + dummy cycles overlap with sprite-DMA's own
+        //     bus-busy cycles, so only the align + DMC-read cycles
+        //     count as net insertion).
+        // The `DMC_CPU_WRITE` (3 cycles) variant lives in
+        // `service_pending_dmc_dma_on_write`. `DMC_NNL_DMA` (1 cycle
+        // during the last OAM-DMA slot) is a future refinement.
+        let is_4xxx = (pending_addr & 0xF000) == 0x4000;
+        let peek_count = if is_4xxx { 1 } else { 3 };
+        for _ in 0..peek_count {
+            self.peek_with_side_effects(pending_addr);
         }
-        // Cycle 3 — align: for non-controller targets, another bus
-        // read at pending_addr (Nestopia `NstApu.cpp:2321-2327` does
-        // two extra `Peek(readAddress)` calls plus the halt Peek =
-        // 3 total buffer advances for $2007; puNES `apu.h:172` same
-        // via `DMC_NORMAL` with 4 wall-clock cycles). For $4016/
-        // $4017, `/OE` stays held through dummy cycles so the
-        // controller only shifts on the halt cycle — align is idle.
-        if is_controller {
+
+        let stall_cycles = if self.oam_dma_active { 2 } else { 4 };
+        for _ in 0..stall_cycles {
             self.tick_cycle();
-        } else {
-            let _ = self.read(pending_addr);
         }
-        // Cycle 4 — DMC read at the sample byte. Match Mesen2's
-        // `StartCpuCycle → ProcessDmaRead → SetDmcReadBuffer →
-        // EndCpuCycle` ordering (`NesCpu.cpp:396-411`): tick_pre
-        // first, then mapper fetch, then `dma_complete`, then
-        // tick_post. `SetDmcReadBuffer` is called AFTER
-        // `EndCpuCycle` in Mesen — meaning the DMC IRQ flag set by
-        // this cycle isn't visible in `_runIrq` until the NEXT
-        // `EndCpuCycle`, and not in `_prevRunIrq` until the one
-        // after. Our `bus.irq_line` refresh lives inside the NEXT
-        // cycle's `tick_pre_access`, which gives the same two-cycle
-        // latency to the CPU's `prev_irq_line` poll. So we do NOT
-        // refresh `irq_line` here — letting the natural refresh
-        // carry the transition.
+
+        // DMC sample-byte Peek — Nestopia `NstApu.cpp:2332`
+        // (`dma.buffer = cpu.Peek(dma.address)`). No cycle cost: the
+        // 4-cycle stall already accounts for the total DMA wall-clock
+        // time. `dma_complete` also handles the optional DMC IRQ
+        // assertion at sample end.
+        let byte = self.mapper.cpu_read(req.addr);
+        self.apu.dmc_dma_complete(byte);
+        self.dmc_dma_active = false;
+    }
+
+    /// `$4014`-write variant of the DMC DMA service that triggers
+    /// the "3 if it lands on a CPU write" case from Nestopia
+    /// `NstApu.cpp:2295`. The CPU's write cycle itself functions as
+    /// the halt, so only three extra cycles need to be stolen:
+    /// dummy + align + DMC fetch. No pending-address peeks — a
+    /// write isn't coincident with a CPU read, so the $2007/$4016
+    /// collision rules don't apply. Called from `Bus::write` BEFORE
+    /// the write's own `tick_pre_access`.
+    fn service_pending_dmc_dma_on_write(&mut self) {
+        if self.dmc_dma_active {
+            return;
+        }
+        let Some(req) = self.apu.take_dmc_dma_request() else {
+            return;
+        };
+        self.dmc_dma_active = true;
+        // 2 stall cycles + 1 DMC fetch = 3 cycles inserted before
+        // the pending write. The halt is absorbed into the write.
+        self.tick_cycle();
+        self.tick_cycle();
         self.tick_pre_access();
         let byte = self.mapper.cpu_read(req.addr);
         self.apu.dmc_dma_complete(byte);
