@@ -420,16 +420,18 @@ impl Bus {
         // entry → 3 cycles; odd entry → 4 cycles. During OAM DMA we
         // fall back to the Nestopia end-of-OAM taxonomy until the
         // get/put loop rewrite lands.
+        // Mesen2-style parity-driven cost. Standalone DMC stall:
+        // halt(1) + dummy(1) + [align(1)] + DMC-read(1). The
+        // alignment is elided when entry-cycle is even, so even → 3
+        // and odd → 4 cycles. During OAM DMA the DMC-read steals an
+        // OAM get cycle (the OAM read is deferred to the next get,
+        // not skipped), so total insertion drops by 1 vs standalone:
+        // even → 2, odd → 3.
+        let standalone = if (entry_cycle & 1) == 0 { 3 } else { 4 };
         let stall_cycles = if self.oam_dma_active {
-            match self.oam_dma_idx {
-                253 => 1,
-                255 => 3,
-                _ => 2,
-            }
-        } else if (entry_cycle & 1) == 0 {
-            3
+            standalone - 1
         } else {
-            4
+            standalone
         };
 
         // Pending-address side-effect peeks. In Mesen each non-DMC
