@@ -259,5 +259,6 @@ assets/fonts/                         VT323 pixel font (SIL OFL) for
                                       the overlay menu
 
 notes/
-└── phase{6,7,9,10}/                  per-phase investigation notes
+└── phase{9,10,11}/                   investigation notes for open
+                                      DMA/MMC3 corners
 ```
