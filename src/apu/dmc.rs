@@ -287,6 +287,30 @@ impl Dmc {
     pub fn output(&self) -> u8 {
         self.output
     }
+
+    /// Snapshot of DMC internals for per-instruction tracing. Kept
+    /// minimal and `#[inline]`-friendly — all fields are the ones we
+    /// diff against Mesen2's trace to find DMA-timing drift.
+    pub fn trace_snapshot(&self) -> DmcTraceSnapshot {
+        DmcTraceSnapshot {
+            bytes_remaining: self.bytes_remaining,
+            timer: self.timer,
+            bits_remaining: self.bits_remaining,
+            buffer_empty: self.buffer.is_none(),
+            enable_dma_delay: self.enable_dma_delay,
+            dma_pending: self.dma_pending.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DmcTraceSnapshot {
+    pub bytes_remaining: u16,
+    pub timer: u16,
+    pub bits_remaining: u8,
+    pub buffer_empty: bool,
+    pub enable_dma_delay: u8,
+    pub dma_pending: bool,
 }
 
 #[cfg(test)]

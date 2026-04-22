@@ -280,6 +280,12 @@ impl Apu {
     /// per-sample division-based formula and tiny-fraction accurate
     /// across the full input domain. Called from the bus every CPU
     /// cycle (~1.79 MHz NTSC), so the speed matters.
+    /// Trace helper — exposes the DMC channel's internal state for the
+    /// instruction-level tracer. Zero-cost unless the tracer is on.
+    pub fn dmc_trace(&self) -> crate::apu::dmc::DmcTraceSnapshot {
+        self.dmc.trace_snapshot()
+    }
+
     pub fn output_sample(&self) -> f32 {
         let p1 = self.pulse1.output() as usize;
         let p2 = self.pulse2.output() as usize;

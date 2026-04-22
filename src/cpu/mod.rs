@@ -8,6 +8,7 @@
 
 pub mod flags;
 pub mod ops;
+pub mod trace;
 
 use crate::bus::Bus;
 
@@ -138,6 +139,7 @@ impl Cpu {
             self.cycles = bus.clock.cpu_cycles();
             return Ok(());
         }
+        trace::emit_instruction(self, bus);
         let i_flag_before = self.p.interrupt();
         let op = self.fetch_byte(bus);
         ops::execute(self, bus, op).map_err(|msg| {
