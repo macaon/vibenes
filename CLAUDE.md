@@ -86,22 +86,27 @@ for the full breakdown — `cpu_interrupts_v2 5/5`, `ppu_vbl_nmi 10/10`,
 etc.). The PPU is effectively complete; `power_up_palette` is the lone
 holdout and is won't-fix (unit-specific snapshot).
 
-Active correctness work is now in the DMA iter-alignment and MMC3
-timing corners. Read the relevant note before picking one up:
+DMC/DMA iter-alignment is now solved for the
+`dmc_dma_during_read4` suite (all five ROMs land on golden or
+sanctioned CRCs, integration tests are strict-pattern). The fix
+combined a parity-aware DMC stall (Mesen2's 3-or-4-cycle formula)
+with a 1-tick DMC reset-timer offset to keep our DMC bit-shifts
+in lock-step with Mesen. The trace-diff harness used to find it
+lives in `tools/{trace_mesen.sh,mesen_trace.lua}` + env-gated
+`src/cpu/trace.rs`; re-use for any future cycle-exact bisection.
+See `notes/phase11/dma_iter_alignment.md` for the full story.
 
-- **DMA iter-alignment** — `dmc_dma_during_read4/{dma_4016_read,
-  dma_2007_read}` and `sprdma_and_dmc_dma{,_512}`. All fail their
-  ROM-CRC-strict checks with a consistent off-by-1-iter shape.
-  Integration tests pass all five behavior invariants. Full
-  Nestopia DMA cycle-count taxonomy
-  (`DMC_NORMAL/CPU_WRITE/R4014/NNL_DMA` = 4/3/2/1 cycles) +
-  Peek+StealCycles structure + master-clock-driven PPU with
-  phase-aware `start_cpu_cycle`/`end_cpu_cycle` methods all
-  implemented. Next step is a Mesen2 trace-diff to pin the
-  remaining sub-cycle divergence; likely fix is a DMC-fetch-inline
-  restructure (puNES model) or lazy APU Run. Full non-starter list
-  + concrete plan in `notes/phase11/dma_iter_alignment.md`.
-  (Prior-phase context: `notes/phase9/follow_ups.md §F1, §F2`.)
+Remaining DMA work, in priority order:
+
+- **OAM DMA get/put loop rewrite** — `sprdma_and_dmc_dma_512.nes`
+  is the lone holdout from this class. Cycle pattern is off by 1
+  cycle on 2 of 16 iters because the parity-only model can't
+  capture the get/put-loop interaction at DMC-fires-near-OAM-end.
+  `Bus::run_oam_dma` needs to become an explicit per-cycle get/put
+  loop (Mesen2 `NesCpu.cpp:399-447`), with DMC service hijacking
+  get cycles inside it rather than running as a separate stall.
+  Preserve `cpu_interrupts_v2/4-irq_and_dma`. Full follow-up in
+  `notes/phase11/dma_iter_alignment.md §5`.
 - **MMC3 scanline-timing off-by-one** — `mmc3_test/4-scanline_timing`
   (both suites) fails #3 by ≥1 PPU cycle. Suspect: `on_ppu_addr`
   timestamp boundary vs Mesen2's CPU-cycle-granular filter.
