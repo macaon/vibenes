@@ -254,6 +254,13 @@ impl Dmc {
             }
             if self.bits_remaining == 0 {
                 self.bits_remaining = 8;
+                // Match Mesen2 `DeltaModulationChannel.cpp:146-159`:
+                // only arm the next DMA if the buffer we just
+                // consumed was NON-empty. If it was empty, we've
+                // been silent and re-arming here would double-arm
+                // relative to the `enable_dma_delay` path that
+                // already handled the (re-)enable case.
+                let buffer_was_present = self.buffer.is_some();
                 match self.buffer.take() {
                     Some(byte) => {
                         self.shift_reg = byte;
@@ -263,7 +270,10 @@ impl Dmc {
                         self.silence = true;
                     }
                 }
-                if self.buffer.is_none() && self.bytes_remaining > 0 && self.dma_pending.is_none()
+                if buffer_was_present
+                    && self.bytes_remaining > 0
+                    && self.dma_pending.is_none()
+                    && self.enable_dma_delay == 0
                 {
                     self.dma_pending = Some(self.current_addr);
                 }
