@@ -48,6 +48,14 @@ pub struct Bus {
     /// `NstApu.cpp:2297-2311`). Required by `sprdma_and_dmc_dma`
     /// for a stable cycle count across iterations.
     oam_dma_active: bool,
+    /// Current OAM DMA byte index (0..256), valid only while
+    /// `oam_dma_active` is true. Updated by `run_oam_dma` before
+    /// each sprite read. Used by `service_pending_dmc_dma` to pick
+    /// the exact stall-cycle count from Nestopia's end-of-OAM
+    /// taxonomy (`cpu_inline.h:1381-1392`): index 253 → 1 cycle
+    /// (`DMC_NNL_DMA`), 254 → 2 (`DMC_R4014`), 255 → 3
+    /// (`DMC_CPU_WRITE`), everything else → 2.
+    oam_dma_idx: u16,
     /// Number of PPU dots left to run in the current CPU cycle's
     /// post-access phase. `tick_pre_access` advances the clock and
     /// runs all but the last dot; the remainder lives here until
@@ -105,6 +113,7 @@ impl Bus {
             open_bus: 0,
             dmc_dma_active: false,
             oam_dma_active: false,
+            oam_dma_idx: 0,
             pending_ppu_ticks: 0,
             audio_sink: None,
         }
@@ -380,12 +389,14 @@ impl Bus {
         // overlap with sprite-DMA's own bus-busy cycles (Nestopia
         // `DMC_R4014`, `NstApu.cpp:2297-2311`).
         self.oam_dma_active = true;
+        self.oam_dma_idx = 0;
         self.tick_cycle();
         if extra_idle {
             self.tick_cycle();
         }
         let base = (page as u16) << 8;
         for i in 0..=0xFFu16 {
+            self.oam_dma_idx = i;
             let byte = self.read(base | i);
             self.write(0x2004, byte);
         }
@@ -456,7 +467,20 @@ impl Bus {
             self.peek_with_side_effects(pending_addr);
         }
 
-        let stall_cycles = if self.oam_dma_active { 2 } else { 4 };
+        let stall_cycles = if self.oam_dma_active {
+            // Nestopia end-of-OAM taxonomy (`cpu_inline.h:1381-1392`):
+            //   - idx 253: `DMC_NNL_DMA` → 1 cycle.
+            //   - idx 254: `DMC_R4014`   → 2 cycles.
+            //   - idx 255: `DMC_CPU_WRITE` → 3 cycles.
+            //   - all other mid-OAM:      2 cycles.
+            match self.oam_dma_idx {
+                253 => 1,
+                255 => 3,
+                _ => 2,
+            }
+        } else {
+            4
+        };
         for _ in 0..stall_cycles {
             self.tick_cycle();
         }
