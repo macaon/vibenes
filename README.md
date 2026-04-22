@@ -16,7 +16,7 @@ for hardware specifics and describe the model in my own words.
 | 6502 CPU core | All 256 opcodes (official + stable unofficial + ANE/XAA), cycle-accurate, full interrupt model including NMI hijack and branch-delays-IRQ quirk |
 | Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot pre/post-access split |
 | PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, level-triggered NMI signal (bus-side rising-edge detection), 1-cycle-delayed `rendering_enabled`, VBlank-race suppression, NTSC odd-frame dot skip, per-bit I/O open-bus decay |
-| APU | 5 channels, frame counter with `$4017` write delay, DMC DMA with halt-cycle replay, staged length-counter writes, non-linear mixer |
+| APU | 5 channels, frame counter with `$4017` write delay, parity-driven DMC DMA stall (3/4 cycles standalone, 2/3 mid-OAM) with halt-cycle replay, staged length-counter writes, non-linear mixer |
 | Host audio | cpal + blip_buf, band-limited resampling, pre-filled ring buffer |
 | Windowed runtime | wgpu/wgsl renderer, NTSC/PAL-paced, keyboard input |
 | Overlay UI | egui-based NES-mini-style menu (F1) — scale, aspect ratio, recent ROMs, file swap, reset |
@@ -41,10 +41,16 @@ Every ROM in these suites passes:
 - `apu_test/*` (8/8), `apu_reset/*` (6/6)
 - `blargg_apu_2005.07.30/*` (11/11) — gated by the `blargg_apu_2005`
   integration test
-- `dmc_dma_during_read4/*` (5/5) — gated by the
-  `dmc_dma_during_read4` integration test against hardware-behavior
-  invariants (see "Not yet" below for the remaining CRC-strict
-  alignment issue)
+- `dmc_dma_during_read4/*` (5/5) — strict-pattern integration tests:
+  `dma_4016_read` lands on the golden `08 08 07 08 08` (CRC
+  `F0AB808C`); `dma_2007_read` on a sanctioned `44 55` at iter 2
+  (CRC `5E3DF9C4`). Driven by Mesen2's parity-aware DMC stall (3
+  cycles entry-even, 4 entry-odd) plus a 1-tick DMC reset-timer
+  alignment. See `notes/phase11/dma_iter_alignment.md`.
+- `sprdma_and_dmc_dma.nes` (1/2) — Passes with identical-to-Mesen
+  cycle pattern. The `_512.nes` variant still fails ROM-CRC
+  (cycle counts off by 1 on 2 of 16 iters) — needs the OAM DMA
+  get/put loop rewrite, see "Not yet" below.
 
 **PPU**
 - `sprite_hit_tests_2005.10.05/*` (11/11)
@@ -68,22 +74,19 @@ Every ROM in these suites passes:
 
 ### Not yet
 
-- **DMA iter-alignment** — three ROMs fail ROM-CRC-strict with a
-  consistent off-by-1-iter shape:
-  `dmc_dma_during_read4/dma_4016_read` (`08 08 08 07 08` vs golden
-  `08 08 07 08 08`), `dmc_dma_during_read4/dma_2007_read` (lands 1
-  iter late but in a source-accepted bucket), and
-  `sprdma_and_dmc_dma{,_512}` (cycle counts drift across iters
-  instead of staying stable). Integration tests pass all five
-  behavior invariants. Full Nestopia cycle-count taxonomy
-  (`DMC_NORMAL/CPU_WRITE/R4014/NNL_DMA` = 4/3/2/1 cycles) and
-  Peek+StealCycles structure implemented; master-clock-driven PPU
-  with phase-aware start/end methods in place. None of the obvious
-  knobs (`ppu_offset`, stall-count, enable-delay parity) shift the
-  iter. Remaining fix is likely a DMC-fetch-inline restructure
-  (puNES model) or a Mesen2-style lazy APU Run. Full plan + audited
-  non-starters in
-  [`notes/phase11/dma_iter_alignment.md`](notes/phase11/dma_iter_alignment.md).
+- **OAM DMA get/put loop rewrite** — `sprdma_and_dmc_dma_512.nes`
+  is the lone holdout from the DMC/DMA class. Cycle pattern is off
+  by 1 cycle on 2 of 16 iters (`525,526,525,526,**525**,**526**,...`
+  ours vs `525,526,525,526,**524**,**525**,...` Mesen). The 524s
+  in Mesen come from a get/put-loop interaction at DMC-fires-near-
+  OAM-end that the parity-only model can't capture; the standalone
+  `sprdma_and_dmc_dma.nes` already passes with identical-to-Mesen
+  cycle counts. Fix path: rewrite `Bus::run_oam_dma` as an explicit
+  per-cycle get/put loop (Mesen2 `NesCpu.cpp:399-447`), with DMC
+  service hijacking get cycles inside it rather than running as a
+  separate stall. Bounded refactor; `cpu_interrupts_v2/4-irq_and_dma`
+  is the test to keep green throughout. See
+  [`notes/phase11/dma_iter_alignment.md §5`](notes/phase11/dma_iter_alignment.md).
 - **MMC3 scanline-timing off-by-one** — `mmc3_test/4-scanline_timing`
   (both suites) fails test #3 by ≥1 PPU cycle. The A12 rise that
   clocks the counter lands later than expected in the test's
@@ -149,9 +152,20 @@ result digit.
 
 Integration test suites gate against curated ROM sets:
 - `tests/blargg_apu_2005.rs` — the 11-ROM 2005 APU suite
-- `tests/dmc_dma_during_read4.rs` — 5 DMC/DMA interaction ROMs
-  validated against hardware-behavior invariants (pattern shape,
-  replay count) rather than ROM-internal CRC
+- `tests/dmc_dma_during_read4.rs` — 5 DMC/DMA interaction ROMs,
+  strict-pattern (golden CRC `F0AB808C` on `dma_4016_read`,
+  sanctioned `5E3DF9C4` on `dma_2007_read`)
+
+### Cycle-exact bisection harness
+
+For DMA / interrupt / sub-instruction work where our model drifts
+from hardware test ROMs, `tools/trace_mesen.sh <rom> <cycles>` runs
+Mesen2 in headless `--testRunner` mode against `tools/mesen_trace.lua`
+and emits one line per executed instruction (cyc, pc, op, registers,
+master clock, DMC state). Our side has the matching trace gated by
+`VIBENES_TRACE_LIMIT=N` env var (`src/cpu/trace.rs`). `diff` on
+`(cyc, pc, op)` columns pinpoints the first divergence. This is what
+found the parity-aware DMC stall fix in commit `b413b09`.
 
 ## Notable design decisions
 
@@ -249,11 +263,16 @@ src/
 └── bin/
     ├── test_runner.rs                $6000-protocol runner
     ├── blargg_2005_report.rs         pre-$6000-protocol runner
-    └── frame_dump.rs                 framebuffer PNG dump
+    ├── frame_dump.rs                 framebuffer PNG dump
+    └── dma_4016_dump.rs              DMC/DMA ROM nametable dumper
 
 tests/
 ├── blargg_apu_2005.rs                APU suite (11 ROMs)
 └── dmc_dma_during_read4.rs           DMC/DMA suite (5 ROMs)
+
+tools/
+├── trace_mesen.sh                    Mesen2 headless trace wrapper
+└── mesen_trace.lua                   per-instruction trace script
 
 assets/fonts/                         VT323 pixel font (SIL OFL) for
                                       the overlay menu
