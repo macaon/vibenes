@@ -125,20 +125,14 @@ fn extract_crc(text: &str) -> Option<String> {
 /// 2–3 extra buffer-advancing reads before the real read completes.
 /// The test source lists two accepted output patterns (`33 44` or
 /// `44 55` at the DMA-aligned iteration, everywhere else `11 22`)
-/// with distinct CRCs, and `main` just prints the CRC and `rts` —
-/// no in-band "Passed" signal. We validate against the pattern
-/// invariant: exactly one of the five iterations shows a
-/// non-`11 22` value, and that value starts with either `33` or
-/// `44`.
+/// with distinct CRCs (`159A7A8F` / `5E3DF9C4`).
 ///
-/// Our current output pins it to `33 44` — consistent with the
-/// halt-replay + dummy-replay model when pending_addr routes through
-/// `$2007`. The *iteration* it lands on is currently one step
-/// further into the test's timing window than blargg's golden
-/// output (same 1-cycle DMC alignment offset as `dma_4016_read`);
-/// CRC differs, but the bucket invariant holds.
+/// Strict pattern check: exactly the 3rd of 5 rows (index 2)
+/// is `33 44` or `44 55`; the other four are `11 22`. After the
+/// parity-aware DMC stall fix (commit b413b09) we land on the
+/// `44 55` pattern (CRC `5E3DF9C4`).
 #[test]
-fn rom_dma_2007_read_shows_halt_cycle_buffer_advance() {
+fn rom_dma_2007_read_matches_sanctioned_pattern() {
     let text = run_rom_nametable("dma_2007_read.nes");
     let rows: Vec<&str> = text
         .lines()
@@ -164,23 +158,21 @@ fn rom_dma_2007_read_shows_halt_cycle_buffer_advance() {
         "dma_2007_read: expected 5 result rows, got {rows:?}\n\
          --- nametable ---\n{text}"
     );
-    let hits: Vec<&&str> = rows
-        .iter()
-        .filter(|r| matches!(r.split_once(' '), Some((first, _)) if first != "11"))
-        .collect();
-    assert_eq!(
-        hits.len(),
-        1,
-        "dma_2007_read: exactly one iteration should show a \
-         DMA-induced buffer advance; got {rows:?}"
-    );
-    let hit = hits[0];
-    assert!(
-        hit.starts_with("33 ") || hit.starts_with("44 "),
-        "dma_2007_read: DMA-aligned iteration should show `33 44` \
-         (two extra reads) or `44 55` (three extra reads); got \
-         {hit:?}\n--- nametable ---\n{text}"
-    );
+    for (i, row) in rows.iter().enumerate() {
+        if i == 2 {
+            assert!(
+                *row == "33 44" || *row == "44 55",
+                "dma_2007_read: row 2 must be 33 44 or 44 55, got {row:?}\n\
+                 --- nametable ---\n{text}"
+            );
+        } else {
+            assert_eq!(
+                *row, "11 22",
+                "dma_2007_read: row {i} must be 11 22, got {row:?}\n\
+                 --- nametable ---\n{text}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -229,36 +221,35 @@ fn rom_double_2007_read_lands_in_accepted_bucket() {
 /// exactly one of the five iterations drops from 8 bits to 7
 /// because the DMC halt aligned with the CPU's read cycle.
 ///
-/// Our current output is `08 08 08 07 08` — the mechanism is right
-/// (one iteration shows 07) but the specific iteration is off by
-/// one CPU cycle. The exact DMC alignment is tracked as follow-up
-/// (see `notes/phase9/dmc_double_read.md` §2). For gating purposes
-/// we check the looser invariant: *exactly one* of the five
-/// iterations shows `07`, and the other four show `08`. That proves
-/// the halt-cycle-replay mechanism is live.
+/// Hardware-exact pattern is `08 08 07 08 08` (CRC `F0AB808C`) —
+/// after the parity-aware DMC stall + reset-tick alignment fixes
+/// in commit b413b09 we land on it.
 #[test]
-fn rom_dma_4016_read_shows_single_halt_cycle_bit_deletion() {
+fn rom_dma_4016_read_matches_golden_pattern() {
     let text = run_rom_nametable("dma_4016_read.nes");
-    // Find the line with five two-digit counts (the test's result
-    // table, one line like " 08 08 07 08 08 ").
     let counts: Vec<u8> = text
         .lines()
         .find_map(|line| {
             let tokens: Vec<&str> = line.split_whitespace().collect();
-            if tokens.len() == 5 && tokens.iter().all(|t| t.len() == 2 && t.chars().all(|c| c.is_ascii_hexdigit())) {
-                Some(tokens.iter().map(|t| u8::from_str_radix(t, 16).unwrap()).collect())
+            if tokens.len() == 5
+                && tokens.iter().all(|t| t.len() == 2 && t.chars().all(|c| c.is_ascii_hexdigit()))
+            {
+                Some(
+                    tokens
+                        .iter()
+                        .map(|t| u8::from_str_radix(t, 16).unwrap())
+                        .collect(),
+                )
             } else {
                 None
             }
         })
         .unwrap_or_else(|| panic!("dma_4016_read: no 5-count line found\n--- nametable ---\n{text}"));
 
-    let sevens = counts.iter().filter(|&&n| n == 7).count();
-    let eights = counts.iter().filter(|&&n| n == 8).count();
     assert_eq!(
-        (sevens, eights),
-        (1, 4),
-        "dma_4016_read: expected exactly one 07 and four 08, got {counts:?}\n\
+        counts,
+        vec![8, 8, 7, 8, 8],
+        "dma_4016_read: expected golden 08 08 07 08 08 (CRC F0AB808C), got {counts:?}\n\
          --- nametable ---\n{text}"
     );
 }

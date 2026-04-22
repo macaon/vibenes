@@ -1,251 +1,160 @@
-# Phase 11 — DMA iter-alignment follow-up
+# Phase 11 — DMA iter-alignment
 
-Written for a fresh-context session to pick up cold. The CPU/PPU/APU
-cores are 100% on hardware test suites; this is the last non-mapper
-outstanding work.
+**STATUS: closed.** The two `dmc_dma_during_read4` ROMs that needed
+ROM-internal CRC-strict alignment now pass with the golden CRCs.
+`sprdma_and_dmc_dma_512.nes` is the only outstanding ROM in this
+class — see [§5 follow-up](#5-follow-up-sprdma_and_dmc_dma_512nes).
 
-## 1. Failing ROMs (the whole picture)
+## 1. The fix that landed
 
-Three ROMs fail their ROM-internal CRC-strict checks. All three are
-DMC/OAM DMA edge cases. Integration tests in
-`tests/dmc_dma_during_read4.rs` gate these on behavior invariants
-(pattern shape, replay count) and are **green** — the emulator's
-observable behavior is correct, but the ROMs' specific CRCs require
-a level of sub-cycle timing accuracy that our current model doesn't
-quite reach.
+Two changes on branch `dma-getput-rewrite`, merged after a full
+regression sweep with zero failures:
 
-| ROM | Expected | Our output | CRC |
-|---|---|---|---|
-| `dmc_dma_during_read4/dma_4016_read.nes` | `08 08 07 08 08` | `08 08 08 07 08` | ours=`7C6FDB7E`, golden=`F0AB808C` |
-| `dmc_dma_during_read4/dma_2007_read.nes` | `11 22 / 11 22 / 33 44 / 11 22 / 11 22` **or** `.../44 55/...` | `11 22 / 11 22 / 11 22 / 44 55 / 11 22` | lands 1 iter off (in `44 55` bucket) |
-| `sprdma_and_dmc_dma.nes` + `_512.nes` | stable per-iter cycle count | varies 525–529 across iters | — |
+### Parity-aware DMC standalone DMA cost (commit b413b09)
 
-Pattern: **all three are off by 1 iter** relative to hardware. For
-`dma_4016_read` and `dma_2007_read` the hit lands on iter 3 instead
-of iter 2. For the sprdma pair, the per-iter cycle count isn't
-stable because the DMC fires at different positions within OAM DMA
-across iters (hardware stays at a consistent position).
+Replace the hardcoded 4-cycle stall in
+`Bus::service_pending_dmc_dma` with Mesen2's parity-driven formula
+(NesCpu.cpp:325-448):
+- **even entry-cycle → 3 cycles** (halt + dummy + DMC-read)
+- **odd entry-cycle → 4 cycles** (halt + dummy + align + DMC-read)
 
-## 2. What's been implemented (don't reinvent)
+Side-effect peek count tracks the stall (1 for `$4016`/`$4017` —
+Mesen's `skipDummyReads`; stall-1 for `$2007` and other non-`$4xxx`).
+The standalone `service_pending_dmc_dma_on_write` was deleted —
+Mesen's `MemoryWrite` (NesCpu.cpp:241-251) deliberately doesn't
+service DMA on writes, and the previous "halt absorbed by write"
+3-cycle branch was a misread of Nestopia's parity-driven 3-vs-4
+split.
 
-All on `main` as of commit `3c2620b`:
+### DMC reset-tick alignment (same commit)
 
-1. **Full Nestopia DMA cycle-count taxonomy**
-   [src/bus.rs](../../src/bus.rs) `service_pending_dmc_dma` and
-   `service_pending_dmc_dma_on_write`:
-   - `DMC_NORMAL` → 4 cycles (standalone read-cycle DMA).
-   - `DMC_CPU_WRITE` → 3 cycles (DMC fires during a CPU write —
-     write is absorbed as the halt cycle). Called from `Bus::write`
-     via `service_pending_dmc_dma_on_write`.
-   - `DMC_R4014` → 2 cycles (DMC fires mid-OAM-DMA — halt + dummy
-     absorbed into sprite-DMA cycles).
-   - `DMC_NNL_DMA` → 1 cycle (DMC fires on OAM idx 253).
-   - `DMC_CPU_WRITE` variant at OAM idx 255 → 3 cycles.
+Initialize `Dmc::timer` to `period - 1` instead of `period`. Mesen2's
+reset path (NesCpu.cpp:160-164) runs 8 dummy CPU cycles where ours
+runs 7 (5 dummy reads + 2 vector reads); both end with cpu_cycles=7
+but Mesen ticks DMC one extra time. Without this offset our DMC
+bit-shifts land one CPU cycle later than Mesen, flipping the
+entry-parity at every DMA fire and breaking the sync_dmc convergence
+loop in `dmc_dma_during_read4` (the regression noted in
+[../phase9/follow_ups.md §"refactor attempt"](../phase9/follow_ups.md)).
 
-2. **Nestopia Peek+StealCycles structure**
-   `peek_with_side_effects(addr)` performs register-state mutations
-   (PPU buffer advance, controller shift, $4015 frame-IRQ clear)
-   without advancing the master clock. DMC service now does N peeks
-   (3 non-$4xxx, 1 $4xxx) up-front, then `StealCycles(N)`, then the
-   DMC fetch — mirroring `NstApu.cpp:2282-2333` exactly.
+### Parity-driven mid-OAM DMC cost (commit 85f06f1)
 
-3. **Master-clock-driven PPU**
-   [src/clock.rs](../../src/clock.rs) `start_cpu_cycle(is_read)` +
-   `end_cpu_cycle(is_read)` replaced the fixed-dot-count model. Each
-   CPU cycle's start phase advances master by 5 (read) / 7 (write),
-   end phase by the complement. PPU runs to
-   `master_cycles - ppu_offset` (`ppu_offset = 1` per Mesen2
-   `NesCpu.cpp:154`). `pending_ppu_ticks` hack removed.
+The DMC stall during OAM DMA is also parity-driven (Mesen's get/put
+loop NesCpu.cpp:399-447): the DMC-read steals a get cycle that would
+have been an OAM read, deferring it one cycle. Net cost is
+`standalone - 1`:
+- even entry → 2 cycles
+- odd entry → 3 cycles
 
-4. **Mesen2-matching DMC arm condition**
-   [src/apu/dmc.rs](../../src/apu/dmc.rs): DMA only arms from the
-   buffer-drain path when buffer was non-empty (`buffer_was_present`
-   gate) AND `enable_dma_delay == 0`, so the enable-delay path and
-   buffer-drain path can't race each other.
+Replaces the per-idx case taxonomy that no fixed assignment of
+253/254/255 → 1/2/3 made consistent with hardware on
+`sprdma_and_dmc_dma_512.nes`.
 
-5. **OAM-DMA position tracking**
-   [src/bus.rs](../../src/bus.rs) `oam_dma_active` + `oam_dma_idx`
-   so `service_pending_dmc_dma` picks the right per-position stall.
+## 2. How the fix was found
 
-## 3. What's been tried (and didn't shift anything)
+Land a per-instruction trace on both emulators that emits the same
+field set, then `diff` them:
 
-All of these were empirically verified to produce zero change in
-`dma_4016_read`, `dma_2007_read`, `sprdma_and_dmc_dma` output:
+- **Mesen side** — `tools/trace_mesen.sh <rom> <limit>` runs Mesen2
+  in `--testRunner` headless mode against `tools/mesen_trace.lua`
+  (templated via sed since Mesen's Lua sandbox strips `os.getenv`).
+  Lua API: `addMemoryCallback(emu.callbackType.exec, …)` for the
+  per-instruction line, plus `read`/`write` callbacks at $4015/$4016/
+  $4017/$2007/$4014/$4010 for DMA-relevant register events.
+  `displayMessage` is the only Lua → stdout path that actually fires
+  in headless mode (Mesen needs both `--enableStdout` AND
+  `--preferences.disableOsd=true`; without the latter the message
+  goes to OSD, not stdout).
+- **Our side** — `VIBENES_TRACE_LIMIT=N` env-gates a one-line-per-
+  instruction print from `cpu/trace.rs`. Zero overhead when unset.
 
-- **Stall-count sweeps** (2, 3, 4, 5, 6) — sub-4 hangs `sync_dmc`
-  (parity-convergence issue, see below); 4+ all hit iter 3.
-- **Enable-delay parity sweeps** (1/2, 2/3, 3/4, 4/5, 1/3, 2/4, …) —
-  no shift.
-- **`ppu_offset` sweeps** (0, 1, 2, 3) — no shift. Whatever initial
-  PPU-CPU phase, `sync_dmc` compensates by syncing before the
-  measurement.
-- **Service-before-tick vs service-after-tick** (move DMC service
-  from BEFORE `tick_pre_access` to AFTER) — no shift.
-- **DMC side-effect reads at pending_addr**: replaying halt via
-  `self.read(pending_addr)` (multiple reads, each ticking) vs
-  Nestopia's model (peeks up-front then pure stall) — no shift on
-  `dma_4016_read`; shifted `dma_2007_read` between `33 44` ↔ `44 55`
-  buckets (both source-accepted).
-- **Switching DMA service's fetch tick to use direct mapper access
-  (no bus re-entry)** — equivalent.
+```sh
+# Capture both at the same window
+VIBENES_TRACE_LIMIT=250000 ./target/release/test_runner ROM > /tmp/v.log
+tools/trace_mesen.sh ROM 250000 > /tmp/m.log
 
-The phase-9 follow-up notes (see `notes/phase9/follow_ups.md`) also
-dropped a full DMA-refactor branch for unrelated-looking reasons
-that in hindsight map to the same issue: `sync_dmc`'s drift-based
-exit converges differently depending on parity rules, but the
-**observable iter** doesn't shift.
-
-## 4. Key empirical data (don't reinvestigate)
-
-Cycle trace of `dma_4016_read` (instrumented via eprintln at DMA
-service entry):
-
-- 39 DMA fires total across the full test run.
-- **Every single one** fires at `cpu_cycles & 1 == 0` (even cycle).
-- Zero fires on write cycles (`dma-w` trace count = 0). So the
-  `DMC_CPU_WRITE` 3-cycle case is live code but never triggered
-  by this specific test.
-- Gap between consecutive DMA fires = **exactly 3424 CPU cycles**
-  (DMC byte period at rate 0), confirming the DMC timer + bit
-  counter + buffer-drain loop is clocking correctly.
-- First DMA fire at cycle 208616.
-
-sync_dmc outer loop per-iter CPU cost (counted from source, sync_dmc.s):
-
-```
-lda #227            ; 2
-bne @first          ; 3
-inner sbc loop      ; 226 × 15 + 1 × 14 = 3404
-lda #$10            ; 2
-sta SNDCHN          ; 4
-nop                 ; 2
-bit SNDCHN          ; 4
-bne @wait taken     ; 3
----------------------
-total               ; 3424 (exactly DMC period)
-+ DMC DMA cycles    ; +4 (DMC_NORMAL)
----------------------
-per-iter            ; 3428 cycles
+# Diff on (cyc, pc, op) only — masks out fields that are expected
+# to differ (mclk semantics, dtim from initial state)
+diff <(awk '/^\[M\]/ { gsub(/[a-z]+=/, ""); print $2,$3,$4 }' /tmp/v.log) \
+     <(awk '/^\[M\]/ { gsub(/[a-z]+=/, ""); print $2,$3,$4 }' /tmp/m.log) | head
 ```
 
-Phase-9 note claims iter length is "3421 + DMA". Our count is
-3424 + 4 = 3428. The discrepancy is probably a branch-cycle or
-alignment-cycle detail (page-cross on bne, `.align 64` etc.) — worth
-verifying with a CPU-trace tool before investing more.
+The first line that diverges is where our DMA model breaks. For
+`dma_4016_read.nes` it was line 50967 (cyc=178831 STA $4015), where
+ours inserted 4 stall cycles vs Mesen's 3. The fix narrowed the diff
+to ~3000 more cycles of agreement before the next case (mid-OAM DMC).
 
-## 5. The standing hypothesis
+## 3. Definition of done — achieved
 
-The 1-iter offset on `dma_4016_read` (≈25 CPU cycles of drift) is
-**not** in the DMA service code or the PPU tick split. It's in one
-of:
+| ROM | Result | CRC |
+|---|---|---|
+| `dmc_dma_during_read4/dma_4016_read.nes` | **PASS** `08 08 07 08 08` | `F0AB808C` ✓ |
+| `dmc_dma_during_read4/dma_2007_read.nes` | **PASS** `44 55` at iter 2 | `5E3DF9C4` ✓ (one of two sanctioned) |
+| `dmc_dma_during_read4/dma_2007_write.nes` | **PASS** | — |
+| `dmc_dma_during_read4/double_2007_read.nes` | **PASS** | `F018C287` (one of four sanctioned) |
+| `dmc_dma_during_read4/read_write_2007.nes` | **PASS** | — |
+| `sprdma_and_dmc_dma.nes` | **PASS** | hardware-equivalent cycle pattern |
 
-a) **DMC timer's event attribution to the "correct" CPU cycle**.
-   Puñes' `dmc_tick` (apu.h:181) runs INSIDE `tick_hw` — the DMC
-   fetch happens at the CURRENT CPU cycle (inline), not the next
-   one like our model. The cycle ADDITION happens via `hwtick[0] +=
-   tick` which makes `tick_hw` loop N more iterations — but the
-   buffer is non-empty at cycle X, not X+4. This changes when
-   `bytes_remaining` decrements relative to CPU operations.
+Integration tests in `tests/dmc_dma_during_read4.rs` are now
+**strict-pattern** (no more "exactly one 07 anywhere"); they assert
+the exact byte sequence.
 
-b) **sync_dmc's `.align 64` + branch-cross interactions**. The
-   outer loop's `bne @wait` might page-cross on real hardware (4
-   cycles) vs not on us (3 cycles), accumulating drift.
+Zero regressions on the full sweep (apu_test 8/8, apu_reset 6/6,
+cpu_interrupts_v2 5/5 incl. `4-irq_and_dma`, ppu_vbl_nmi 10/10,
+oam_*, ppu_open_bus, cpu_dummy_writes, instr_test-v5 16/16,
+instr_misc 4/4, instr_timing, nes_instr_test 11/11, blargg_apu_2005
+11/11, plus 115 unit tests).
 
-c) **A 1-cycle bias in the CPU's "penultimate-cycle" IRQ poll**
-   specifically for `bit $4015` — since `bit` is a 4-cycle op (abs)
-   and the poll timing on the penultimate cycle might differ
-   between our model and hardware when DMC IRQ transitions mid-op.
+## 4. What didn't work and why
 
-(a) is the strongest candidate. It would require restructuring
-DMC's fetch path to be synchronous with the arm (inline inside the
-per-cycle APU tick) rather than deferred to the next bus access.
-That's a more invasive refactor than (b) or (c).
+- **Per-idx case taxonomy for mid-OAM cost** (`oam_dma_idx == 253 →
+  1` etc., from puNES `apu.h:209-247`): no assignment of integers to
+  253/254/255 produced Mesen's `sprdma_512` cycle pattern. The
+  underlying mechanism is parity, not idx-position.
+- **`service_pending_dmc_dma_on_write` (3-cycle "halt absorbed by
+  write" branch)**: based on a misread of Nestopia
+  `NstApu.cpp:2295`. The 3-vs-4 distinction there is parity-driven,
+  not write-vs-read. With it gone, the standalone path on the next
+  read does the right thing.
+- **Pure parity fix WITHOUT the DMC reset offset**: hangs sync_dmc
+  in a forever-loop because all iters land at the same parity. The
+  reset offset is what introduces the cross-iter parity variance
+  that lets sync_dmc converge.
 
-## 6. Concrete next-session plan
+## 5. Follow-up — `sprdma_and_dmc_dma_512.nes`
 
-**Setup:**
-
-1. Build Mesen2 or install a Mesen2 binary (`~/Git/Mesen2` has
-   source; requires Mono/.NET 6+ and SDL2). Verify Mesen2 passes
-   `dma_4016_read` (if it doesn't, the golden CRC is unit-specific
-   and we need to accept a different target).
-2. Add a PC+cycle logger to our emulator (gated behind an env var)
-   that emits `{cpu_cycles} PC={pc} opcode={op} master={master} ppu={ppu}`
-   one line per instruction.
-3. Add matching Mesen2 trace via their built-in trace logger.
-
-**Diff workflow:**
-
-1. Run both emulators on `dma_4016_read.nes` for, say, 250k cycles.
-2. Align both traces to the same start (first `sei` of sync_dmc, or
-   similar known-landmark).
-3. `diff` the two traces line-by-line. The first divergence is
-   where our model goes wrong.
-4. If the diff is an opcode-boundary shift of N cycles, bisect into
-   CPU / DMA / PPU to find the source.
-
-**Likely fix:**
-
-Restructure DMC to **fetch inline at buffer-empty** (puNES model,
-`apu.h:209-247`) rather than arming `dma_pending` + deferring. This
-is a moderate rewrite — touches [src/apu/dmc.rs](../../src/apu/dmc.rs)
-and [src/bus.rs](../../src/bus.rs) — but contained to the DMA layer.
-
-Alternative: build Mesen2's lazy `NeedToRun`-driven APU (`NesApu.cpp:180-201`)
-on top of our master-clock foundation. Deeper but more robust.
-
-## 7. Definition of done
-
-All four ROMs green via the external runner (`test_runner` +
-`blargg_2005_report`):
-
-- `dmc_dma_during_read4/dma_4016_read.nes` — CRC `F0AB808C`.
-- `dmc_dma_during_read4/dma_2007_read.nes` — no check_crc, so any
-  source-accepted bucket (`33 44` at iter 2 or `44 55` at iter 2).
-- `sprdma_and_dmc_dma.nes` — stable cycle count matching blargg's
-  golden CRC `B8EA17D9` (our current ours doesn't match, and the
-  numbers drift across iters instead of staying stable).
-- `sprdma_and_dmc_dma_512.nes` — same golden CRC.
-
-Zero regressions on the full sweep:
+Still fails ROM-internal CRC. Cycle pattern is off by 1 cycle on
+2 of 16 iters vs Mesen:
 
 ```
-for rom in ~/Git/nes-test-roms/instr_test-v5/official_only.nes \
-           ~/Git/nes-test-roms/instr_misc/instr_misc.nes \
-           ~/Git/nes-test-roms/apu_test/rom_singles/*.nes \
-           ~/Git/nes-test-roms/apu_reset/*.nes \
-           ~/Git/nes-test-roms/cpu_interrupts_v2/rom_singles/*.nes \
-           ~/Git/nes-test-roms/ppu_vbl_nmi/rom_singles/*.nes \
-           ~/Git/nes-test-roms/oam_read/*.nes \
-           ~/Git/nes-test-roms/oam_stress/*.nes \
-           ~/Git/nes-test-roms/ppu_open_bus/*.nes \
-           ~/Git/nes-test-roms/ppu_read_buffer/*.nes \
-           ~/Git/nes-test-roms/cpu_dummy_writes/*.nes \
-           ~/Git/nes-test-roms/cpu_exec_space/*.nes \
-           ~/Git/nes-test-roms/cpu_reset/*.nes \
-           ~/Git/nes-test-roms/nes_instr_test/rom_singles/*.nes \
-           ~/Git/nes-test-roms/instr_timing/instr_timing.nes \
-           ~/Git/nes-test-roms/instr_test-v3/official_only.nes; do
-  r=$(./target/release/test_runner "$rom" 2>&1 | tail -1)
-  if ! echo "$r" | grep -qE PASS; then echo "FAIL $(basename $rom)"; fi
-done
+Mesen (Passed):     525,526,525,526,524,525,526,527,527,528,…
+Ours (Failed):      525,526,525,526,525,526,526,527,527,528,…
+                                    ^^^      ^^^
 ```
 
-Plus `cargo test --release` all green (115 unit + 11 apu + 5 dmc).
+The 524s in Mesen come from a get/put-loop interaction that the
+parity formula can't capture: when DMC fires at a specific OAM-end
+position, Mesen's loop produces 1 fewer cycle than mid-OAM DMC.
+Our parity-only model uses `standalone - 1` uniformly.
 
-## 8. Cross-references
+**Fix path:** rewrite `Bus::run_oam_dma` as an explicit get/put
+cycle loop matching Mesen2 NesCpu.cpp:399-447. The DMC service then
+becomes a hijacker of get cycles inside that loop rather than a
+separate stall. Estimated 1-2 days; touches the same surface as
+phase 9's dropped refactor attempts. Branch off main, do incrementally,
+keep `cpu_interrupts_v2/4-irq_and_dma` green throughout.
 
-- [notes/phase9/follow_ups.md](../phase9/follow_ups.md) — prior
-  DMA refactor attempts and lessons.
-- [notes/phase9/dmc_double_read.md](../phase9/dmc_double_read.md) —
-  `dma_4016_read` / `dma_2007_read` detailed analysis.
-- `~/Git/Mesen2/Core/NES/APU/DeltaModulationChannel.cpp` — reference
-  DMC implementation.
-- `~/Git/Mesen2/Core/NES/NesCpu.cpp:325-448` — `ProcessPendingDma`
-  get/put-cycle DMA loop.
-- `~/Git/punes/src/core/apu.h:181-247` — `dmc_tick` inline-fetch
-  model.
-- `~/Git/punes/src/core/cpu_inline.h:1374-1398` — OAM DMA with DMC
-  tick-type assignments at indices 253/254/255.
-- `~/Git/nestopia/source/core/NstApu.cpp:2282-2333` — `DoDMA`
-  Peek+StealCycles model.
+The standalone `sprdma_and_dmc_dma.nes` already passes with
+identical-to-Mesen cycle counts, so the get/put rewrite is bounded
+to the multi-DMC-fire-per-OAM corner case.
+
+## 6. Cross-references
+
+- [tools/trace_mesen.sh](../../tools/trace_mesen.sh), [tools/mesen_trace.lua](../../tools/mesen_trace.lua) — Mesen trace harness.
+- [src/cpu/trace.rs](../../src/cpu/trace.rs) — our env-gated trace.
+- [src/bus.rs `service_pending_dmc_dma`](../../src/bus.rs) — the parity-driven DMA service.
+- [src/apu/dmc.rs `Dmc::new`](../../src/apu/dmc.rs) — DMC reset-tick offset.
+- [tests/dmc_dma_during_read4.rs](../../tests/dmc_dma_during_read4.rs) — strict-pattern integration tests.
+- `~/Git/Mesen2/Core/NES/NesCpu.cpp` lines 325-448 — `ProcessPendingDma` reference.
+- `~/Git/Mesen2/Core/NES/APU/DeltaModulationChannel.cpp` lines 247-298 — DMC `_transferStartDelay` + `ProcessClock`.
+- [notes/phase9/follow_ups.md](../phase9/follow_ups.md) — earlier dropped refactor attempts.

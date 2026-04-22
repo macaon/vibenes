@@ -77,7 +77,20 @@ impl Dmc {
             irq_enabled: false,
             loop_flag: false,
             period,
-            timer: period,
+            // Mesen2's reset path runs the CPU through 8 dummy cycles
+            // at power-on (`NesCpu.cpp:160-164`) where ours runs only
+            // 7 (5 dummy reads + 2 vector reads). On Mesen those 8
+            // cycles tick `apu.dmc` 8 times; on us, 7. To keep our
+            // DMC bit-shift cadence in lock-step with Mesen — which
+            // is what the parity-driven DMA cost in
+            // `Bus::service_pending_dmc_dma` is calibrated against —
+            // we offset the initial timer by one tick so the first
+            // underflow lands on the same absolute CPU cycle. Both
+            // models are "correct" up to a single-cycle reset
+            // discrepancy that hardware test ROMs don't measure
+            // directly; matching Mesen here aligns parity at the
+            // first DMA fire and unblocks `dmc_dma_during_read4`.
+            timer: period.saturating_sub(1),
             sample_addr_start: 0xC000,
             sample_length_cfg: 1,
             current_addr: 0xC000,
