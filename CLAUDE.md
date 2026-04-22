@@ -86,19 +86,22 @@ for the full breakdown — `cpu_interrupts_v2 5/5`, `ppu_vbl_nmi 10/10`,
 etc.). The PPU is effectively complete; `power_up_palette` is the lone
 holdout and is won't-fix (unit-specific snapshot).
 
-Active correctness work is now in the DMA interleave and MMC3 timing
-corners, all pre-written up in `notes/phase{9,10}/follow_ups.md` —
-read the relevant note before picking one up:
+Active correctness work is now in the DMA iter-alignment and MMC3
+timing corners. Read the relevant note before picking one up:
 
-- **DMC DMA 1-cycle alignment** — `dmc_dma_during_read4/{dma_4016_read,
-  dma_2007_read}`. Integration tests pass on invariants but the 5-iter
-  sweep aligns one iteration late vs hardware, so ROM-internal CRC
-  differs. `notes/phase9/follow_ups.md §F1`.
-- **OAM + DMC DMA interleave** — 2 `sprdma_and_dmc_dma` ROMs fail.
-  `run_oam_dma` currently runs as an opaque 513/514-cycle block and
-  doesn't interleave DMC DMA read cycles. Needs rewriting as an
-  explicit get/put-cycle loop per Mesen2 `NesCpu.cpp:399-447`.
-  `notes/phase9/follow_ups.md §F2`.
+- **DMA iter-alignment** — `dmc_dma_during_read4/{dma_4016_read,
+  dma_2007_read}` and `sprdma_and_dmc_dma{,_512}`. All fail their
+  ROM-CRC-strict checks with a consistent off-by-1-iter shape.
+  Integration tests pass all five behavior invariants. Full
+  Nestopia DMA cycle-count taxonomy
+  (`DMC_NORMAL/CPU_WRITE/R4014/NNL_DMA` = 4/3/2/1 cycles) +
+  Peek+StealCycles structure + master-clock-driven PPU with
+  phase-aware `start_cpu_cycle`/`end_cpu_cycle` methods all
+  implemented. Next step is a Mesen2 trace-diff to pin the
+  remaining sub-cycle divergence; likely fix is a DMC-fetch-inline
+  restructure (puNES model) or lazy APU Run. Full non-starter list
+  + concrete plan in `notes/phase11/dma_iter_alignment.md`.
+  (Prior-phase context: `notes/phase9/follow_ups.md §F1, §F2`.)
 - **MMC3 scanline-timing off-by-one** — `mmc3_test/4-scanline_timing`
   (both suites) fails #3 by ≥1 PPU cycle. Suspect: `on_ppu_addr`
   timestamp boundary vs Mesen2's CPU-cycle-granular filter.
@@ -108,7 +111,7 @@ read the relevant note before picking one up:
   submapper info). `notes/phase10/follow_ups.md §F2`.
 
 **Bigger unlocks beyond the corners:** VRC family (2/4/6/7) and FDS
-mappers; OAM DMA rewrite as get/put cycles (unblocks F2 above).
+mappers; MMC3 submapper activation path.
 
 ## Regression discipline
 

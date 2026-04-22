@@ -68,20 +68,22 @@ Every ROM in these suites passes:
 
 ### Not yet
 
-- **DMC DMA 1-cycle alignment** — `dmc_dma_during_read4/
-  dma_4016_read` and `dma_2007_read` produce the correct hardware
-  *behavior* (halt-cycle replay consumes one controller bit or
-  advances the $2007 buffer by two) but the DMC→DMA timing aligns
-  one iteration later in the test's 5-iter sweep than real
-  hardware. Integration tests pass on pattern invariants; the ROM's
-  internal CRC check differs. Full write-up in
-  `notes/phase9/follow_ups.md §F1`.
-- **OAM + DMC DMA interleave** (2 `sprdma_and_dmc_dma` ROMs fail):
-  `run_oam_dma` runs as an opaque 513/514-cycle block and doesn't
-  interleave DMC DMA read cycles the way real hardware does.
-  Requires rewriting OAM DMA as an explicit get/put-cycle loop per
-  Mesen2 `NesCpu.cpp:399-447`. Write-up in
-  `notes/phase9/follow_ups.md §F2`.
+- **DMA iter-alignment** — three ROMs fail ROM-CRC-strict with a
+  consistent off-by-1-iter shape:
+  `dmc_dma_during_read4/dma_4016_read` (`08 08 08 07 08` vs golden
+  `08 08 07 08 08`), `dmc_dma_during_read4/dma_2007_read` (lands 1
+  iter late but in a source-accepted bucket), and
+  `sprdma_and_dmc_dma{,_512}` (cycle counts drift across iters
+  instead of staying stable). Integration tests pass all five
+  behavior invariants. Full Nestopia cycle-count taxonomy
+  (`DMC_NORMAL/CPU_WRITE/R4014/NNL_DMA` = 4/3/2/1 cycles) and
+  Peek+StealCycles structure implemented; master-clock-driven PPU
+  with phase-aware start/end methods in place. None of the obvious
+  knobs (`ppu_offset`, stall-count, enable-delay parity) shift the
+  iter. Remaining fix is likely a DMC-fetch-inline restructure
+  (puNES model) or a Mesen2-style lazy APU Run. Full plan + audited
+  non-starters in
+  [`notes/phase11/dma_iter_alignment.md`](notes/phase11/dma_iter_alignment.md).
 - **MMC3 scanline-timing off-by-one** — `mmc3_test/4-scanline_timing`
   (both suites) fails test #3 by ≥1 PPU cycle. The A12 rise that
   clocks the counter lands later than expected in the test's
@@ -153,23 +155,34 @@ Integration test suites gate against curated ROM sets:
 
 ## Notable design decisions
 
-### Bus cycle split (NTSC: 2 pre-access + 1 post-access PPU dots)
+### Master-clock-driven bus cycle
 
-`Bus::tick_pre_access` runs all but the last PPU dot, the APU tick,
-the mapper tick, and an IRQ-line refresh. `Bus::tick_post_access` runs
-the final PPU dot, polls the NMI edge, and emits the audio sample.
+`clock.start_cpu_cycle(is_read)` and `clock.end_cpu_cycle(is_read)`
+split each CPU cycle into two phases. On NTSC, a read advances the
+master clock by 5 (start) then 7 (end); a write by 7 (start) then
+5 (end) — matching Mesen2 `NesCpu.cpp:73-75,317-322`. PPU runs to
+`master_cycles - ppu_offset` (`ppu_offset = 1` per Mesen2 default),
+so the number of PPU dots ticked per phase is derived from
+master-clock phase rather than hardcoded.
 
-The 2/1 split matches Mesen2's master-clock arithmetic and is required
-by `cpu_interrupts_v2/3-nmi_and_irq`: when scanline-241 dot 1 lands as
-the 3rd dot of a CPU cycle, the VBL flag must NOT be visible to a
-same-cycle `$2002` read (otherwise `sync_vbl` exits one cycle early and
-every downstream timing drifts).
+In steady state on NTSC this produces a 2/1 split (2 dots in the
+start phase, 1 in the end phase) for both reads and writes. The
+2/1 split is required by `cpu_interrupts_v2/3-nmi_and_irq`: when
+scanline-241 dot 1 lands as the 3rd dot of a CPU cycle, VBL must
+not be visible to a same-cycle `$2002` read (otherwise `sync_vbl`
+exits one cycle early and every downstream timing drifts).
+
+`Bus::tick_pre_access(is_read)` wraps `start_cpu_cycle` and runs
+the APU tick, mapper tick, and IRQ-line refresh alongside the
+emitted PPU dots. `Bus::tick_post_access(is_read)` wraps
+`end_cpu_cycle` and performs NMI rising-edge detection on the
+PPU's live `nmi_flag`.
 
 APU tick stays in pre-access so `$4015` reads on the frame-IRQ
 assertion cycle see the flag set (blargg `08.irq_timing`). OAM DMA
-snapshots/restores `prev_irq_line`/`prev_nmi_pending` across its stall
-cycles so STA `$4014`'s CPU-level poll sees its own penultimate, not
-end-of-DMA state.
+snapshots/restores `prev_irq_line`/`prev_nmi_pending` across its
+stall cycles so STA `$4014`'s CPU-level poll sees its own
+penultimate, not end-of-DMA state.
 
 ### Staged length writes (APU)
 
