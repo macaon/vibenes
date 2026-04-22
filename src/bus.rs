@@ -56,14 +56,6 @@ pub struct Bus {
     /// (`DMC_NNL_DMA`), 254 → 2 (`DMC_R4014`), 255 → 3
     /// (`DMC_CPU_WRITE`), everything else → 2.
     oam_dma_idx: u16,
-    /// Number of PPU dots left to run in the current CPU cycle's
-    /// post-access phase. `tick_pre_access` advances the clock and
-    /// runs all but the last dot; the remainder lives here until
-    /// `tick_post_access` drains it. Carried as state (not a local)
-    /// because the bus access between the two halves can make
-    /// arbitrary register reads / writes.
-    pending_ppu_ticks: u64,
-
     /// Host audio output. `None` in test ROMs / headless runs where
     /// opening a cpal stream would be pointless or unavailable.
     /// Attached from [`crate::nes::Nes::attach_audio`] after the bus is
@@ -114,7 +106,6 @@ impl Bus {
             dmc_dma_active: false,
             oam_dma_active: false,
             oam_dma_idx: 0,
-            pending_ppu_ticks: 0,
             audio_sink: None,
         }
     }
@@ -141,10 +132,10 @@ impl Bus {
             return self.read(addr);
         }
         self.service_pending_dmc_dma(addr);
-        self.tick_pre_access();
+        self.tick_pre_access(true);
         let value = self.ppu.cpu_read_dummy(addr, &mut *self.mapper);
         self.open_bus = value;
-        self.tick_post_access();
+        self.tick_post_access(true);
         value
     }
 
@@ -157,7 +148,7 @@ impl Bus {
         // original read. Matches Mesen's cycle-count positioning
         // of the CPU's bus operation after DMA service.
         self.service_pending_dmc_dma(addr);
-        self.tick_pre_access();
+        self.tick_pre_access(true);
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
@@ -180,7 +171,7 @@ impl Bus {
             _ => self.open_bus,
         };
         self.open_bus = value;
-        self.tick_post_access();
+        self.tick_post_access(true);
         value
     }
 
@@ -198,14 +189,14 @@ impl Bus {
         // to land on hardware's golden CRC iter.
         self.service_pending_dmc_dma_on_write();
         self.open_bus = data;
-        self.tick_pre_access();
+        self.tick_pre_access(false);
         match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize] = data,
             0x2000..=0x3FFF => self.ppu.cpu_write(addr, data, &mut *self.mapper),
             0x4000..=0x4013 | 0x4015 | 0x4017 => self.apu.write_reg(addr, data),
             0x4014 => {
                 // STA $4014's final write cycle.
-                self.tick_post_access();
+                self.tick_post_access(false);
                 // Snapshot the CPU's penultimate-cycle interrupt samples
                 // so they survive OAM DMA's 513/514 stall cycles. Each
                 // DMA cycle's `tick_pre_access` overwrites
@@ -247,7 +238,7 @@ impl Bus {
             0x4018..=0x401F => {}
             0x4020..=0xFFFF => self.mapper.cpu_write(addr, data),
         }
-        self.tick_post_access();
+        self.tick_post_access(false);
     }
 
     /// Peek without ticking — for debuggers/tracers only. Does not have
@@ -292,73 +283,51 @@ impl Bus {
         }
     }
 
-    /// First half of a CPU cycle — runs before the bus access.
+    /// Start-of-cycle phase — runs before the CPU's bus access.
     ///
-    /// Advances the master clock and ticks the PPU so register accesses
-    /// see PPU state as-of the middle of the cycle (matching real 6502
-    /// ↔ 2C02 interactions). Also captures the penultimate-cycle
-    /// interrupt snapshot the CPU polls at end-of-instruction. Critical
-    /// for blargg CPU-interrupt tests (`2-nmi_and_brk`, `3-nmi_and_irq`)
-    /// that time NMI recognition to specific PPU dots.
-    fn tick_pre_access(&mut self) {
+    /// Drives the PPU via the master clock (`clock.start_cpu_cycle`)
+    /// rather than a fixed per-cycle dot count. The number of PPU
+    /// dots ticked here (0 through 2 on NTSC) depends on master-clock
+    /// phase + `is_read`: in Mesen2's model
+    /// (`NesCpu.cpp:73-75,317-322`) reads advance the master by 5
+    /// then end by 7, writes by 7 then 5. The split is asymmetric so
+    /// the PPU's dot positions within a CPU cycle shift based on
+    /// master-clock phase — reproducing the dynamic 2/1 / 1/2 split
+    /// that our old fixed 2/1 model couldn't. Required to move
+    /// `dmc_dma_during_read4`'s iter alignment off the off-by-one
+    /// position it was stuck at.
+    ///
+    /// APU + mapper tick here too (matching Mesen2's
+    /// `ProcessCpuClock` call inside `StartCpuCycle`). The CPU
+    /// interrupt-polling snapshot (`prev_irq_line`,
+    /// `prev_nmi_pending`) is captured at the top — these reflect
+    /// state at end of the **previous** cycle, which is what the
+    /// 6502's penultimate-cycle polling expects.
+    fn tick_pre_access(&mut self, is_read: bool) {
         self.prev_irq_line = self.irq_line;
         self.prev_nmi_pending = self.nmi_pending;
 
-        // NTSC: 3 PPU dots per CPU cycle, split 2 pre-access + 1
-        // post-access to match Mesen2's phase alignment (see
-        // `NesCpu.cpp:73-75,296,319` for the master-clock math that
-        // yields a 2/1 split in steady state). Required by
-        // `cpu_interrupts_v2/3-nmi_and_irq`: when dot 1 of scanline 241
-        // is the *third* PPU dot of a CPU cycle, our old 3/0 split
-        // made VBL visible to a `bit $2002` read on that same cycle,
-        // so `sync_vbl` exited one cycle too early and every
-        // downstream timing shifted by one iteration.
-        //
-        // PAL: 3 or 4 dots per cycle (ratio 1:3.2). Keep the same
-        // rule — "all but the last dot" runs pre-access — so the PAL
-        // variant of the same alignment behaves consistently.
-        let ppu_ticks = self.clock.advance_cpu_cycle();
-        self.pending_ppu_ticks = ppu_ticks;
-        let pre_ticks = ppu_ticks.saturating_sub(1);
+        let pre_ticks = self.clock.start_cpu_cycle(is_read);
         for _ in 0..pre_ticks {
             self.ppu.tick(&mut *self.mapper);
         }
-        self.pending_ppu_ticks -= pre_ticks;
 
-        // APU ticks BEFORE the bus access so that:
-        //   * a `$4015` read on the cycle the frame counter asserts
-        //     `frame_irq` sees the flag set and clears it in one go
-        //     (matches real hardware; `blargg_apu_2005.07.30/08.irq_timing`
-        //     requires this to avoid dispatching IRQ one cycle early);
-        //   * `apu.cycle` during the bus write equals the current CPU
-        //     cycle (was lagging by one under the post-access model).
-        // Mapper tick stays co-located with the APU tick so the IRQ-line
-        // refresh sees both subsystems' latest state before the CPU's
-        // penultimate-cycle poll snapshot is taken. NMI poll and audio
-        // sampling run in `tick_post_access` — see that function's
-        // comment for why the NMI poll is deferred.
         self.apu.tick_cpu_cycle();
         self.mapper.on_cpu_cycle();
         self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
     }
 
-    /// Second half of a CPU cycle — runs after the bus access.
+    /// End-of-cycle phase — runs after the CPU's bus access.
     ///
-    /// Runs the final PPU dot (the 3rd dot on NTSC / 4th on PAL when
-    /// the ratio produces it) so register reads during the bus
-    /// access see the PPU state as of "2 dots into this cycle". At
-    /// end of cycle, samples the PPU's live `nmi_flag` and latches
-    /// `nmi_pending` on a false→true transition since the previous
-    /// cycle's end — matches Mesen2's `EndCpuCycle` edge detector
-    /// (`NesCpu.cpp:306-309`). Because the sample is taken here, a
-    /// $2002 read that clears `nmi_flag` within this same cycle
-    /// suppresses the edge, reproducing the post-set race on real
-    /// hardware.
-    fn tick_post_access(&mut self) {
-        for _ in 0..self.pending_ppu_ticks {
+    /// Ticks the remaining PPU dots for this cycle (1 or 2 on NTSC)
+    /// via `clock.end_cpu_cycle`, then performs the rising-edge
+    /// detection on the PPU's live `nmi_flag` to latch
+    /// `nmi_pending`. Matches Mesen2 `NesCpu.cpp:294-315`.
+    fn tick_post_access(&mut self, is_read: bool) {
+        let post_ticks = self.clock.end_cpu_cycle(is_read);
+        for _ in 0..post_ticks {
             self.ppu.tick(&mut *self.mapper);
         }
-        self.pending_ppu_ticks = 0;
         let nmi_flag = self.ppu.nmi_flag();
         if !self.prev_nmi_flag && nmi_flag {
             self.nmi_pending = true;
@@ -369,12 +338,13 @@ impl Bus {
         }
     }
 
-    /// Old combined tick entry — kept for stall cycles inside OAM/DMC
-    /// DMA that have no CPU-side access. These idle cycles still must
-    /// advance clock/PPU/APU and refresh interrupt lines.
+    /// Combined tick entry — used for stall cycles inside OAM/DMC
+    /// DMA that have no CPU-side access. Treated as a read cycle
+    /// (matching Mesen2's `StartCpuCycle(true)` call inside its DMA
+    /// stall path, `NesCpu.cpp:396-446`).
     fn tick_cycle(&mut self) {
-        self.tick_pre_access();
-        self.tick_post_access();
+        self.tick_pre_access(true);
+        self.tick_post_access(true);
     }
 
     fn run_oam_dma(&mut self, page: u8, extra_idle: bool) {
@@ -515,10 +485,10 @@ impl Bus {
         // the pending write. The halt is absorbed into the write.
         self.tick_cycle();
         self.tick_cycle();
-        self.tick_pre_access();
+        self.tick_pre_access(true);
         let byte = self.mapper.cpu_read(req.addr);
         self.apu.dmc_dma_complete(byte);
-        self.tick_post_access();
+        self.tick_post_access(true);
         self.dmc_dma_active = false;
     }
 }
