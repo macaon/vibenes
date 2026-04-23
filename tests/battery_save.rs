@@ -3,8 +3,11 @@
 //! Builds a synthetic battery-backed NROM in a tempdir, writes bytes
 //! to PRG-RAM via the bus, saves, drops the Nes, and reloads —
 //! verifying the bytes come back verbatim through a fresh mapper
-//! instance. Also asserts the save file lands next to the ROM with
-//! the `.sav` extension and that non-battery carts never write one.
+//! instance. Also asserts non-battery carts never write a save file.
+//!
+//! Each test uses an explicit `SaveStyle` + `dir_override` so the
+//! default (`ConfigDir`) doesn't write to the user's real
+//! `~/.config/vibenes/saves/`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,7 +49,6 @@ fn build_nes_file(dir: &Path, name: &str, battery: bool) -> PathBuf {
 
     // 32 KiB PRG: all NOPs, reset vector at $FFFC/$FFFD = $8000.
     let mut prg = vec![0xEAu8; 32 * 1024];
-    // prg[0x7FFC] = $FFFC offset. Vector value = $8000 → lo=$00, hi=$80.
     prg[0x7FFC] = 0x00;
     prg[0x7FFD] = 0x80;
     bytes.extend_from_slice(&prg);
@@ -59,8 +61,6 @@ fn build_nes_file(dir: &Path, name: &str, battery: bool) -> PathBuf {
     path
 }
 
-/// Helper: load a ROM, attach save metadata, return the Nes.
-/// Mirrors what `App::load_rom` does, minus the windowed-app glue.
 fn load(path: &Path) -> Nes {
     let cart = Cartridge::load(path).expect("load cart");
     let crc = cart.prg_chr_crc32;
@@ -69,46 +69,50 @@ fn load(path: &Path) -> Nes {
     nes
 }
 
-#[test]
-fn battery_write_persists_across_reload() {
-    let dir = tempdir("persist");
-    let rom = build_nes_file(&dir, "game.nes", true);
-    let sav = dir.join("game.sav");
-    let cfg = SaveConfig::default();
+/// `SaveConfig` routed at a tempdir so the test doesn't pollute the
+/// user's real config dir.
+fn cfg_for(style: SaveStyle, dir: &Path) -> SaveConfig {
+    SaveConfig {
+        style,
+        dir_override: Some(dir.to_path_buf()),
+        ..SaveConfig::default()
+    }
+}
 
-    // 1. Load + populate PRG-RAM with a distinctive pattern.
+#[test]
+fn battery_write_persists_across_reload_config_dir() {
+    let dir = tempdir("persist-cfg");
+    let rom_dir = dir.join("roms");
+    let save_dir = dir.join("saves");
+    fs::create_dir_all(&rom_dir).unwrap();
+    fs::create_dir_all(&save_dir).unwrap();
+    let rom = build_nes_file(&rom_dir, "game.nes", true);
+    let cfg = cfg_for(SaveStyle::ConfigDir, &save_dir);
+    let expected_sav = save_dir.join("game.sav");
+
     {
         let mut nes = load(&rom);
-        let initial_loaded = nes.load_battery(&cfg).expect("load");
-        assert!(!initial_loaded, "first load has no prior save");
-
-        // Poke 256 distinctive bytes across $6000-$60FF.
+        assert!(!nes.load_battery(&cfg).expect("load"));
         for i in 0..0x100u16 {
             nes.bus.write(0x6000 + i, (i as u8).wrapping_add(0x33));
         }
-        // Verify writes stuck via the bus.
-        for i in 0..0x100u16 {
-            assert_eq!(nes.bus.peek(0x6000 + i), (i as u8).wrapping_add(0x33));
-        }
-
-        // Save.
-        let saved = nes.save_battery(&cfg).expect("save");
-        assert!(saved, "save should return Ok(true) after dirty writes");
+        assert!(nes.save_battery(&cfg).expect("save"));
     }
 
-    // 2. File exists and has the expected shape.
-    assert!(sav.exists(), "expected save file at {}", sav.display());
-    let bytes = fs::read(&sav).expect("read sav");
-    assert_eq!(bytes.len(), 8 * 1024, "NROM save is 8 KiB (matches PRG-RAM window)");
+    assert!(
+        expected_sav.exists(),
+        "config-dir save lives at {}",
+        expected_sav.display()
+    );
+    let bytes = fs::read(&expected_sav).unwrap();
+    assert_eq!(bytes.len(), 8 * 1024);
     for i in 0..0x100 {
         assert_eq!(bytes[i], (i as u8).wrapping_add(0x33));
     }
 
-    // 3. Fresh Nes: pattern must come back through load_battery.
     {
         let mut nes = load(&rom);
-        let loaded = nes.load_battery(&cfg).expect("load");
-        assert!(loaded, "second load must find the prior save");
+        assert!(nes.load_battery(&cfg).expect("reload"));
         for i in 0..0x100u16 {
             assert_eq!(
                 nes.bus.peek(0x6000 + i),
@@ -122,58 +126,89 @@ fn battery_write_persists_across_reload() {
 }
 
 #[test]
+fn battery_write_persists_next_to_rom_when_selected() {
+    // Same roundtrip but with the opt-in `NextToRom` style. Confirms
+    // the legacy placement still works when explicitly requested
+    // (future settings UI toggle).
+    let dir = tempdir("persist-next");
+    let rom = build_nes_file(&dir, "game.nes", true);
+    let sav = dir.join("game.sav");
+    let cfg = SaveConfig {
+        style: SaveStyle::NextToRom,
+        ..SaveConfig::default()
+    };
+
+    {
+        let mut nes = load(&rom);
+        assert!(!nes.load_battery(&cfg).expect("load"));
+        nes.bus.write(0x6000, 0x77);
+        assert!(nes.save_battery(&cfg).expect("save"));
+    }
+    assert!(sav.exists());
+
+    {
+        let mut nes = load(&rom);
+        assert!(nes.load_battery(&cfg).expect("reload"));
+        assert_eq!(nes.bus.peek(0x6000), 0x77);
+    }
+
+    cleanup(&dir);
+}
+
+#[test]
 fn non_battery_cart_does_not_write_a_save_file() {
     let dir = tempdir("nobat");
+    let save_dir = dir.join("saves");
+    fs::create_dir_all(&save_dir).unwrap();
     let rom = build_nes_file(&dir, "demo.nes", false);
-    let sav = dir.join("demo.sav");
-    let cfg = SaveConfig::default();
+    let cfg = cfg_for(SaveStyle::ConfigDir, &save_dir);
 
     let mut nes = load(&rom);
-    // Even a write through the bus must not create a save file.
     nes.bus.write(0x6000, 0xAB);
-    let saved = nes.save_battery(&cfg).expect("save");
-    assert!(!saved, "non-battery carts must not persist RAM");
-    assert!(!sav.exists(), "no save file should exist for non-battery cart");
+    assert!(!nes.save_battery(&cfg).expect("save"));
+    assert!(
+        save_dir.read_dir().unwrap().next().is_none(),
+        "save dir must stay empty for non-battery cart"
+    );
 
     cleanup(&dir);
 }
 
 #[test]
 fn save_is_skipped_when_ram_is_untouched() {
-    // Gate to keep disk quiet on idle: if the cart was loaded and
-    // never written, save_battery returns Ok(false) and no file is
-    // created. Important for the autosave-every-N-frames path.
     let dir = tempdir("clean");
+    let save_dir = dir.join("saves");
+    fs::create_dir_all(&save_dir).unwrap();
     let rom = build_nes_file(&dir, "clean.nes", true);
-    let sav = dir.join("clean.sav");
-    let cfg = SaveConfig::default();
+    let cfg = cfg_for(SaveStyle::ConfigDir, &save_dir);
 
     let mut nes = load(&rom);
     let _ = nes.load_battery(&cfg).expect("load");
-    // No writes → save_dirty is false → save_battery is a no-op.
-    let saved = nes.save_battery(&cfg).expect("save");
-    assert!(!saved);
-    assert!(!sav.exists(), "idle cart must not have produced a save file");
+    assert!(!nes.save_battery(&cfg).expect("save"));
+    assert!(
+        save_dir.read_dir().unwrap().next().is_none(),
+        "idle cart must not have produced a save file"
+    );
 
     cleanup(&dir);
 }
 
 #[test]
-fn by_crc_save_style_still_resolves_today() {
-    // Placeholder: `SaveStyle::ByCrc` currently falls back to the
-    // next-to-ROM path (see src/save.rs). When the data-dir
-    // resolution lands this test tightens to assert the CRC-keyed
-    // path instead. Keeps behavior pinned during the interim.
+fn by_crc_style_uses_crc_hex_filename() {
     let dir = tempdir("crc");
-    let rom = build_nes_file(&dir, "crc.nes", true);
-    let cfg = SaveConfig {
-        style: SaveStyle::ByCrc,
-        ..SaveConfig::default()
-    };
+    let save_dir = dir.join("saves");
+    fs::create_dir_all(&save_dir).unwrap();
+    let rom = build_nes_file(&dir, "whatever.nes", true);
+    let cfg = cfg_for(SaveStyle::ByCrc, &save_dir);
+
+    let cart = Cartridge::load(&rom).expect("load cart");
+    let crc = cart.prg_chr_crc32;
+    let expected = save_dir.join(format!("{crc:08X}.sav"));
+
     let mut nes = load(&rom);
     nes.bus.write(0x6000, 0x42);
     assert!(nes.save_battery(&cfg).expect("save"));
-    assert!(dir.join("crc.sav").exists());
+    assert!(expected.exists(), "by-crc save lives at {}", expected.display());
 
     cleanup(&dir);
 }

@@ -20,7 +20,7 @@ for hardware specifics and describe the model in my own words.
 - ✅ **Host audio** — cpal + blip_buf
 - ✅ **Windowed runtime** — wgpu, NTSC/PAL-paced, keyboard input
 - ✅ **Overlay UI** — egui menu (F1)
-- ✅ **Battery-backed saves** — `<rom>.sav` next to the ROM; atomic writes, flush on quit / ROM swap, 3-min safety-flush
+- ✅ **Battery-backed saves** — `~/.config/vibenes/saves/<rom-stem>.sav`; atomic writes, flush on quit / ROM swap, 3-min safety-flush
 
 ### Supported mappers
 
@@ -80,10 +80,19 @@ with ↑/↓/Enter/Esc or the mouse.
 ## Saves
 
 Cartridges with battery-backed PRG-RAM (iNES flag6 bit 1, or the
-NES 2.0 `prg_nvram_size` byte) persist their RAM to a `.sav` file
-next to the ROM. `kirby.nes` pairs with `kirby.sav`. The save is
+NES 2.0 `prg_nvram_size` byte) persist their RAM to
+`~/.config/vibenes/saves/<rom-stem>.sav` (respects
+`$XDG_CONFIG_HOME`). Matches Mesen2's
+`~/.config/Mesen2/Saves/<rom-stem>.sav` convention. The save is
 written atomically (temp file + rename) so a crash mid-write leaves
 either the old save or the new one — never a torn file.
+
+Alternative layouts are selectable via [`SaveStyle`](src/config.rs):
+- `NextToRom` — FCEUX style, `<rom-dir>/<rom-stem>.sav`.
+- `ByCrc` — `<saves-dir>/<PRG+CHR CRC32>.sav`; survives ROM renames.
+
+Today the selection is a compile-time `Default`; a settings UI is
+planned.
 
 Flush triggers (matching the industry-standard pattern — see
 Mesen2 `Core/Shared/Emulator.cpp:287,422`, Nestopia

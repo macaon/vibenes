@@ -1,19 +1,21 @@
 //! Battery-backed cartridge save file I/O.
 //!
-//! Path resolution today is "next to the ROM": `kirby.nes` pairs with
-//! `kirby.sav` in the same directory. This is what FCEUX / Nestopia /
-//! Mesen do by default and what collection-management tools expect.
+//! Default layout: `$XDG_CONFIG_HOME/vibenes/saves/<rom-stem>.sav`
+//! (falling back to `$HOME/.config/vibenes/saves/<rom-stem>.sav` when
+//! `XDG_CONFIG_HOME` is unset). Matches Mesen2's `~/.config/Mesen2/
+//! Saves/` convention and keeps ROM directories clean. Alternatives
+//! via [`SaveStyle::NextToRom`] (FCEUX-style) and
+//! [`SaveStyle::ByCrc`] (rename-survives).
 //!
 //! Writes are atomic: we stage to a `<path>.tmp` file, `fsync`, then
 //! [`std::fs::rename`]. POSIX rename is atomic over the same
 //! filesystem, so a crash mid-write leaves either the old save or the
 //! new one — never a torn half-written file.
 //!
-//! **Future work**: [`crate::config::SaveStyle::ByCrc`] routes saves
-//! to `<data_dir>/<CRC>.sav` instead. Fallback from `NextToRom` to
-//! `ByCrc` when the ROM folder is read-only is also planned but not
-//! wired yet — today a write failure to the ROM folder is just logged
-//! and skipped.
+//! No `dirs` crate dependency today — XDG resolution is hand-rolled
+//! against `XDG_CONFIG_HOME` + `HOME` because those are all we need
+//! on Linux. When macOS / Windows support matters, swap in `dirs`
+//! and update [`saves_dir`].
 
 use std::fs;
 use std::io::{self, Write};
@@ -27,24 +29,49 @@ use crate::config::{SaveConfig, SaveStyle};
 pub const SAVE_EXT: &str = "sav";
 
 /// Resolve the save-file path for a cartridge loaded from `rom_path`.
-/// Returns `None` if no sensible path can be produced (`rom_path` has
-/// no filename) — the caller should log and skip rather than panic.
-///
-/// Currently honors only [`SaveStyle::NextToRom`]; the `ByCrc` branch
-/// is a stub that falls through to next-to-rom while the data-dir
-/// resolution lives behind the future `dirs`-crate plumbing.
-pub fn save_path_for(rom_path: &Path, _crc: u32, cfg: &SaveConfig) -> Option<PathBuf> {
+/// Returns `None` if no sensible path can be produced (for example
+/// `rom_path` has no filename, or the config-dir style is selected
+/// but neither `XDG_CONFIG_HOME` nor `HOME` is set). The caller
+/// should log and skip rather than panic.
+pub fn save_path_for(rom_path: &Path, crc: u32, cfg: &SaveConfig) -> Option<PathBuf> {
     match cfg.style {
+        SaveStyle::ConfigDir => {
+            let stem = rom_path.file_stem()?;
+            let dir = cfg
+                .dir_override
+                .clone()
+                .or_else(saves_dir)?;
+            let mut p = dir;
+            p.push(stem);
+            p.set_extension(SAVE_EXT);
+            Some(p)
+        }
         SaveStyle::NextToRom => Some(rom_path.with_extension(SAVE_EXT)),
         SaveStyle::ByCrc => {
-            // TODO: when the settings UI lands, resolve via
-            //   cfg.dir_override.clone().unwrap_or_else(default_saves_dir)
-            // with default_saves_dir() returning
-            //   dirs::data_dir() / "vibenes" / "saves"
-            // For now silently fall back so the plumbing still works.
-            Some(rom_path.with_extension(SAVE_EXT))
+            let dir = cfg
+                .dir_override
+                .clone()
+                .or_else(saves_dir)?;
+            let mut p = dir;
+            p.push(format!("{crc:08X}"));
+            p.set_extension(SAVE_EXT);
+            Some(p)
         }
     }
+}
+
+/// Default saves directory: `$XDG_CONFIG_HOME/vibenes/saves/`, else
+/// `$HOME/.config/vibenes/saves/`. Returns `None` if neither env var
+/// is set (shouldn't happen on a real user session, but we don't
+/// assume).
+pub fn saves_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))
+        })?;
+    Some(base.join("vibenes").join("saves"))
 }
 
 /// Read the save file at `path`. `Ok(None)` when no file exists;
@@ -99,10 +126,37 @@ mod tests {
     }
 
     #[test]
-    fn path_is_rom_with_sav_extension() {
-        let cfg = SaveConfig::default();
+    fn default_config_dir_path_uses_rom_stem() {
+        let d = tempdir();
+        let cfg = SaveConfig {
+            style: SaveStyle::ConfigDir,
+            dir_override: Some(d.path().to_path_buf()),
+            ..SaveConfig::default()
+        };
+        let p = save_path_for(Path::new("/roms/kirby.nes"), 0xDEADBEEF, &cfg).unwrap();
+        assert_eq!(p, d.path().join("kirby.sav"));
+    }
+
+    #[test]
+    fn next_to_rom_path_sits_beside_the_rom() {
+        let cfg = SaveConfig {
+            style: SaveStyle::NextToRom,
+            ..SaveConfig::default()
+        };
         let p = save_path_for(Path::new("/roms/kirby.nes"), 0xDEADBEEF, &cfg).unwrap();
         assert_eq!(p, PathBuf::from("/roms/kirby.sav"));
+    }
+
+    #[test]
+    fn by_crc_uses_hex_crc_as_filename() {
+        let d = tempdir();
+        let cfg = SaveConfig {
+            style: SaveStyle::ByCrc,
+            dir_override: Some(d.path().to_path_buf()),
+            ..SaveConfig::default()
+        };
+        let p = save_path_for(Path::new("/roms/whatever.nes"), 0xDEADBEEF, &cfg).unwrap();
+        assert_eq!(p, d.path().join("DEADBEEF.sav"));
     }
 
     #[test]

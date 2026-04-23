@@ -23,20 +23,25 @@ use std::path::PathBuf;
 /// How battery-backed cartridge saves are named and located.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveStyle {
-    /// `rompath.sav` next to the `.nes` file. The FCEUX / Nestopia /
-    /// Mesen default — self-describing, travels with the ROM when
-    /// copied between machines. Fallback is used when the ROM dir
-    /// isn't writable (read-only mount, archive, etc.).
+    /// `$XDG_CONFIG_HOME/vibenes/saves/<rom-stem>.sav` (falls back
+    /// to `$HOME/.config/vibenes/saves/<rom-stem>.sav` when
+    /// `XDG_CONFIG_HOME` is unset). Default since 2026-04-23 —
+    /// matches Mesen2's `~/.config/Mesen2/Saves/<rom-stem>.sav`
+    /// convention and keeps ROM directories clean.
+    ConfigDir,
+    /// `rompath.sav` next to the `.nes` file. The FCEUX default —
+    /// self-describing, travels with the ROM when copied between
+    /// machines. Available for users who prefer it.
     NextToRom,
-    /// `<save_dir>/<prg_chr_crc32>.sav`, keyed by CRC so renaming the
-    /// ROM doesn't lose progress. Not the default but available as an
-    /// alternative when the settings UI lands.
+    /// `$XDG_CONFIG_HOME/vibenes/saves/<prg_chr_crc32>.sav`, keyed
+    /// by CRC so renaming the ROM doesn't lose progress. Available
+    /// as an alternative when the settings UI lands.
     ByCrc,
 }
 
 impl Default for SaveStyle {
     fn default() -> Self {
-        Self::NextToRom
+        Self::ConfigDir
     }
 }
 
