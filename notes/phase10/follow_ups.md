@@ -156,6 +156,48 @@ PRG-RAM with per-half enable/protect at `$7000-$7FFF`) is not
 exercised here; implementing that is an independent mapper-scope
 follow-up if we want to support the Star Tropics (MMC6) ROMs.
 
+### Deferred design question — DB entries for test ROMs
+
+**Current state (commit `6579ab1`):** three test-ROM CRCs are
+pre-seeded in `data/nes_db.csv` with `chip=MMC3A` so they
+auto-activate Rev A without any user action:
+
+- `F312D1DE` — `mmc3_irq_tests/5.MMC3_rev_A`
+- `A512BDF6` — `mmc3_test/6-MMC6`
+- `633AFE6F` — `mmc3_test_2/6-MMC3_alt`
+
+**Why this is arguably a cosmetic shortcut for the test suite:**
+these rows aren't in upstream Mesen's `MesenNesDB.txt` (verified).
+If a user ran the same ROMs in Mesen2, they'd fail by default and
+require the UI's per-game config override to flip Rev A on.
+Our DB-seeded variant makes our test suite look "cleaner" than
+Mesen2's default — but the emulator doesn't actually infer more
+about iNES 1.0 ROMs than Mesen2 does. We're just shipping a
+slightly bigger DB.
+
+**Why it might be fine:** the chip info is factually correct (the
+test ROMs do want Rev A firing semantics), and the activation path
+is identical to Mesen2's. From an end-user "it just works" angle,
+this is the better default — Crystalis will need a DB entry too
+when we add it, and the mechanism is the same.
+
+**To revisit when we design the UI settings:**
+
+1. If we add a per-game "force Rev A" UI toggle (Mesen2-style),
+   the three DB rows become redundant — the user can flip the
+   toggle for ROMs not in the DB. At that point we could either:
+   (a) keep the DB rows as default-on for first-run convenience,
+   or (b) remove them and treat the DB as a strict
+   "commercial-games-only" source.
+2. If we instead expose a top-level emulator setting
+   (`MMC3 chip revision: Auto / Force Rev A / Force Rev B`), the
+   env var becomes the backend for "Force Rev A" and the DB rows
+   are similarly optional.
+
+For now, the decision is left open. If the design leans toward
+strict DB hygiene, revert `6579ab1`. If it leans toward ergonomic
+first-run behavior, keep them.
+
 ---
 
 ## F3 — mmc3_irq_tests suite (not a gating suite)

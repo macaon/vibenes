@@ -118,6 +118,15 @@ game-DB chip prefix `MMC3A` (Mesen convention), or the env var.
 populating the game DB with more `MMC3A` chip entries for commercial
 Rev A carts (Crystalis and others).
 
+**Deferred design decision (revisit during UI work):** three test
+ROMs are currently pre-seeded as `MMC3A` in `data/nes_db.csv` so
+they auto-activate Rev A. Mesen2 does NOT carry these CRCs in its
+upstream DB — a user would need its per-game config UI to force
+Rev A. Once we design our own settings UI, decide whether to keep
+these rows (ergonomic first-run) or remove them (strict DB
+hygiene). Full write-up in `notes/phase10/follow_ups.md §F2
+"Deferred design question"`.
+
 ## Regression discipline
 
 Before any commit, run the full sweep from §Tests (at minimum:
