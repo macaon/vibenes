@@ -198,12 +198,23 @@ pub struct Mmc5 {
     mult_a: u8,
     /// $5206 write value. Multiplier.
     mult_b: u8,
+
+    /// Battery-backed PRG-RAM flag. True when the cart's flag6 bit 1
+    /// was set. Only one bank (the first 8 KiB on typical MMC5 carts
+    /// like Castlevania 3 / Uchuu Keibitai SDF) is battery-backed on
+    /// hardware, but the iNES header can't express partial coverage,
+    /// so we persist the whole `prg_ram` when set.
+    battery: bool,
+    /// Dirty flag cleared by `mark_saved`. Set on any write to
+    /// `prg_ram` through either the $6000-$7FFF window or the
+    /// $8000-$DFFF window-aliased-as-RAM path.
+    save_dirty: bool,
 }
 
 impl Mmc5 {
     pub fn new(cart: Cartridge) -> Self {
         let prg_bank_count_8k = (cart.prg_rom.len() / PRG_BANK_8K).max(1);
-        let prg_ram_size = cart.prg_ram_size.max(MIN_PRG_RAM);
+        let prg_ram_size = (cart.prg_ram_size + cart.prg_nvram_size).max(MIN_PRG_RAM);
         let prg_ram = vec![0u8; prg_ram_size];
         let prg_ram_bank_count_8k = (prg_ram.len() / PRG_BANK_8K).max(1);
 
@@ -273,6 +284,8 @@ impl Mmc5 {
             ppu_idle_counter: 0,
             mult_a: 0,
             mult_b: 0,
+            battery: cart.battery_backed,
+            save_dirty: false,
         };
         m.update_prg_banks();
         m
@@ -602,7 +615,13 @@ impl Mapper for Mmc5 {
                 if self.prg_ram_writable() {
                     let offset_in_bank = (addr & 0x1FFF) as usize;
                     let bank = self.prg_ram_slot.bank_8k % self.prg_ram_bank_count_8k;
-                    self.prg_ram[bank * PRG_BANK_8K + offset_in_bank] = data;
+                    let idx = bank * PRG_BANK_8K + offset_in_bank;
+                    if self.prg_ram[idx] != data {
+                        self.prg_ram[idx] = data;
+                        if self.battery {
+                            self.save_dirty = true;
+                        }
+                    }
                 }
             }
             // $8000-$FFFF: writes only stick if the slot is RAM-backed
@@ -611,7 +630,12 @@ impl Mapper for Mmc5 {
             0x8000..=0xFFFF => {
                 let (kind, offset) = self.resolve_upper(addr);
                 if kind == PrgKind::Ram && self.prg_ram_writable() {
-                    self.prg_ram[offset] = data;
+                    if self.prg_ram[offset] != data {
+                        self.prg_ram[offset] = data;
+                        if self.battery {
+                            self.save_dirty = true;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -806,6 +830,24 @@ impl Mapper for Mmc5 {
         // the cart's header value keeps pre-init accesses sensible.
         self.mirroring
     }
+
+    fn save_data(&self) -> Option<&[u8]> {
+        self.battery.then(|| self.prg_ram.as_slice())
+    }
+
+    fn load_save_data(&mut self, data: &[u8]) {
+        if self.battery && data.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(data);
+        }
+    }
+
+    fn save_dirty(&self) -> bool {
+        self.save_dirty
+    }
+
+    fn mark_saved(&mut self) {
+        self.save_dirty = false;
+    }
 }
 
 #[cfg(test)]
@@ -837,6 +879,7 @@ mod tests {
             mirroring: Mirroring::Vertical,
             battery_backed: false,
             prg_ram_size: 32 * 1024,
+            prg_nvram_size: 0,
             tv_system: TvSystem::Ntsc,
             is_nes2: false,
             prg_chr_crc32: 0,

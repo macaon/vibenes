@@ -35,7 +35,20 @@ pub struct Cartridge {
     pub submapper: u8,
     pub mirroring: Mirroring,
     pub battery_backed: bool,
+    /// Volatile PRG work-RAM size in bytes. iNES 1.0 encodes only a
+    /// single combined RAM number (in header[8], in 8 KiB units); we
+    /// treat that as "battery-backed if flag6 bit 1 is set, else
+    /// volatile" and populate one of `prg_ram_size`/`prg_nvram_size`
+    /// accordingly. NES 2.0 encodes them as separate nibbles in
+    /// header[10]: low = volatile (`64 << n` bytes), high = NVRAM.
     pub prg_ram_size: usize,
+    /// Battery-backed PRG-RAM size in bytes. This is the byte count
+    /// the save system persists to disk. 0 on non-battery carts. The
+    /// total runtime RAM allocated by a mapper is
+    /// `prg_ram_size + prg_nvram_size` (bounded below by the mapper's
+    /// minimum 8 KiB window so cartridge firmware sees a valid
+    /// `$6000-$7FFF` region even on no-RAM headers).
+    pub prg_nvram_size: usize,
     pub tv_system: TvSystem,
     pub is_nes2: bool,
     /// CRC32 of the PRG-ROM || CHR-ROM data (matches Mesen2's
@@ -78,7 +91,9 @@ impl Cartridge {
         let prg_banks: usize;
         let chr_banks: usize;
         let prg_ram_size: usize;
+        let prg_nvram_size: usize;
         let tv_system: TvSystem;
+        let battery_backed = (flags6 & 0x02) != 0;
 
         if is_nes2 {
             let mapper_hi = (header[8] & 0x0F) as u16;
@@ -88,9 +103,14 @@ impl Cartridge {
             let chr_hi = (header[9] >> 4) as usize;
             prg_banks = prg_banks_lo | (prg_hi << 8);
             chr_banks = chr_banks_lo | (chr_hi << 8);
-            // PRG-RAM size encoded as 64 << shift if nonzero.
-            let shift = (header[10] & 0x0F) as u32;
-            prg_ram_size = if shift == 0 { 0 } else { 64usize << shift };
+            // NES 2.0 header[10]:
+            //   low nibble  = volatile PRG work-RAM (`64 << n` bytes)
+            //   high nibble = battery-backed PRG-NVRAM (`64 << n` bytes)
+            // Either can be zero; carts often use only one.
+            let prg_ram_shift = (header[10] & 0x0F) as u32;
+            let prg_nvram_shift = ((header[10] >> 4) & 0x0F) as u32;
+            prg_ram_size = if prg_ram_shift == 0 { 0 } else { 64usize << prg_ram_shift };
+            prg_nvram_size = if prg_nvram_shift == 0 { 0 } else { 64usize << prg_nvram_shift };
             tv_system = if (header[12] & 0x01) == 0 {
                 TvSystem::Ntsc
             } else {
@@ -101,8 +121,20 @@ impl Cartridge {
             submapper = 0;
             prg_banks = prg_banks_lo;
             chr_banks = chr_banks_lo;
+            // iNES 1.0 encodes one combined RAM count (8 KiB units). We
+            // route it to NVRAM when flag6 bit 1 is set, volatile
+            // otherwise. A zero-count header is rewritten to 8 KiB
+            // below (every NROM/UxROM cart has SOME work-RAM slot even
+            // if the header didn't bother to say so).
             let ram_banks = header[8].max(1) as usize;
-            prg_ram_size = ram_banks * 8 * 1024;
+            let total = ram_banks * 8 * 1024;
+            if battery_backed {
+                prg_ram_size = 0;
+                prg_nvram_size = total;
+            } else {
+                prg_ram_size = total;
+                prg_nvram_size = 0;
+            }
             tv_system = if (header[9] & 0x01) == 0 {
                 TvSystem::Ntsc
             } else {
@@ -117,7 +149,6 @@ impl Cartridge {
         } else {
             Mirroring::Horizontal
         };
-        let battery_backed = (flags6 & 0x02) != 0;
         let has_trainer = (flags6 & 0x04) != 0;
 
         let mut offset = INES_HEADER_SIZE;
@@ -188,12 +219,11 @@ impl Cartridge {
             (chr_on_disk.to_vec(), false)
         };
 
-        let prg_ram_size = if prg_ram_size == 0 && !is_nes2 {
-            8 * 1024
-        } else {
-            prg_ram_size
-        };
-
+        // iNES 1.0 with header[8]=0 already had its RAM bumped to 8
+        // KiB by the `ram_banks.max(1)` above. NES 2.0 is trusted
+        // verbatim — a NES 2.0 cart that declares 0/0 is valid and we
+        // honor it (mappers still allocate their mandatory minimum
+        // for the `$6000-$7FFF` window from `prg_ram_size.max(MIN)`).
         let mut cart = Self {
             prg_rom,
             chr_rom,
@@ -203,6 +233,7 @@ impl Cartridge {
             mirroring,
             battery_backed,
             prg_ram_size,
+            prg_nvram_size,
             tv_system,
             is_nes2,
             prg_chr_crc32: crc,
@@ -232,7 +263,7 @@ impl Cartridge {
 
     pub fn describe(&self) -> String {
         let mut s = format!(
-            "iNES{} mapper={} submapper={} prg={}KiB chr={}KiB({}) mirror={:?} battery={} prg_ram={}KiB tv={:?} crc={:08X}",
+            "iNES{} mapper={} submapper={} prg={}KiB chr={}KiB({}) mirror={:?} battery={} prg_ram={}KiB prg_nvram={}KiB tv={:?} crc={:08X}",
             if self.is_nes2 { "2.0" } else { "1.0" },
             self.mapper_id,
             self.submapper,
@@ -242,6 +273,7 @@ impl Cartridge {
             self.mirroring,
             self.battery_backed,
             self.prg_ram_size / 1024,
+            self.prg_nvram_size / 1024,
             self.tv_system,
             self.prg_chr_crc32,
         );

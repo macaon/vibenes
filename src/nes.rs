@@ -1,15 +1,33 @@
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 
 use crate::audio::AudioSink;
 use crate::bus::Bus;
 use crate::clock::Region;
+use crate::config::SaveConfig;
 use crate::cpu::Cpu;
 use crate::mapper;
 use crate::rom::Cartridge;
+use crate::save;
 
 pub struct Nes {
     pub cpu: Cpu,
     pub bus: Bus,
+    /// Metadata needed to route save I/O. Populated by the app's ROM
+    /// loader via [`Nes::attach_save_metadata`]; `None` keeps
+    /// `save_battery` / `load_battery` no-ops which is the correct
+    /// behavior for test harnesses that build a cart from raw bytes.
+    save_meta: Option<SaveMeta>,
+}
+
+/// Where and how to persist the currently-loaded cart's battery RAM.
+/// Captured at load time so we have a stable resolution even after a
+/// ROM swap moves the `Cartridge` into the mapper (which consumed it).
+#[derive(Debug, Clone)]
+struct SaveMeta {
+    rom_path: PathBuf,
+    prg_chr_crc32: u32,
 }
 
 impl Nes {
@@ -20,9 +38,96 @@ impl Nes {
         let mut nes = Self {
             cpu: Cpu::new(),
             bus,
+            save_meta: None,
         };
         nes.cpu.reset(&mut nes.bus);
         Ok(nes)
+    }
+
+    /// Attach the metadata used by [`Nes::save_battery`] and
+    /// [`Nes::load_battery`] to resolve a save path. Call this from
+    /// the app's ROM loader right after `from_cartridge` /
+    /// `swap_cartridge`. Test harnesses that build a `Cartridge` in-
+    /// memory and never intend to persist it skip this — the save
+    /// methods become no-ops.
+    pub fn attach_save_metadata(&mut self, rom_path: impl Into<PathBuf>, prg_chr_crc32: u32) {
+        self.save_meta = Some(SaveMeta {
+            rom_path: rom_path.into(),
+            prg_chr_crc32,
+        });
+    }
+
+    /// Drop the save metadata attached by
+    /// [`Nes::attach_save_metadata`]. Used during ROM swap so a
+    /// failed flush for the outgoing cart can't route the new cart's
+    /// RAM to the old path.
+    pub fn clear_save_metadata(&mut self) {
+        self.save_meta = None;
+    }
+
+    /// Read the save file (if any) for the currently-attached cart
+    /// and hand it to the mapper. No-op when no metadata is attached
+    /// or the mapper doesn't want save data (`save_data() == None`).
+    /// Returns `Ok(true)` if bytes were loaded, `Ok(false)` if there
+    /// was nothing to load, `Err` on I/O error.
+    pub fn load_battery(&mut self, cfg: &SaveConfig) -> Result<bool> {
+        let Some(meta) = self.save_meta.as_ref() else {
+            return Ok(false);
+        };
+        if self.bus.mapper.save_data().is_none() {
+            return Ok(false);
+        }
+        let Some(path) = save::save_path_for(&meta.rom_path, meta.prg_chr_crc32, cfg) else {
+            return Ok(false);
+        };
+        match save::load(&path)? {
+            None => Ok(false),
+            Some(bytes) => {
+                self.bus.mapper.load_save_data(&bytes);
+                self.bus.mapper.mark_saved();
+                Ok(true)
+            }
+        }
+    }
+
+    /// Write battery RAM to disk if the mapper has flagged it dirty.
+    /// No-op on non-battery carts, when no metadata is attached, and
+    /// when `save_dirty()` is false. Returns `Ok(true)` on a
+    /// successful write, `Ok(false)` when there was nothing to do,
+    /// `Err` on I/O error — the caller decides whether to surface it
+    /// (usually just log and continue).
+    pub fn save_battery(&mut self, cfg: &SaveConfig) -> Result<bool> {
+        let Some(meta) = self.save_meta.as_ref() else {
+            return Ok(false);
+        };
+        if !self.bus.mapper.save_dirty() {
+            return Ok(false);
+        }
+        let Some(data) = self.bus.mapper.save_data() else {
+            return Ok(false);
+        };
+        let Some(path) = save::save_path_for(&meta.rom_path, meta.prg_chr_crc32, cfg) else {
+            return Ok(false);
+        };
+        // Copy the slice before touching the mapper mutably.
+        let data = data.to_vec();
+        save::write(&path, &data)?;
+        self.bus.mapper.mark_saved();
+        Ok(true)
+    }
+
+    /// Return the save-path that would be used for the current cart,
+    /// or `None` if no metadata is attached. Useful for logging in
+    /// the app layer.
+    pub fn save_path(&self, cfg: &SaveConfig) -> Option<PathBuf> {
+        let meta = self.save_meta.as_ref()?;
+        save::save_path_for(&meta.rom_path, meta.prg_chr_crc32, cfg)
+    }
+
+    /// Currently-attached ROM path, for convenience in the app layer
+    /// (e.g. to rebuild metadata after a cart swap).
+    pub fn current_rom_path(&self) -> Option<&Path> {
+        self.save_meta.as_ref().map(|m| m.rom_path.as_path())
     }
 
     pub fn region(&self) -> Region {
@@ -94,6 +199,10 @@ impl Nes {
         self.bus.audio_sink = sink;
         self.cpu = Cpu::new();
         self.cpu.reset(&mut self.bus);
+        // Caller re-attaches save metadata for the new cart. Clear
+        // here so a caller that forgets gets a no-op rather than
+        // routing the new cart's RAM to the old cart's path.
+        self.save_meta = None;
         Ok(())
     }
 

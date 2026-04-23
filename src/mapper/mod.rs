@@ -142,6 +142,50 @@ pub trait Mapper: Send {
     fn irq_line(&self) -> bool {
         false
     }
+
+    // ---- Battery-backed RAM persistence ----
+    //
+    // Wired through [`crate::nes::Nes::save_battery`] at app quit,
+    // ROM swap, and periodic autosave. Default impls are "no
+    // battery" — mappers with battery-backed PRG-RAM
+    // (nrom/mmc1/uxrom/cnrom/mmc3/mmc5 when the cart's flag6 bit 1
+    // was set) override.
+    //
+    // Contract:
+    //  * `save_data` returns `None` on non-battery carts. On battery
+    //    carts it returns the exact bytes to persist; the save file
+    //    is written verbatim (no header / no CRC / no versioning).
+    //  * `load_save_data` is called once, just after mapper
+    //    construction, BEFORE the CPU reset's first read. Should
+    //    accept only data whose length matches `save_data()`'s
+    //    current size; silently ignore mismatches (e.g. from a
+    //    firmware update changing RAM layout).
+    //  * `save_dirty` is set by any PRG-RAM write and cleared by
+    //    `mark_saved`. The save pipeline skips disk writes when it
+    //    returns false, so the common "game sits on title screen"
+    //    case is a cheap no-op.
+
+    /// Snapshot of battery-backed PRG-RAM, or `None` on non-battery
+    /// carts. Slice lifetime is borrowed from the mapper — copy the
+    /// bytes before calling any mutable mapper method.
+    fn save_data(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// Restore battery-backed PRG-RAM from a previously-saved slice.
+    /// Mappers should silently no-op on length mismatch.
+    fn load_save_data(&mut self, _data: &[u8]) {}
+
+    /// True if PRG-RAM has changed since the last `mark_saved` call.
+    /// Used by the save pipeline to skip disk writes when nothing
+    /// changed. Non-battery mappers always return false.
+    fn save_dirty(&self) -> bool {
+        false
+    }
+
+    /// Called by the save pipeline after a successful write to disk.
+    /// Clears the dirty flag.
+    fn mark_saved(&mut self) {}
 }
 
 pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {

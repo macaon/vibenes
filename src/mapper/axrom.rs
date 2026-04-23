@@ -135,6 +135,7 @@ mod tests {
             mirroring: Mirroring::Vertical,
             battery_backed: false,
             prg_ram_size: 0,
+            prg_nvram_size: 0,
             tv_system: TvSystem::Ntsc,
             is_nes2: false,
             prg_chr_crc32: 0,

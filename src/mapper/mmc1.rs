@@ -41,12 +41,15 @@ pub struct Mmc1 {
     last_write_cycle: Option<u64>,
 
     prg_bank_count_16k: usize,
+
+    battery: bool,
+    save_dirty: bool,
 }
 
 impl Mmc1 {
     pub fn new(cart: Cartridge) -> Self {
         let prg_bank_count_16k = (cart.prg_rom.len() / PRG_BANK_16K).max(1);
-        let prg_ram = vec![0; cart.prg_ram_size.max(0x2000)];
+        let prg_ram = vec![0; (cart.prg_ram_size + cart.prg_nvram_size).max(0x2000)];
         let chr = if cart.chr_ram {
             vec![0; 8 * 1024]
         } else {
@@ -67,6 +70,8 @@ impl Mmc1 {
             cycle_counter: 0,
             last_write_cycle: None,
             prg_bank_count_16k,
+            battery: cart.battery_backed,
+            save_dirty: false,
         };
         m.refresh_mirroring();
         m
@@ -200,7 +205,12 @@ impl Mapper for Mmc1 {
             0x6000..=0x7FFF => {
                 let i = (addr - 0x6000) as usize;
                 if let Some(slot) = self.prg_ram.get_mut(i) {
-                    *slot = data;
+                    if *slot != data {
+                        *slot = data;
+                        if self.battery {
+                            self.save_dirty = true;
+                        }
+                    }
                 }
             }
             0x8000..=0xFFFF => {
@@ -255,5 +265,23 @@ impl Mapper for Mmc1 {
 
     fn on_cpu_cycle(&mut self) {
         self.cycle_counter = self.cycle_counter.wrapping_add(1);
+    }
+
+    fn save_data(&self) -> Option<&[u8]> {
+        self.battery.then(|| self.prg_ram.as_slice())
+    }
+
+    fn load_save_data(&mut self, data: &[u8]) {
+        if self.battery && data.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(data);
+        }
+    }
+
+    fn save_dirty(&self) -> bool {
+        self.save_dirty
+    }
+
+    fn mark_saved(&mut self) {
+        self.save_dirty = false;
     }
 }

@@ -20,6 +20,7 @@ for hardware specifics and describe the model in my own words.
 - ✅ **Host audio** — cpal + blip_buf
 - ✅ **Windowed runtime** — wgpu, NTSC/PAL-paced, keyboard input
 - ✅ **Overlay UI** — egui menu (F1)
+- ✅ **Battery-backed saves** — `<rom>.sav` next to the ROM; atomic writes, autosave every 60 frames, flush on quit / ROM swap
 
 ### Supported mappers
 
@@ -76,6 +77,25 @@ over a darkened freeze-frame: Scale (1×–6×), Aspect (Auto / 1:1 / 5:4
 / 8:7 NTSC / 11:8 PAL), Recent ROMs, Load ROM, Reset, Quit. Navigate
 with ↑/↓/Enter/Esc or the mouse.
 
+## Saves
+
+Cartridges with battery-backed PRG-RAM (iNES flag6 bit 1, or the
+NES 2.0 `prg_nvram_size` byte) persist their RAM to a `.sav` file
+next to the ROM. `kirby.nes` pairs with `kirby.sav`. The save is
+written atomically (temp file + rename) so a crash mid-write leaves
+either the old save or the new one — never a torn file. Autosave
+fires every 60 emulator frames (~1 second) when RAM is dirty, plus
+once on ROM swap and once on app quit.
+
+Non-battery cartridges produce no save files.
+
+Runtime settings live in [`src/config.rs`](src/config.rs) as plain
+Rust defaults. A future settings UI will load them from
+`~/.config/vibenes/config.toml` (XDG standard) via `dirs` + `toml`.
+The `SaveStyle::ByCrc` alternative (saves in a central data dir,
+keyed by PRG+CHR CRC32 so renaming the ROM doesn't lose progress) is
+stubbed but falls through to `NextToRom` until that UI lands.
+
 ## Testing
 
 ```
@@ -99,6 +119,9 @@ Integration test suites gate against curated ROM sets:
 - `tests/dmc_dma_during_read4.rs` — 5 DMC/DMA interaction ROMs,
   strict-pattern (golden CRC `F0AB808C` on `dma_4016_read`,
   sanctioned `5E3DF9C4` on `dma_2007_read`)
+- `tests/battery_save.rs` — synthetic NROM battery cart, writes
+  PRG-RAM via the bus, saves, drops the Nes, reloads, verifies
+  persistence; asserts non-battery carts never create a `.sav`
 
 ### Cycle-exact bisection harness
 

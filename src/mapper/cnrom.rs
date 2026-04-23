@@ -20,6 +20,8 @@ pub struct Cnrom {
     chr_bank: u8,
     chr_bank_count: usize,
     prg_mirror_mask: usize,
+    battery: bool,
+    save_dirty: bool,
 }
 
 impl Cnrom {
@@ -30,7 +32,7 @@ impl Cnrom {
         } else {
             cart.prg_rom.len() - 1
         };
-        let prg_ram = vec![0; cart.prg_ram_size.max(0x2000)];
+        let prg_ram = vec![0; (cart.prg_ram_size + cart.prg_nvram_size).max(0x2000)];
         Self {
             prg_rom: cart.prg_rom,
             chr: cart.chr_rom,
@@ -40,6 +42,8 @@ impl Cnrom {
             chr_bank: 0,
             chr_bank_count,
             prg_mirror_mask,
+            battery: cart.battery_backed,
+            save_dirty: false,
         }
     }
 
@@ -59,7 +63,12 @@ impl Mapper for Cnrom {
             0x6000..=0x7FFF => {
                 let i = (addr - 0x6000) as usize;
                 if let Some(slot) = self.prg_ram.get_mut(i) {
-                    *slot = data;
+                    if *slot != data {
+                        *slot = data;
+                        if self.battery {
+                            self.save_dirty = true;
+                        }
+                    }
                 }
             }
             0x8000..=0xFFFF => {
@@ -103,5 +112,23 @@ impl Mapper for Cnrom {
 
     fn mirroring(&self) -> Mirroring {
         self.mirroring
+    }
+
+    fn save_data(&self) -> Option<&[u8]> {
+        self.battery.then(|| self.prg_ram.as_slice())
+    }
+
+    fn load_save_data(&mut self, data: &[u8]) {
+        if self.battery && data.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(data);
+        }
+    }
+
+    fn save_dirty(&self) -> bool {
+        self.save_dirty
+    }
+
+    fn mark_saved(&mut self) {
+        self.save_dirty = false;
     }
 }

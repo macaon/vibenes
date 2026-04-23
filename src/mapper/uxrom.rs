@@ -32,6 +32,8 @@ pub struct Uxrom {
     /// in the top bits never indexes past the PRG image.
     bank_mask: u8,
     prg_bank_count: usize,
+    battery: bool,
+    save_dirty: bool,
 }
 
 impl Uxrom {
@@ -52,7 +54,7 @@ impl Uxrom {
             cart.chr_rom
         };
 
-        let prg_ram = vec![0u8; cart.prg_ram_size.max(0x2000)];
+        let prg_ram = vec![0u8; (cart.prg_ram_size + cart.prg_nvram_size).max(0x2000)];
 
         Self {
             prg_rom: cart.prg_rom,
@@ -63,6 +65,8 @@ impl Uxrom {
             bank: 0,
             bank_mask,
             prg_bank_count,
+            battery: cart.battery_backed,
+            save_dirty: false,
         }
     }
 
@@ -85,7 +89,12 @@ impl Mapper for Uxrom {
             0x6000..=0x7FFF => {
                 let i = (addr - 0x6000) as usize;
                 if let Some(slot) = self.prg_ram.get_mut(i) {
-                    *slot = data;
+                    if *slot != data {
+                        *slot = data;
+                        if self.battery {
+                            self.save_dirty = true;
+                        }
+                    }
                 }
             }
             0x8000..=0xFFFF => {
@@ -134,6 +143,24 @@ impl Mapper for Uxrom {
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }
+
+    fn save_data(&self) -> Option<&[u8]> {
+        self.battery.then(|| self.prg_ram.as_slice())
+    }
+
+    fn load_save_data(&mut self, data: &[u8]) {
+        if self.battery && data.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(data);
+        }
+    }
+
+    fn save_dirty(&self) -> bool {
+        self.save_dirty
+    }
+
+    fn mark_saved(&mut self) {
+        self.save_dirty = false;
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +186,7 @@ mod tests {
             mirroring: Mirroring::Vertical,
             battery_backed: false,
             prg_ram_size: 0x2000,
+            prg_nvram_size: 0,
             tv_system: TvSystem::Ntsc,
             is_nes2: false,
             prg_chr_crc32: 0,

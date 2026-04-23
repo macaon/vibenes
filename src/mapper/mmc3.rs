@@ -136,6 +136,14 @@ pub struct Mmc3 {
     /// and `prg_ram_write_protected` flags above are the source of
     /// truth instead; this field is only read when `is_mmc6`.
     reg_a001: u8,
+    /// Battery-backed PRG-RAM flag. True when cart's flag6 bit 1 was
+    /// set; controls whether `save_data()` exposes RAM to the save
+    /// pipeline. Commercial examples: Zelda (MMC1), Crystalis (MMC3A),
+    /// Kirby's Adventure (MMC3), StarTropics (MMC6).
+    battery: bool,
+    /// Mutated-since-last-save flag. Any change to `prg_ram` from a
+    /// CPU write sets it; `mark_saved` clears it.
+    save_dirty: bool,
 }
 
 impl Mmc3 {
@@ -188,7 +196,7 @@ impl Mmc3 {
         let prg_ram = if is_mmc6 {
             vec![0u8; PRG_RAM_SIZE_MMC6]
         } else {
-            vec![0u8; cart.prg_ram_size.max(PRG_RAM_SIZE)]
+            vec![0u8; (cart.prg_ram_size + cart.prg_nvram_size).max(PRG_RAM_SIZE)]
         };
 
         let hardwired_four_screen = matches!(cart.mirroring, Mirroring::FourScreen);
@@ -222,6 +230,8 @@ impl Mmc3 {
             // $A001 = 0 on MMC6 means all four enable bits clear — the
             // cart must write non-zero before it can touch RAM.
             reg_a001: 0,
+            battery: cart.battery_backed,
+            save_dirty: false,
         }
     }
 
@@ -386,7 +396,12 @@ impl Mmc3 {
             return;
         }
         if let Some(slot) = self.prg_ram.get_mut(folded) {
-            *slot = data;
+            if *slot != data {
+                *slot = data;
+                if self.battery {
+                    self.save_dirty = true;
+                }
+            }
         }
     }
 
@@ -466,7 +481,12 @@ impl Mapper for Mmc3 {
                 } else if self.prg_ram_enabled && !self.prg_ram_write_protected {
                     let i = (addr - 0x6000) as usize;
                     if let Some(slot) = self.prg_ram.get_mut(i) {
-                        *slot = data;
+                        if *slot != data {
+                            *slot = data;
+                            if self.battery {
+                                self.save_dirty = true;
+                            }
+                        }
                     }
                 }
             }
@@ -538,6 +558,24 @@ impl Mapper for Mmc3 {
     fn irq_line(&self) -> bool {
         self.irq_line
     }
+
+    fn save_data(&self) -> Option<&[u8]> {
+        self.battery.then(|| self.prg_ram.as_slice())
+    }
+
+    fn load_save_data(&mut self, data: &[u8]) {
+        if self.battery && data.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(data);
+        }
+    }
+
+    fn save_dirty(&self) -> bool {
+        self.save_dirty
+    }
+
+    fn mark_saved(&mut self) {
+        self.save_dirty = false;
+    }
 }
 
 #[cfg(test)]
@@ -567,6 +605,7 @@ mod tests {
             mirroring: Mirroring::Vertical,
             battery_backed: false,
             prg_ram_size: PRG_RAM_SIZE,
+            prg_nvram_size: 0,
             tv_system: TvSystem::Ntsc,
             is_nes2: false,
             prg_chr_crc32: 0,
@@ -1123,5 +1162,55 @@ mod tests {
         // Write the bank value via $9FFF.
         m.cpu_write(0x9FFF, 5);
         assert_eq!(m.cpu_peek(0x8000), 5);
+    }
+
+    // ---- Battery-backed save roundtrip ----
+
+    fn battery_cart() -> Cartridge {
+        let mut c = tagged_cart();
+        c.battery_backed = true;
+        c
+    }
+
+    #[test]
+    fn battery_mmc3_roundtrip() {
+        let mut m = Mmc3::new(battery_cart());
+        assert!(m.save_data().is_some());
+        assert!(!m.save_dirty());
+
+        // Populate PRG-RAM via $6000-$7FFF (MMC3 powers up unlocked).
+        for i in 0..0x100 {
+            m.cpu_write(0x6000 + i as u16, 0xC0 ^ i as u8);
+        }
+        assert!(m.save_dirty());
+
+        let snapshot = m.save_data().unwrap().to_vec();
+        m.mark_saved();
+        assert!(!m.save_dirty());
+
+        let mut fresh = Mmc3::new(battery_cart());
+        fresh.load_save_data(&snapshot);
+        for i in 0..0x100 {
+            assert_eq!(fresh.cpu_read(0x6000 + i as u16), 0xC0 ^ i as u8);
+        }
+    }
+
+    #[test]
+    fn write_protected_prg_ram_does_not_dirty() {
+        // Game sets $A001 bit 6 (write-protect) before RAM is
+        // meaningful. Writes must be dropped AND not mark the save
+        // dirty — otherwise we'd autosave a sea of zeros after every
+        // reset.
+        let mut m = Mmc3::new(battery_cart());
+        m.cpu_write(0xA001, 0xC0); // enable + write-protect
+        m.cpu_write(0x6000, 0xAB);
+        assert!(!m.save_dirty());
+        assert_eq!(m.cpu_read(0x6000), 0x00);
+    }
+
+    #[test]
+    fn non_battery_mmc3_returns_none() {
+        let m = Mmc3::new(tagged_cart());
+        assert!(m.save_data().is_none());
     }
 }

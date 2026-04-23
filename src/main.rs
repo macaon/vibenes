@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use vibenes::app;
 use vibenes::audio;
 use vibenes::clock::Region;
+use vibenes::config::Config;
 use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
@@ -146,6 +147,15 @@ struct App {
     /// `request_inner_size` calls that on some compositors cause a
     /// resize-storm and disrupt frame pacing.
     pending_window_resize: bool,
+    /// Runtime configuration. Today it's just [`Default::default`];
+    /// when a settings UI lands this gets loaded from disk (see
+    /// [`vibenes::config`]).
+    config: Config,
+    /// Frames since last autosave attempt. Reset each time
+    /// `nes.save_battery()` is called (successful flush OR skip
+    /// because nothing was dirty). Used to gate disk writes so the
+    /// common "game sits on title screen" case is cheap.
+    frames_since_autosave: u32,
 }
 
 impl App {
@@ -188,6 +198,8 @@ impl App {
             recent_roms,
             video: VideoSettings::default(),
             pending_window_resize: false,
+            config: Config::default(),
+            frames_since_autosave: 0,
         }
     }
 
@@ -275,6 +287,20 @@ impl App {
                 // Hand the frame's audio to the ring so the cpal
                 // callback can drain it before the next wakeup.
                 nes.end_audio_frame();
+                // Periodic autosave. `save_battery` is a cheap
+                // no-op when the mapper's dirty flag is clear, so
+                // the typical game-at-idle case costs nothing. A
+                // dirty 8-32 KiB write hits the disk in <1 ms on
+                // SSD, well within the 300 ms audio ring, so we
+                // stay on the frame-loop thread for now.
+                self.frames_since_autosave =
+                    self.frames_since_autosave.saturating_add(1);
+                if self.frames_since_autosave >= self.config.save.autosave_every_n_frames {
+                    self.frames_since_autosave = 0;
+                    if let Err(e) = nes.save_battery(&self.config.save) {
+                        eprintln!("vibenes: autosave failed: {e:#}");
+                    }
+                }
             }
         }
         if let Some(nes) = self.nes.as_ref() {
@@ -403,7 +429,17 @@ impl ApplicationHandler for App {
             _ => false,
         };
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // Last-chance flush before the event loop tears down.
+                // `save_battery` is silent when there's nothing to
+                // do, so this is cheap for non-battery carts.
+                if let Some(nes) = self.nes.as_mut() {
+                    if let Err(e) = nes.save_battery(&self.config.save) {
+                        eprintln!("vibenes: shutdown save failed: {e:#}");
+                    }
+                }
+                event_loop.exit();
+            }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let Some(ui) = self.ui.as_mut() {
                     ui.on_scale_factor_changed(scale_factor as f32);
@@ -515,11 +551,28 @@ impl App {
             }
         };
         eprintln!("loaded: {}", cart.describe());
+        let incoming_crc = cart.prg_chr_crc32;
         let region = match self.nes.as_mut() {
             Some(nes) => {
+                // Flush the outgoing cart's battery RAM before we
+                // drop its mapper. After this we can't recover the
+                // bytes — swap_cartridge consumes the mapper.
+                if let Err(e) = nes.save_battery(&self.config.save) {
+                    eprintln!("vibenes: save before swap failed: {e:#}");
+                }
                 if let Err(e) = nes.swap_cartridge(cart) {
                     eprintln!("vibenes: swap failed: {e:#}");
                     return;
+                }
+                nes.attach_save_metadata(path.to_path_buf(), incoming_crc);
+                match nes.load_battery(&self.config.save) {
+                    Ok(true) => {
+                        if let Some(p) = nes.save_path(&self.config.save) {
+                            eprintln!("vibenes: loaded battery save from {}", p.display());
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => eprintln!("vibenes: load save failed: {e:#}"),
                 }
                 nes.region()
             }
@@ -539,11 +592,22 @@ impl App {
                     sink.set_cpu_clock(nes.region().cpu_clock_hz());
                     nes.attach_audio(sink);
                 }
+                nes.attach_save_metadata(path.to_path_buf(), incoming_crc);
+                match nes.load_battery(&self.config.save) {
+                    Ok(true) => {
+                        if let Some(p) = nes.save_path(&self.config.save) {
+                            eprintln!("vibenes: loaded battery save from {}", p.display());
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => eprintln!("vibenes: load save failed: {e:#}"),
+                }
                 let region = nes.region();
                 self.nes = Some(nes);
                 region
             }
         };
+        self.frames_since_autosave = 0;
         // The new ROM may have a different TV system; re-pin the frame
         // deadline to its cadence and reset the deadline anchor so we
         // don't eat the full delta at once. The window may also need
