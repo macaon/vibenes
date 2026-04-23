@@ -16,7 +16,7 @@ for hardware specifics and describe the model in my own words.
 | 6502 CPU core | All 256 opcodes (official + stable unofficial + ANE/XAA), cycle-accurate, full interrupt model including NMI hijack and branch-delays-IRQ quirk |
 | Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot pre/post-access split |
 | PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, level-triggered NMI signal (bus-side rising-edge detection), 1-cycle-delayed `rendering_enabled`, VBlank-race suppression, NTSC odd-frame dot skip, per-bit I/O open-bus decay |
-| APU | 5 channels, frame counter with `$4017` write delay, parity-driven DMC DMA stall (3/4 cycles standalone, 2/3 mid-OAM) with halt-cycle replay, staged length-counter writes, non-linear mixer |
+| APU | 5 channels, frame counter with `$4017` write delay, unified parity-gated DMC/OAM DMA get/put loop (Mesen2 port) with DMC-mid-OAM hijacking, halt-cycle replay, staged length-counter writes, non-linear mixer |
 | Host audio | cpal + blip_buf, band-limited resampling, pre-filled ring buffer |
 | Windowed runtime | wgpu/wgsl renderer, NTSC/PAL-paced, keyboard input |
 | Overlay UI | egui-based NES-mini-style menu (F1) — scale, aspect ratio, recent ROMs, file swap, reset |
@@ -47,10 +47,12 @@ Every ROM in these suites passes:
   (CRC `5E3DF9C4`). Driven by Mesen2's parity-aware DMC stall (3
   cycles entry-even, 4 entry-odd) plus a 1-tick DMC reset-timer
   alignment. See `notes/phase11/dma_iter_alignment.md`.
-- `sprdma_and_dmc_dma.nes` (1/2) — Passes with identical-to-Mesen
-  cycle pattern. The `_512.nes` variant still fails ROM-CRC
-  (cycle counts off by 1 on 2 of 16 iters) — needs the OAM DMA
-  get/put loop rewrite, see "Not yet" below.
+- `sprdma_and_dmc_dma{,_512}.nes` (2/2) — both pass with
+  Mesen-matching cycle patterns, including the 524-cycle iter 4
+  of the `_512` variant. Driven by the unified DMC/OAM DMA
+  get/put loop (port of Mesen2 `NesCpu.cpp:325-448`): DMC DMA
+  firing mid-OAM hijacks a sprite-read get cycle rather than
+  running as a separate stall. See `notes/phase11/dma_iter_alignment.md §6`.
 
 **PPU**
 - `sprite_hit_tests_2005.10.05/*` (11/11)
@@ -74,19 +76,6 @@ Every ROM in these suites passes:
 
 ### Not yet
 
-- **OAM DMA get/put loop rewrite** — `sprdma_and_dmc_dma_512.nes`
-  is the lone holdout from the DMC/DMA class. Cycle pattern is off
-  by 1 cycle on 2 of 16 iters (`525,526,525,526,**525**,**526**,...`
-  ours vs `525,526,525,526,**524**,**525**,...` Mesen). The 524s
-  in Mesen come from a get/put-loop interaction at DMC-fires-near-
-  OAM-end that the parity-only model can't capture; the standalone
-  `sprdma_and_dmc_dma.nes` already passes with identical-to-Mesen
-  cycle counts. Fix path: rewrite `Bus::run_oam_dma` as an explicit
-  per-cycle get/put loop (Mesen2 `NesCpu.cpp:399-447`), with DMC
-  service hijacking get cycles inside it rather than running as a
-  separate stall. Bounded refactor; `cpu_interrupts_v2/4-irq_and_dma`
-  is the test to keep green throughout. See
-  [`notes/phase11/dma_iter_alignment.md §5`](notes/phase11/dma_iter_alignment.md).
 - **MMC3 scanline-timing off-by-one** — `mmc3_test/4-scanline_timing`
   (both suites) fails test #3 by ≥1 PPU cycle. The A12 rise that
   clocks the counter lands later than expected in the test's

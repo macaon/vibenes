@@ -1,9 +1,20 @@
 # Phase 11 — DMA iter-alignment
 
-**STATUS: closed.** The two `dmc_dma_during_read4` ROMs that needed
-ROM-internal CRC-strict alignment now pass with the golden CRCs.
-`sprdma_and_dmc_dma_512.nes` is the only outstanding ROM in this
-class — see [§5 follow-up](#5-follow-up-sprdma_and_dmc_dma_512nes).
+**STATUS: fully closed.** All four ROMs in the DMC/OAM DMA class
+now pass on the hardware test ROMs:
+
+- `dmc_dma_during_read4/dma_4016_read.nes` → golden CRC `F0AB808C`.
+- `dmc_dma_during_read4/dma_2007_read.nes` → sanctioned CRC
+  `5E3DF9C4`.
+- `sprdma_and_dmc_dma.nes` → Mesen-matching pattern
+  (525-528 cycles/iter).
+- `sprdma_and_dmc_dma_512.nes` → Mesen-matching golden sequence
+  including the 524-cycle iter 4.
+
+The §5 follow-up (OAM DMA get/put loop rewrite) landed on branch
+`oam-getput-loop` as a port of Mesen2's unified
+`ProcessPendingDma` (`NesCpu.cpp:325-448`). See §6 for the
+landing notes.
 
 ## 1. The fix that landed
 
@@ -121,34 +132,84 @@ instr_misc 4/4, instr_timing, nes_instr_test 11/11, blargg_apu_2005
   reset offset is what introduces the cross-iter parity variance
   that lets sync_dmc converge.
 
-## 5. Follow-up — `sprdma_and_dmc_dma_512.nes`
+## 5. Follow-up — `sprdma_and_dmc_dma_512.nes` — LANDED
 
-Still fails ROM-internal CRC. Cycle pattern is off by 1 cycle on
-2 of 16 iters vs Mesen:
+Resolved by the get/put loop rewrite. Final pattern matches Mesen:
 
 ```
 Mesen (Passed):     525,526,525,526,524,525,526,527,527,528,…
-Ours (Failed):      525,526,525,526,525,526,526,527,527,528,…
-                                    ^^^      ^^^
+Ours  (Passed):     525,526,525,526,524,525,526,527,527,528,…
 ```
 
-The 524s in Mesen come from a get/put-loop interaction that the
-parity formula can't capture: when DMC fires at a specific OAM-end
-position, Mesen's loop produces 1 fewer cycle than mid-OAM DMC.
-Our parity-only model uses `standalone - 1` uniformly.
+## 6. How the rewrite lands
 
-**Fix path:** rewrite `Bus::run_oam_dma` as an explicit get/put
-cycle loop matching Mesen2 NesCpu.cpp:399-447. The DMC service then
-becomes a hijacker of get cycles inside that loop rather than a
-separate stall. Estimated 1-2 days; touches the same surface as
-phase 9's dropped refactor attempts. Branch off main, do incrementally,
-keep `cpu_interrupts_v2/4-irq_and_dma` green throughout.
+Single commit on `oam-getput-loop`. Replaced three separate paths
+(standalone DMC stall via `service_pending_dmc_dma`, OAM DMA via an
+opaque 256-iter `read/write` loop, Nestopia end-of-OAM taxonomy via
+`oam_dma_active`/`oam_dma_idx`) with one `process_pending_dma`
+modelled on Mesen2's `NesCpu.cpp:325-448`.
 
-The standalone `sprdma_and_dmc_dma.nes` already passes with
-identical-to-Mesen cycle counts, so the get/put rewrite is bounded
-to the multi-DMC-fire-per-OAM corner case.
+State added to Bus:
 
-## 6. Cross-references
+- `need_halt`, `need_dummy_read` — DMC transfer-start flags set by
+  `tick_pre_access` when the APU's DMC arms a new fetch.
+- `dmc_dma_running`, `dmc_dma_addr` — DMC DMA in flight.
+- `sprite_dma_running`, `sprite_dma_page` — sprite DMA in flight.
+- `in_dma_loop` — re-entry guard; a DMC arm detected inside a running
+  loop cycle is picked up by the outer while-condition rather than
+  recursively re-entering.
+
+State retired: `dmc_dma_active`, `oam_dma_active`, `oam_dma_idx`, plus
+the helpers `peek_with_side_effects`, `tick_cycle`, and the two
+`service_pending_dmc_dma{,_on_write}` functions.
+
+### Loop structure (Mesen port)
+
+- Pre-loop halt cycle (1 CPU cycle, reads `pending_addr`). Clears
+  `need_halt` BEFORE `tick_pre_access` so a same-cycle DMC re-arm
+  survives into the loop.
+- While `dmc_dma_running || sprite_dma_running`:
+  - Compute `get_cycle = cpu_cycles & 1 == 0`.
+  - `processCycle` equivalent: clear one pending flag (halt before
+    dummy). **Runs on every branch**, not just the dummy-read else —
+    this is the mechanism that burns the DMC halt/dummy flags down
+    during overlapping sprite reads.
+  - Get cycle: DMC fetch if both flags clear, else sprite read, else
+    dummy read of `pending_addr`.
+  - Put cycle: sprite write to `$2004` if `sprite_counter & 1`, else
+    alignment read of `pending_addr`.
+
+### Side-effect reads
+
+Non-`$4016`/`$4017` pending addresses issue real bus reads on halt /
+dummy / align cycles — this is how `$2007` gets its double buffer
+advance (the Nestopia Peek+StealCycles scaffolding is gone; the
+reads happen naturally during the loop). NES-behaviour
+`skipDummyReads` limits `$4016`/`$4017` to one shift (the halt
+cycle only), preserving `dma_4016_read`'s golden `08 08 07 08 08`.
+
+### Subtle bugs caught during bring-up
+
+1. Pre-loop halt originally cleared `need_halt` AFTER
+   `tick_pre_access`, nuking any same-cycle DMC re-arm. Moved the
+   clear to BEFORE (matches Mesen2 line 354).
+2. First iteration of the loop cleared `need_halt`/`need_dummy_read`
+   only in the dummy-read else branch. Sprite reads and writes need
+   to clear one flag per cycle too (Mesen's `processCycle` lambda),
+   else DMC can't overlap with an active OAM DMA.
+
+### Regression outcome
+
+Zero regressions across the standard sweep: instr_test-v5 16/16,
+instr_misc, cpu_interrupts_v2 5/5, cpu_timing_test6, apu_test 8/8,
+apu_reset 6/6, blargg_apu_2005 11/11, ppu_vbl_nmi 10/10,
+sprite_hit_tests 11/11, sprite_overflow 5/5, oam_stress,
+dmc_dma_during_read4 strict-pattern integration gates still green.
+`cpu_exec_space/*` was already failing under the blargg scanner
+(PPU visually shows `PASSED`, scanner misreads the font tile);
+pre-existing, unrelated to DMA.
+
+## 7. Cross-references
 
 - [tools/trace_mesen.sh](../../tools/trace_mesen.sh), [tools/mesen_trace.lua](../../tools/mesen_trace.lua) — Mesen trace harness.
 - [src/cpu/trace.rs](../../src/cpu/trace.rs) — our env-gated trace.
