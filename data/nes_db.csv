@@ -10667,3 +10667,7 @@ FFF23429,NesNtsc,,,,44,512,512,0,0,0,0,h,1,,0,,
 FFF564E7,NesNtsc,,,,4,128,128,0,0,0,0,h,1,,0,,
 FFFD46C9,NesNtsc,,,,0,16,8,0,0,0,0,v,1,,0,,
 FFFDC310,NesNtsc,,,,79,32,64,0,0,0,0,h,1,,0,,
+# vibenes additions — Rev A test ROMs (not in upstream Mesen DB)
+F312D1DE,NesNtsc,TEST,mmc3_irq_tests/5.MMC3_rev_A,MMC3A,4,16,0,8,8,0,0,h,1,,0,,
+A512BDF6,NesNtsc,TEST,mmc3_test/6-MMC6,MMC3A,4,32,8,0,8,0,0,v,1,,0,,
+633AFE6F,NesNtsc,TEST,mmc3_test_2/6-MMC3_alt,MMC3A,4,32,8,0,8,0,0,v,1,,0,,

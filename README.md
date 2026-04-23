@@ -68,18 +68,16 @@ Every ROM in these suites passes:
   hardware-unit-specific, won't-fix)
 
 **Mappers**
-- `mmc3_test/*` (6/6) and `mmc3_test_2/*` (6/6) — banking +
-  A12-filtered IRQ counter + Rev B firing + 1-PPU-cycle-accurate
-  scanline IRQ timing + Rev A semantics. The default firing mode is
-  Rev B; Rev A is activated via NES 2.0 submapper 4, a game-DB chip
-  prefix of `MMC3A` (Mesen convention), or
-  `VIBENES_MMC3_FORCE_REV_A=1`. The `6-MMC3_alt` / `6-MMC6` ROMs
-  pass under `VIBENES_MMC3_FORCE_REV_A=1` since they ship as iNES 1.0
-  and aren't in the DB.
-- `mmc3_irq_tests/*` (6/6) — `1.Clocking`, `2.Details`,
-  `3.A12_clocking`, `4.Scanline_timing`, `6.MMC3_rev_B` pass in
-  default Rev B mode; `5.MMC3_rev_A` passes under
-  `VIBENES_MMC3_FORCE_REV_A=1`.
+- `mmc3_test/*` (6/6), `mmc3_test_2/*` (6/6), `mmc3_irq_tests/*`
+  (6/6) — banking + A12-filtered IRQ counter + Rev B firing +
+  1-PPU-cycle-accurate scanline IRQ timing + Rev A semantics. The
+  default firing mode is Rev B; Rev A is activated via NES 2.0
+  submapper 4, a game-DB chip prefix of `MMC3A` (Mesen convention),
+  or `VIBENES_MMC3_FORCE_REV_A=1`. The three Rev A test ROMs
+  (`6-MMC3_alt`, `6-MMC6`, `5.MMC3_rev_A`) ship as iNES 1.0 and
+  aren't in upstream Mesen's DB, so they're added under a
+  `# vibenes additions` section in `data/nes_db.csv` with
+  `chip=MMC3A` so they auto-activate Rev A by CRC match.
 
 ### Not yet
 
