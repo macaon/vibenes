@@ -36,26 +36,28 @@ pub struct Bus {
     prev_nmi_flag: bool,
 
     open_bus: u8,
-    /// True while we're servicing a DMC DMA fetch. Prevents re-entering
-    /// the DMA service from `tick_cycle` inside the stall cycles.
-    dmc_dma_active: bool,
-    /// True while OAM DMA is running (between the halt cycle at the
-    /// start of `run_oam_dma` and the last sprite write at the end).
-    /// When a DMC DMA request arms mid-OAM-DMA, the halt + dummy
-    /// stall cycles are absorbed into the sprite-DMA cycles that
-    /// were already going to run — the total DMC insertion drops
-    /// from 4 to 2 cycles (Nestopia's `DMC_R4014` case,
-    /// `NstApu.cpp:2297-2311`). Required by `sprdma_and_dmc_dma`
-    /// for a stable cycle count across iterations.
-    oam_dma_active: bool,
-    /// Current OAM DMA byte index (0..256), valid only while
-    /// `oam_dma_active` is true. Updated by `run_oam_dma` before
-    /// each sprite read. Used by `service_pending_dmc_dma` to pick
-    /// the exact stall-cycle count from Nestopia's end-of-OAM
-    /// taxonomy (`cpu_inline.h:1381-1392`): index 253 → 1 cycle
-    /// (`DMC_NNL_DMA`), 254 → 2 (`DMC_R4014`), 255 → 3
-    /// (`DMC_CPU_WRITE`), everything else → 2.
-    oam_dma_idx: u16,
+
+    /// DMA state machine — Mesen2 port (`NesCpu.cpp:325-448`). Both
+    /// DMC DMA and OAM (sprite) DMA flow through the same parity-gated
+    /// get/put loop in [`Bus::process_pending_dma`]. DMC arming inside
+    /// `tick_pre_access` (after the APU ticks) sets `need_halt` and
+    /// `need_dummy_read`; the next CPU read checks `need_halt` and, if
+    /// set, runs the loop until both `dmc_dma_running` and
+    /// `sprite_dma_running` are false. This is what lets DMC
+    /// mid-OAM-DMA naturally hijack a sprite-DMA get cycle (the
+    /// `sprdma_and_dmc_dma_512` 524-cycle pattern).
+    ///
+    /// `in_dma_loop` guards against nested entry: `tick_pre_access`
+    /// inside a DMA cycle may detect a newly-armed DMC DMA, but the
+    /// outer loop picks it up via the while-condition rather than
+    /// recursively re-entering `process_pending_dma`.
+    need_halt: bool,
+    need_dummy_read: bool,
+    dmc_dma_running: bool,
+    dmc_dma_addr: u16,
+    sprite_dma_running: bool,
+    sprite_dma_page: u8,
+    in_dma_loop: bool,
     /// Host audio output. `None` in test ROMs / headless runs where
     /// opening a cpal stream would be pointless or unavailable.
     /// Attached from [`crate::nes::Nes::attach_audio`] after the bus is
@@ -103,9 +105,13 @@ impl Bus {
             prev_nmi_pending: false,
             prev_nmi_flag: false,
             open_bus: 0,
-            dmc_dma_active: false,
-            oam_dma_active: false,
-            oam_dma_idx: 0,
+            need_halt: false,
+            need_dummy_read: false,
+            dmc_dma_running: false,
+            dmc_dma_addr: 0,
+            sprite_dma_running: false,
+            sprite_dma_page: 0,
+            in_dma_loop: false,
             audio_sink: None,
         }
     }
@@ -131,7 +137,9 @@ impl Bus {
         if !matches!(addr, 0x2000..=0x3FFF) {
             return self.read(addr);
         }
-        self.service_pending_dmc_dma(addr);
+        if self.need_halt {
+            self.process_pending_dma(addr);
+        }
         self.tick_pre_access(true);
         let value = self.ppu.cpu_read_dummy(addr, &mut *self.mapper);
         self.open_bus = value;
@@ -140,14 +148,15 @@ impl Bus {
     }
 
     pub fn read(&mut self, addr: u16) -> u8 {
-        // Service DMC DMA BEFORE this cycle's `tick_pre_access`, per
-        // Mesen2's `MemoryRead` order
-        // (`NesCpu.cpp:261-265`: `ProcessPendingDma → StartCpuCycle
-        // → Read`). Halt cycle BECOMES the cycle the CPU would
-        // have read; the post-service `tick_pre_access` is the
-        // original read. Matches Mesen's cycle-count positioning
-        // of the CPU's bus operation after DMA service.
-        self.service_pending_dmc_dma(addr);
+        // Process any pending DMA before the CPU's read, per Mesen2's
+        // `MemoryRead` order (`NesCpu.cpp:261-265`: `ProcessPendingDma
+        // → StartCpuCycle → Read`). `need_halt` is the flag the APU's
+        // DMC or the OAM path raises; when set, `process_pending_dma`
+        // runs the get/put loop until all DMA is drained, then returns
+        // and the CPU's original read proceeds on the next cycle.
+        if self.need_halt {
+            self.process_pending_dma(addr);
+        }
         self.tick_pre_access(true);
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
@@ -197,34 +206,30 @@ impl Bus {
                 // STA $4014's final write cycle.
                 self.tick_post_access(false);
                 // Snapshot the CPU's penultimate-cycle interrupt samples
-                // so they survive OAM DMA's 513/514 stall cycles. Each
-                // DMA cycle's `tick_pre_access` overwrites
-                // `prev_irq_line`/`prev_nmi_pending`; without a
-                // save/restore, STA's end-of-step poll would see
-                // end-of-DMA state and mis-attribute any IRQ/NMI that
-                // asserted during the DMA window to STA itself. The
-                // next instruction's cycle-1 tick re-captures
-                // `bus.irq_line` (which stays live across DMA) so a
-                // DMA-window assertion still fires on the cycle after
-                // DMA releases — matching puNES's explicit `irq.delay`
-                // guard and Mesen2's lazy-DMA-inside-MemoryRead model.
-                // Required by `cpu_interrupts_v2/4-irq_and_dma.nes`.
+                // so they survive OAM DMA's 513/514 cycles. Each DMA
+                // cycle's `tick_pre_access` overwrites `prev_irq_line`
+                // / `prev_nmi_pending`; without a save/restore, STA's
+                // end-of-step poll would see end-of-DMA state and
+                // mis-attribute any IRQ/NMI that asserted during the
+                // DMA window to STA itself. The next instruction's
+                // cycle-1 tick re-captures `bus.irq_line` (which stays
+                // live across DMA) so a DMA-window assertion still
+                // fires on the cycle after DMA releases — matches
+                // Mesen2's lazy-DMA-inside-MemoryRead model. Required
+                // by `cpu_interrupts_v2/4-irq_and_dma.nes`.
                 let saved_prev_irq = self.prev_irq_line;
                 let saved_prev_nmi = self.prev_nmi_pending;
-                // Nesdev "OAM DMA": 513 CPU cycles total, plus one more
-                // (514) if the DMA's halt cycle lands on a "put" (odd)
-                // cycle and needs to be aligned to the following "get".
-                // Our `cpu_cycles` counter is sampled AFTER STA's
-                // `tick_post_access`, so it reflects the cycle just
-                // completed; the halt cycle that follows runs at
-                // `cpu_cycles + 1`. The extra alignment cycle is
-                // therefore needed when `cpu_cycles` itself is EVEN
-                // (halt lands on odd). Confirmed against
-                // `cpu_interrupts_v2/4-irq_and_dma`: with the inverted
-                // condition, the column 8→9 boundary lands on dly=527
-                // as blargg's reference table requires.
-                let extra_idle = (self.clock.cpu_cycles() & 1) == 0;
-                self.run_oam_dma(data, extra_idle);
+                // Arm OAM DMA and run the shared get/put loop. The
+                // pending-read address is $4014 itself (write-only, so
+                // reads during the loop's halt/align cycles return
+                // open bus without side effects). Mesen2 defers this
+                // to the next instruction's MemoryRead; we run it
+                // synchronously here for the same net effect — the
+                // CPU can't do anything else while halted anyway.
+                self.sprite_dma_running = true;
+                self.sprite_dma_page = data;
+                self.need_halt = true;
+                self.process_pending_dma(0x4014);
                 self.prev_irq_line = saved_prev_irq;
                 self.prev_nmi_pending = saved_prev_nmi;
                 return;
@@ -247,38 +252,6 @@ impl Bus {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x6000..=0xFFFF => self.mapper.cpu_peek(addr),
             _ => 0,
-        }
-    }
-
-    /// Side-effect peek — performs the same register state mutations a
-    /// normal read would (controller shift, PPU buffer advance, frame
-    /// IRQ clear on `$4015`, PPU status read-clear, etc.) WITHOUT
-    /// advancing the master clock. Used by DMC DMA service to model
-    /// Nestopia's `Peek(readAddress)` behavior when DMA collides with a
-    /// CPU read in the same cycle (`NstApu.cpp:2313-2328`): the extra
-    /// buffer advances / controller shifts happen instantaneously
-    /// before the DMA's stall cycles run.
-    fn peek_with_side_effects(&mut self, addr: u16) {
-        match addr {
-            0x2000..=0x3FFF => {
-                let _ = self.ppu.cpu_read(addr, &mut *self.mapper);
-            }
-            0x4015 => {
-                let _ = self.apu.read_status();
-            }
-            0x4016 => {
-                let _ = self.controllers[0].read();
-            }
-            0x4017 => {
-                let _ = self.controllers[1].read();
-            }
-            _ => {
-                // Addresses without PPU/APU/controller side effects
-                // (RAM, PRG-ROM, WRAM, unmapped). The DMA's presence
-                // on the bus still broadcasts the address, but the
-                // devices on those ranges don't latch it as a new
-                // access.
-            }
         }
     }
 
@@ -314,6 +287,20 @@ impl Bus {
         self.apu.tick_cpu_cycle();
         self.mapper.on_cpu_cycle();
         self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
+
+        // If the APU's DMC just armed a DMA this cycle, promote the
+        // request into bus-side DMA state so the next CPU read (or
+        // the running DMA loop) picks it up. Matches Mesen2's
+        // `ApuClock → DmcProcessClock → StartDmcTransfer` pathway
+        // (`DeltaModulationChannel.cpp:247-277`, `NesCpu.cpp:432-437`).
+        if !self.dmc_dma_running {
+            if let Some(req) = self.apu.take_dmc_dma_request() {
+                self.dmc_dma_running = true;
+                self.need_halt = true;
+                self.need_dummy_read = true;
+                self.dmc_dma_addr = req.addr;
+            }
+        }
     }
 
     /// End-of-cycle phase — runs after the CPU's bus access.
@@ -337,129 +324,157 @@ impl Bus {
         }
     }
 
-    /// Combined tick entry — used for stall cycles inside OAM/DMC
-    /// DMA that have no CPU-side access. Treated as a read cycle
-    /// (matching Mesen2's `StartCpuCycle(true)` call inside its DMA
-    /// stall path, `NesCpu.cpp:396-446`).
-    fn tick_cycle(&mut self) {
+
+    /// Unified DMA processor — Mesen2 port (`NesCpu.cpp:325-448`).
+    /// Handles DMC DMA, OAM (sprite) DMA, and their interleave in a
+    /// single parity-gated get/put loop:
+    ///
+    /// - **Get cycles** (even `cpu_cycles`): DMC read if ready, else
+    ///   sprite read, else dummy read of `pending_addr`.
+    /// - **Put cycles** (odd): sprite write to `$2004` when a sprite
+    ///   read just completed, else an alignment read of
+    ///   `pending_addr`.
+    ///
+    /// The halt cycle is run outside the loop. `need_halt` /
+    /// `need_dummy_read` are cleared one-at-a-time by the loop so the
+    /// "halt → dummy → DMC-read" ordering inside the while is driven
+    /// by parity, not hardcoded counts. When DMC fires mid-OAM, its
+    /// fetch hijacks a get cycle that would have been a sprite read,
+    /// which is what produces the per-iter 524 vs 525 cycle variance
+    /// in `sprdma_and_dmc_dma_512` (can't be captured by a flat
+    /// "standalone - 1" formula).
+    ///
+    /// Side-effect reads during halt / dummy / align cycles: for most
+    /// `pending_addr` ranges the DMA issues a real bus read (PPU
+    /// buffer advances on `$2007`, controller shifts on `$4016`/
+    /// `$4017`). For the NES-flavour `$4016`/`$4017` case Mesen's
+    /// `skipDummyReads` rule limits the shift to the halt cycle only
+    /// — required by `dmc_dma_during_read4/dma_4016_read` (golden
+    /// `08 08 07 08 08`).
+    fn process_pending_dma(&mut self, pending_addr: u16) {
+        if self.in_dma_loop {
+            return;
+        }
+        self.in_dma_loop = true;
+
+        // NES behaviour: subsequent controller reads during the DMA
+        // are suppressed (only the halt cycle shifts the latch). Non-
+        // `$4016`/`$4017` pending addresses get a real read on every
+        // halt/dummy/align cycle, producing the multi-buffer-advance
+        // behaviour for `$2007` and the single-shift behaviour for
+        // the controllers.
+        let skip_dummy_reads = pending_addr == 0x4016 || pending_addr == 0x4017;
+
+        // Halt cycle — always runs once. `need_halt` is cleared
+        // BEFORE `tick_pre_access` (Mesen2 line 354) so that if the
+        // APU tick inside this cycle re-arms DMC (same-cycle buffer
+        // drain after the halt is decided), the new `need_halt=true`
+        // survives into the loop — the halt-cycle clear was for the
+        // entering DMA's flag, not a new one that armed mid-cycle.
+        self.need_halt = false;
         self.tick_pre_access(true);
+        let _ = self.dma_bus_read(pending_addr);
         self.tick_post_access(true);
+
+        let mut sprite_counter: u16 = 0;
+        let mut sprite_byte: u8 = 0;
+
+        while self.dmc_dma_running || self.sprite_dma_running {
+            let get_cycle = (self.clock.cpu_cycles() & 1) == 0;
+            // Mesen's `processCycle` lambda — clear exactly one
+            // pending flag (halt > dummy priority) per DMA cycle,
+            // regardless of which branch actually runs. This is the
+            // mechanism that lets need_halt / need_dummy_read burn
+            // down while OAM DMA is servicing sprite reads, so the
+            // DMC's halt cycle can overlap with a sprite read rather
+            // than costing an extra standalone cycle.
+            let clear_flag = if self.need_halt {
+                self.need_halt = false;
+                true
+            } else if self.need_dummy_read {
+                self.need_dummy_read = false;
+                true
+            } else {
+                false
+            };
+            if get_cycle {
+                if self.dmc_dma_running && !clear_flag {
+                    // DMC fetch — uses `mapper.cpu_read` direct so
+                    // the PRG bus sees the DMC address, not
+                    // `pending_addr` (matches Mesen2 line 406:
+                    // `ProcessDmaRead(_apu->GetDmcReadAddress(), …)`).
+                    self.tick_pre_access(true);
+                    let byte = self.mapper.cpu_read(self.dmc_dma_addr);
+                    self.tick_post_access(true);
+                    self.apu.dmc_dma_complete(byte);
+                    self.dmc_dma_running = false;
+                } else if self.sprite_dma_running {
+                    // Sprite DMA read — sprite_counter indexes bytes
+                    // 0..255 (the read slot of each read/write pair).
+                    let sprite_addr =
+                        ((self.sprite_dma_page as u16) << 8) | (sprite_counter >> 1);
+                    self.tick_pre_access(true);
+                    sprite_byte = self.dma_bus_read(sprite_addr);
+                    self.tick_post_access(true);
+                    sprite_counter = sprite_counter.wrapping_add(1);
+                } else {
+                    // DMC waiting, no sprite DMA — dummy read of
+                    // pending_addr (clear_flag above already
+                    // consumed one pending flag).
+                    self.tick_pre_access(true);
+                    if !skip_dummy_reads {
+                        let _ = self.dma_bus_read(pending_addr);
+                    }
+                    self.tick_post_access(true);
+                }
+            } else {
+                // Put cycle.
+                if self.sprite_dma_running && (sprite_counter & 1) == 1 {
+                    // Sprite write — commit the byte read last cycle
+                    // to $2004.
+                    self.tick_pre_access(false);
+                    self.ppu.cpu_write(0x2004, sprite_byte, &mut *self.mapper);
+                    self.open_bus = sprite_byte;
+                    self.tick_post_access(false);
+                    sprite_counter = sprite_counter.wrapping_add(1);
+                    if sprite_counter >= 0x200 {
+                        self.sprite_dma_running = false;
+                    }
+                } else {
+                    // Alignment read — happens pre-sprite-DMA to
+                    // land on an even get cycle, or between DMC
+                    // halt/dummy and DMC read.
+                    self.tick_pre_access(true);
+                    if !skip_dummy_reads {
+                        let _ = self.dma_bus_read(pending_addr);
+                    }
+                    self.tick_post_access(true);
+                }
+            }
+        }
+
+        self.in_dma_loop = false;
     }
 
-    fn run_oam_dma(&mut self, page: u8, extra_idle: bool) {
-        // 513 or 514 cycles beyond STA $4014's own 4 cycles:
-        //   - 1 alignment idle (always)
-        //   - 1 extra idle if the DMA began on an odd CPU cycle
-        //   - 256 read/write pairs = 512 cycles
-        //
-        // `oam_dma_active` is set across the whole window so
-        // `service_pending_dmc_dma` can cut its stall cycles from 4
-        // to 2 when DMC DMA fires mid-OAM — the halt + dummy cycles
-        // overlap with sprite-DMA's own bus-busy cycles (Nestopia
-        // `DMC_R4014`, `NstApu.cpp:2297-2311`).
-        self.oam_dma_active = true;
-        self.oam_dma_idx = 0;
-        self.tick_cycle();
-        if extra_idle {
-            self.tick_cycle();
-        }
-        let base = (page as u16) << 8;
-        for i in 0..=0xFFu16 {
-            self.oam_dma_idx = i;
-            let byte = self.read(base | i);
-            self.write(0x2004, byte);
-        }
-        self.oam_dma_active = false;
-    }
-
-    /// Consume a pending DMC DMA request, if any, and insert the stall
-    /// cycles required to fetch the sample byte. Called at the top of
-    /// [`Bus::read`] with the CPU's pending read address so the halt
-    /// cycle can replay the read on the bus — real hardware behavior
-    /// that causes one extra `$4016` / `$4017` shift when DMC DMA
-    /// fires during a controller read (`dmc_dma_during_read4/
-    /// dma_4016_read`).
-    ///
-    /// Cycle-count model — port of Mesen2's `ProcessPendingDma`
-    /// (`NesCpu.cpp:325-448`). The DMA inserts:
-    /// 1. **Halt** (1 cycle): dummy read of `pending_addr` (the
-    ///    "controller double-read"). Skipped for `$4016`/`$4017` on
-    ///    the post-halt loop iters but still happens here.
-    /// 2. **Dummy** (1 cycle): always runs, regardless of parity.
-    /// 3. **Align** (0 or 1 cycle): runs only if cycle parity after
-    ///    the dummy is odd (put cycle) — DMC must read on a get/even
-    ///    cycle.
-    /// 4. **DMC read** (1 cycle): fetches the sample byte at
-    ///    `DMC.current_addr`.
-    ///
-    /// Total: **3 cycles when entry-cycle is even, 4 when odd**.
-    /// (Mesen2 derivation: at entry CycleCount=N, halt → N+1, dummy
-    /// → N+2; the next get cycle is N+2 if even, else N+3 → DMC
-    /// read.) This is what makes the standalone DMC DMA shorter than
-    /// our previous hardcoded 4 — and matches the trace bisection
-    /// against Mesen on `dma_4016_read.nes`.
-    ///
-    /// During OAM DMA the cycle counts shrink further because the
-    /// halt/dummy cycles are absorbed into sprite-DMA's own bus-busy
-    /// cycles. Until the OAM DMA loop is rewritten as an explicit
-    /// get/put loop (next phase), we keep the Nestopia end-of-OAM
-    /// taxonomy here as a stopgap.
-    fn service_pending_dmc_dma(&mut self, pending_addr: u16) {
-        if self.dmc_dma_active {
-            return;
-        }
-        let Some(req) = self.apu.take_dmc_dma_request() else {
-            return;
+    /// Bus read as issued by the DMA unit (Mesen2 `ProcessDmaRead`,
+    /// `NesCpu.cpp:450-467`). Performs the same side-effect match as
+    /// [`Bus::read`] but without the `tick_pre_access` /
+    /// `tick_post_access` calls — those are driven explicitly by the
+    /// DMA loop so the cycle accounting stays in our hands.
+    fn dma_bus_read(&mut self, addr: u16) -> u8 {
+        let value = match addr {
+            0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
+            0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
+            0x4015 => self.apu.read_status(),
+            0x4016 => 0x40 | (self.controllers[0].read() & 1),
+            0x4017 => 0x40 | (self.controllers[1].read() & 1),
+            0x4018..=0x401F => self.open_bus,
+            0x4020..=0x5FFF => self.mapper.cpu_read_ex(addr).unwrap_or(self.open_bus),
+            0x6000..=0xFFFF => self.mapper.cpu_read(addr),
+            _ => self.open_bus,
         };
-        self.dmc_dma_active = true;
-
-        let entry_cycle = self.clock.cpu_cycles();
-        let is_4xxx = (pending_addr & 0xF000) == 0x4000;
-
-        // Stall cycle count: Mesen2's parity-driven formula. Even
-        // entry → 3 cycles; odd entry → 4 cycles. During OAM DMA we
-        // fall back to the Nestopia end-of-OAM taxonomy until the
-        // get/put loop rewrite lands.
-        // Mesen2-style parity-driven cost. Standalone DMC stall:
-        // halt(1) + dummy(1) + [align(1)] + DMC-read(1). The
-        // alignment is elided when entry-cycle is even, so even → 3
-        // and odd → 4 cycles. During OAM DMA the DMC-read steals an
-        // OAM get cycle (the OAM read is deferred to the next get,
-        // not skipped), so total insertion drops by 1 vs standalone:
-        // even → 2, odd → 3.
-        let standalone = if (entry_cycle & 1) == 0 { 3 } else { 4 };
-        let stall_cycles = if self.oam_dma_active {
-            standalone - 1
-        } else {
-            standalone
-        };
-
-        // Pending-address side-effect peeks. In Mesen each non-DMC
-        // stall cycle does an actual bus read of `pending_addr`,
-        // which advances PPU buffer / shifts controller / clears
-        // frame IRQ. We collapse those into instantaneous peeks
-        // before the stall (Nestopia's `Peek+StealCycles` shape).
-        //
-        // Peek count = stall_cycles - 1 for non-`$4xxx` (the DMC
-        // read cycle itself doesn't read `pending_addr`); 1 peek for
-        // `$4016`/`$4017` (Mesen `skipDummyReads = true` for the
-        // controllers, so only the halt shifts the latch).
-        let peek_count = if is_4xxx {
-            1
-        } else {
-            stall_cycles - 1
-        };
-        for _ in 0..peek_count {
-            self.peek_with_side_effects(pending_addr);
-        }
-
-        for _ in 0..stall_cycles {
-            self.tick_cycle();
-        }
-
-        let byte = self.mapper.cpu_read(req.addr);
-        self.apu.dmc_dma_complete(byte);
-        self.dmc_dma_active = false;
+        self.open_bus = value;
+        value
     }
 }
 
@@ -514,10 +529,13 @@ mod tests {
     #[test]
     fn oam_dma_halt_on_put_runs_514_beyond_sta() {
         let mut bus = build_bus();
-        // Tick once so cpu_cycles=1 before STA. STA's tick_pre_access
-        // brings it to 2 (even) → extra_idle=true → DMA = 514 cycles
-        // beyond STA. Total ticks in `write()` = 1 + 514 = 515.
-        bus.tick_cycle();
+        // Advance cpu_cycles by 1 (a cheap RAM read) so STA enters on
+        // the opposite parity from the "halt_on_get" test. With
+        // cpu_cycles=1 before STA, the write-cycle pushes it to 2 and
+        // the halt lands on cycle 3 (odd get-cycle prereq), requiring
+        // one align cycle → DMA = 514 cycles beyond STA's own cycle.
+        // Total ticks in `write()` = 1 + 514 = 515.
+        let _ = bus.read(0x0000);
         let before = bus.clock.cpu_cycles();
         bus.write(0x4014, 0x00);
         let dma_cycles = bus.clock.cpu_cycles() - before;
