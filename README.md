@@ -15,7 +15,7 @@ for hardware specifics and describe the model in my own words.
 | iNES 1.0 / NES 2.0 loader | Complete, CRC32-keyed game DB for region + chip detection |
 | 6502 CPU core | All 256 opcodes (official + stable unofficial + ANE/XAA), cycle-accurate, full interrupt model including NMI hijack and branch-delays-IRQ quirk |
 | Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot pre/post-access split, unified parity-gated DMC + OAM DMA get/put loop (Mesen2 port) with mid-OAM DMC hijacking |
-| PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, level-triggered NMI signal (bus-side rising-edge detection), 1-cycle-delayed `rendering_enabled`, VBlank-race suppression, NTSC odd-frame dot skip, per-bit I/O open-bus decay |
+| PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, level-triggered NMI signal (bus-side rising-edge detection), 1-cycle-delayed `rendering_enabled`, VBlank-race suppression, NTSC odd-frame dot skip, per-bit I/O open-bus decay, forced-blanking palette peek (`full_palette.nes`) |
 | APU | 5 channels, frame counter with `$4017` write delay, DMC with transfer-start delay + halt-cycle replay, staged length-counter writes, non-linear mixer |
 | Host audio | cpal + blip_buf, band-limited resampling, pre-filled ring buffer |
 | Windowed runtime | wgpu/wgsl renderer, NTSC/PAL-paced, keyboard input |

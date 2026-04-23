@@ -646,6 +646,26 @@ impl Ppu {
     fn render_pixel(&mut self, rendering: bool) {
         let x = (self.dot - 1) as usize;
         let y = self.scanline as usize;
+
+        // Rendering-disabled palette peek (Mesen2 DefaultNesPpu.h:24-34,
+        // nesdev "Forced blanking"): if rendering is off AND the PPU's
+        // internal `v` register points into $3F00-$3FFF, the pixel
+        // shown is the palette byte at `v` instead of the normal
+        // backdrop. Visual palette tests (blargg full_palette.nes)
+        // use this to sweep all 64 entries by writing `v` via $2006
+        // during each scanline.
+        if !rendering && (self.v & 0x3F00) == 0x3F00 {
+            let pal_byte =
+                (self.read_palette(0x3F00 | (self.v & 0x1F)) & 0x3F) as usize;
+            let [r, g, b] = NES_PALETTE[pal_byte];
+            let i = (y * FRAME_WIDTH + x) * 4;
+            self.frame_buffer[i] = r;
+            self.frame_buffer[i + 1] = g;
+            self.frame_buffer[i + 2] = b;
+            self.frame_buffer[i + 3] = 0xFF;
+            return;
+        }
+
         let bg_enabled = rendering && (self.mask & 0x08) != 0;
         let sp_enabled = rendering && (self.mask & 0x10) != 0;
 
