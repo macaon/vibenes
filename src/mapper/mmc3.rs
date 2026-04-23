@@ -1,4 +1,4 @@
-//! MMC3 / TxROM (mapper 4).
+//! MMC3 / TxROM (mapper 4) + MMC6 / HKROM sub-mode.
 //!
 //! The MMC3 is the workhorse NES mapper — roughly 28% of the licensed
 //! library. Four register pairs at $8000-$FFFF decoded by A0 + address:
@@ -37,8 +37,23 @@
 //! 2K-aligned (matches Mesen2 `WriteRegister` case $8001 with
 //! `_currentRegister <= 1`).
 //!
+//! **MMC6 / HKROM** (used by StarTropics, etc.) is mapper 4 with NES 2.0
+//! submapper 1. Semantic differences we model as a sub-mode of `Mmc3`:
+//!
+//! - **On-chip PRG-RAM**: 1 KiB (not 8 KiB), mirrored four times across
+//!   `$7000-$7FFF`. `$6000-$6FFF` is not wired — reads return 0, writes
+//!   are dropped.
+//! - **Two 512-byte halves** with independent per-direction enables:
+//!   - `$7000-$71FF` ("bank 0") gated by `$A001` bits 4/5 (write/read).
+//!   - `$7200-$73FF` ("bank 1") gated by `$A001` bits 6/7 (write/read).
+//! - **Global chip-enable** at `$8000` bit 5. When clear, the entire
+//!   1 KiB is inaccessible regardless of `$A001`.
+//! - Power-on: all enables clear — the cart must opt in before it can
+//!   read or write RAM.
+//!
 //! Clean-room references (behavioral only, no copied code):
-//! - `~/Git/Mesen2/Core/NES/Mappers/Nintendo/MMC3.h`
+//! - `~/Git/Mesen2/Core/NES/Mappers/Nintendo/MMC3.h` (MMC6 decoding
+//!   mirrors the `firstBankAccess` / `lastBankAccess` model there)
 //! - `~/Git/Mesen2/Core/NES/Mappers/A12Watcher.h`
 //! - `~/Git/puNES/src/core/mappers/MMC3.c`
 //! - `~/Git/puNES/src/core/irqA12.c`
@@ -50,6 +65,7 @@ use crate::rom::{Cartridge, Mirroring};
 const PRG_BANK_8K: usize = 8 * 1024;
 const CHR_BANK_1K: usize = 1024;
 const PRG_RAM_SIZE: usize = 8 * 1024;
+const PRG_RAM_SIZE_MMC6: usize = 1024;
 
 /// Minimum number of PPU cycles A12 must be held low before the next
 /// rising edge is counted by the IRQ counter. Mesen's `A12Watcher`
@@ -105,6 +121,21 @@ pub struct Mmc3 {
     /// (Mesen convention), or the `VIBENES_MMC3_FORCE_REV_A` env var
     /// for test ROMs that ship as iNES 1.0.
     alt_irq_behavior: bool,
+
+    /// MMC6 / HKROM sub-mode. When set, `$6000-$7FFF` handling follows
+    /// the MMC6 model (1 KiB at `$7000-$7FFF`, per-half enables) instead
+    /// of the MMC3 model (8 KiB at `$6000-$7FFF`, chip-level enable).
+    /// Two activation paths (see `Mmc3::new`): NES 2.0 submapper 1, or
+    /// game-DB chip prefix "MMC6" (Mesen convention for HKROM carts).
+    /// Independent of `alt_irq_behavior` — MMC6 carts may use either
+    /// Rev A or Rev B IRQ semantics.
+    is_mmc6: bool,
+    /// Raw byte last written to `$A001`. On MMC6, bits 4-7 gate RAM
+    /// access per 512-byte half (bits 4/5 = bank 0 write/read,
+    /// bits 6/7 = bank 1 write/read). On MMC3 the `prg_ram_enabled`
+    /// and `prg_ram_write_protected` flags above are the source of
+    /// truth instead; this field is only read when `is_mmc6`.
+    reg_a001: u8,
 }
 
 impl Mmc3 {
@@ -125,9 +156,16 @@ impl Mmc3 {
         //   no submapper info, so a runtime override is the only way
         //   to validate the Rev A code path against them.
         let mut alt_irq_behavior = cart.is_nes2 && cart.submapper == 4;
+        // MMC6 / HKROM detection. Submapper 1 is the NES 2.0 convention
+        // for HKROM; the game DB chip prefix "MMC6" covers commercial
+        // carts that pre-date NES 2.0 headers (StarTropics &c.).
+        let mut is_mmc6 = cart.is_nes2 && cart.submapper == 1;
         if let Some(entry) = crate::gamedb::lookup(cart.prg_chr_crc32) {
             if entry.chip.starts_with("MMC3A") {
                 alt_irq_behavior = true;
+            }
+            if entry.chip.starts_with("MMC6") {
+                is_mmc6 = true;
             }
         }
         if std::env::var("VIBENES_MMC3_FORCE_REV_A").is_ok() {
@@ -143,7 +181,15 @@ impl Mmc3 {
         };
         let chr_bank_count_1k = (chr.len() / CHR_BANK_1K).max(1);
 
-        let prg_ram = vec![0u8; cart.prg_ram_size.max(PRG_RAM_SIZE)];
+        // MMC6's 1 KiB is hardwired on-chip — the iNES `prg_ram_size`
+        // (often reported as 8 KiB for HKROM carts) is misleading here.
+        // MMC3 external-WRAM carts get at least 8 KiB regardless of
+        // what the header claims.
+        let prg_ram = if is_mmc6 {
+            vec![0u8; PRG_RAM_SIZE_MMC6]
+        } else {
+            vec![0u8; cart.prg_ram_size.max(PRG_RAM_SIZE)]
+        };
 
         let hardwired_four_screen = matches!(cart.mirroring, Mirroring::FourScreen);
         let mirroring = cart.mirroring;
@@ -157,6 +203,10 @@ impl Mmc3 {
             bank_regs: [0; 8],
             mirroring,
             hardwired_four_screen,
+            // MMC3 powers up with RAM enabled (permissive — matches
+            // most carts' expectations and blargg test behavior).
+            // For MMC6 these fields are ignored; the equivalent gate
+            // is `bank_select & 0x20` + `reg_a001` bits 4-7.
             prg_ram_enabled: true,
             prg_ram_write_protected: false,
             prg_bank_count_8k,
@@ -168,6 +218,10 @@ impl Mmc3 {
             irq_line: false,
             a12_low_since: None,
             alt_irq_behavior,
+            is_mmc6,
+            // $A001 = 0 on MMC6 means all four enable bits clear — the
+            // cart must write non-zero before it can touch RAM.
+            reg_a001: 0,
         }
     }
 
@@ -290,6 +344,58 @@ impl Mmc3 {
         bank * CHR_BANK_1K + offset
     }
 
+    /// MMC6 `$6000-$7FFF` read. `$6000-$6FFF` is not mapped — returns 0.
+    /// `$7000-$7FFF` folds to the 1 KiB on-chip RAM (mirrored four
+    /// times) with bit 9 of the folded offset selecting the 512-byte
+    /// half (0 = bank 0 at `$7000-$71FF`, 1 = bank 1 at `$7200-$73FF`).
+    /// Gated by `$8000` bit 5 (chip enable) and the matching `$A001`
+    /// read-enable bit; disabled reads return 0.
+    fn mmc6_read(&self, addr: u16) -> u8 {
+        if !self.mmc6_chip_enabled() || addr < 0x7000 {
+            return 0;
+        }
+        let folded = (addr as usize) & (PRG_RAM_SIZE_MMC6 - 1);
+        let high_half = (folded & 0x200) != 0;
+        let readable = if high_half {
+            (self.reg_a001 & 0x80) != 0
+        } else {
+            (self.reg_a001 & 0x20) != 0
+        };
+        if !readable {
+            return 0;
+        }
+        *self.prg_ram.get(folded).unwrap_or(&0)
+    }
+
+    /// MMC6 `$6000-$7FFF` write, mirror of `mmc6_read` with the matching
+    /// per-half write-enable bits from `$A001` (bank 0: bit 4; bank 1:
+    /// bit 6). Writes with the chip disabled or the enable clear are
+    /// silently dropped.
+    fn mmc6_write(&mut self, addr: u16, data: u8) {
+        if !self.mmc6_chip_enabled() || addr < 0x7000 {
+            return;
+        }
+        let folded = (addr as usize) & (PRG_RAM_SIZE_MMC6 - 1);
+        let high_half = (folded & 0x200) != 0;
+        let writable = if high_half {
+            (self.reg_a001 & 0x40) != 0
+        } else {
+            (self.reg_a001 & 0x10) != 0
+        };
+        if !writable {
+            return;
+        }
+        if let Some(slot) = self.prg_ram.get_mut(folded) {
+            *slot = data;
+        }
+    }
+
+    /// Global MMC6 chip-enable: `$8000` bit 5. When clear, the whole
+    /// 1 KiB is inaccessible regardless of `$A001` — power-on state.
+    fn mmc6_chip_enabled(&self) -> bool {
+        (self.bank_select & 0x20) != 0
+    }
+
     fn write_register(&mut self, addr: u16, value: u8) {
         // Decode by top 3 bits of addr + A0 (i.e. addr & 0xE001).
         match addr & 0xE001 {
@@ -318,8 +424,15 @@ impl Mmc3 {
                 }
             }
             0xA001 => {
-                self.prg_ram_enabled = (value & 0x80) != 0;
-                self.prg_ram_write_protected = (value & 0x40) != 0;
+                if self.is_mmc6 {
+                    // MMC6 re-purposes $A001 bits 4-7 for per-half
+                    // read/write enables. Bits 0-3 are unused; store
+                    // the raw byte and decode at access time.
+                    self.reg_a001 = value;
+                } else {
+                    self.prg_ram_enabled = (value & 0x80) != 0;
+                    self.prg_ram_write_protected = (value & 0x40) != 0;
+                }
             }
             0xC000 => {
                 self.irq_latch = value;
@@ -348,7 +461,9 @@ impl Mapper for Mmc3 {
     fn cpu_write(&mut self, addr: u16, data: u8) {
         match addr {
             0x6000..=0x7FFF => {
-                if self.prg_ram_enabled && !self.prg_ram_write_protected {
+                if self.is_mmc6 {
+                    self.mmc6_write(addr, data);
+                } else if self.prg_ram_enabled && !self.prg_ram_write_protected {
                     let i = (addr - 0x6000) as usize;
                     if let Some(slot) = self.prg_ram.get_mut(i) {
                         *slot = data;
@@ -363,7 +478,9 @@ impl Mapper for Mmc3 {
     fn cpu_peek(&self, addr: u16) -> u8 {
         match addr {
             0x6000..=0x7FFF => {
-                if self.prg_ram_enabled {
+                if self.is_mmc6 {
+                    self.mmc6_read(addr)
+                } else if self.prg_ram_enabled {
                     let i = (addr - 0x6000) as usize;
                     *self.prg_ram.get(i).unwrap_or(&0)
                 } else {
@@ -794,6 +911,202 @@ mod tests {
         // Neither holds, so no fire.
         toggle_a12(&mut m, 1000, 1, 20);
         assert!(!m.irq_line(), "Rev A suppresses repeat-at-zero");
+    }
+
+    // ---- MMC6 / HKROM sub-mode ----
+
+    /// Minimal MMC6 cart: submapper 1 on a NES 2.0 header so the
+    /// activation gate trips without touching the game database.
+    fn mmc6_cart() -> Cartridge {
+        let mut cart = tagged_cart();
+        cart.is_nes2 = true;
+        cart.submapper = 1;
+        // iNES often claims 8 KiB here for HKROM — MMC6 should ignore
+        // the header and hardwire 1 KiB. Use a deliberately-wrong
+        // large value to prove the point.
+        cart.prg_ram_size = 8 * 1024;
+        cart.battery_backed = true;
+        cart
+    }
+
+    /// Drive MMC6 into "everything open" — chip enabled + both halves
+    /// readable and writable. Lets a test focus on the bit under test
+    /// (mirroring, half selection, etc.) instead of replaying the
+    /// enable sequence in every case.
+    fn mmc6_open_ram(m: &mut Mmc3) {
+        // $8000 bit 5 = chip enable. Preserve the other bits (just
+        // write the enable; R index 0 and PRG/CHR modes left as 0).
+        write_reg(m, 0x8000, 0x20);
+        // $A001 with all four enable bits set: 0xF0 = bits 7|6|5|4.
+        write_reg(m, 0xA001, 0xF0);
+    }
+
+    #[test]
+    fn mmc6_detected_via_nes2_submapper_1() {
+        let m = Mmc3::new(mmc6_cart());
+        assert!(m.is_mmc6, "submapper 1 should activate MMC6 mode");
+        // Detection must not accidentally turn on Rev A IRQ semantics.
+        assert!(
+            !m.alt_irq_behavior,
+            "MMC6 detection is orthogonal to Rev A IRQ"
+        );
+    }
+
+    #[test]
+    fn mmc6_allocates_1kib_not_header_claimed_size() {
+        let m = Mmc3::new(mmc6_cart());
+        assert_eq!(
+            m.prg_ram.len(),
+            PRG_RAM_SIZE_MMC6,
+            "MMC6 must hardwire 1 KiB regardless of header prg_ram_size"
+        );
+    }
+
+    #[test]
+    fn mmc6_plain_mapper4_without_submapper_stays_on_mmc3_path() {
+        // Non-NES2 cart with no DB match: plain MMC3, 8 KiB RAM.
+        let m = Mmc3::new(tagged_cart());
+        assert!(!m.is_mmc6);
+        assert_eq!(m.prg_ram.len(), PRG_RAM_SIZE);
+    }
+
+    #[test]
+    fn mmc6_6000_to_6fff_is_open_bus() {
+        let mut m = Mmc3::new(mmc6_cart());
+        mmc6_open_ram(&mut m);
+        // Writes in $6000-$6FFF must be dropped even with everything
+        // enabled — this region isn't wired on HKROM.
+        m.cpu_write(0x6000, 0xAB);
+        m.cpu_write(0x6FFF, 0xCD);
+        assert_eq!(m.cpu_peek(0x6000), 0);
+        assert_eq!(m.cpu_peek(0x6FFF), 0);
+    }
+
+    #[test]
+    fn mmc6_7000_to_7fff_mirrors_1kib_four_times() {
+        let mut m = Mmc3::new(mmc6_cart());
+        mmc6_open_ram(&mut m);
+        // Write at the first mirror; read-back across all four.
+        m.cpu_write(0x7000, 0x11);
+        m.cpu_write(0x7001, 0x22);
+        assert_eq!(m.cpu_peek(0x7000), 0x11);
+        assert_eq!(m.cpu_peek(0x7400), 0x11, "mirror 2");
+        assert_eq!(m.cpu_peek(0x7800), 0x11, "mirror 3");
+        assert_eq!(m.cpu_peek(0x7C00), 0x11, "mirror 4");
+        // And confirm writes through a higher mirror land at the same
+        // byte — not at a stale 8 KiB offset.
+        m.cpu_write(0x7C00, 0x99);
+        assert_eq!(m.cpu_peek(0x7000), 0x99);
+    }
+
+    #[test]
+    fn mmc6_chip_disable_suppresses_all_access() {
+        let mut m = Mmc3::new(mmc6_cart());
+        mmc6_open_ram(&mut m);
+        m.cpu_write(0x7000, 0x55);
+        assert_eq!(m.cpu_peek(0x7000), 0x55);
+        // Clear $8000 bit 5 — chip off. Reads must return 0 (chip
+        // driving 0 / open-bus equivalent) and writes must be dropped.
+        write_reg(&mut m, 0x8000, 0x00);
+        assert_eq!(m.cpu_peek(0x7000), 0);
+        m.cpu_write(0x7000, 0xFF);
+        // Re-enable and confirm the original byte is still there —
+        // the disabled write never landed.
+        write_reg(&mut m, 0x8000, 0x20);
+        write_reg(&mut m, 0xA001, 0xF0);
+        assert_eq!(m.cpu_peek(0x7000), 0x55);
+    }
+
+    #[test]
+    fn mmc6_per_half_read_enable_gates_independently() {
+        let mut m = Mmc3::new(mmc6_cart());
+        mmc6_open_ram(&mut m);
+        // Prime both halves with distinct bytes.
+        m.cpu_write(0x7000, 0x11); // bank 0, low half
+        m.cpu_write(0x7200, 0x22); // bank 1, high half
+
+        // Enable only bank 0 read (bit 5 set, bit 7 clear); writes
+        // stay open so we can still modify if we wanted to.
+        write_reg(&mut m, 0xA001, 0x20 | 0x10 | 0x40);
+        assert_eq!(m.cpu_peek(0x7000), 0x11);
+        assert_eq!(m.cpu_peek(0x7200), 0, "bank 1 read-disabled → 0");
+
+        // Flip: bank 1 read, bank 0 blocked.
+        write_reg(&mut m, 0xA001, 0x80 | 0x10 | 0x40);
+        assert_eq!(m.cpu_peek(0x7000), 0, "bank 0 read-disabled → 0");
+        assert_eq!(m.cpu_peek(0x7200), 0x22);
+    }
+
+    #[test]
+    fn mmc6_per_half_write_enable_gates_independently() {
+        let mut m = Mmc3::new(mmc6_cart());
+        mmc6_open_ram(&mut m);
+        // Start with known zeros; we only care about what lands.
+        m.cpu_write(0x7000, 0x00);
+        m.cpu_write(0x7200, 0x00);
+
+        // Writes only to bank 0 (bit 4); reads stay open.
+        write_reg(&mut m, 0xA001, 0x10 | 0x20 | 0x80);
+        m.cpu_write(0x7000, 0xAA); // bank 0 — accepted
+        m.cpu_write(0x7200, 0xBB); // bank 1 — dropped
+        assert_eq!(m.cpu_peek(0x7000), 0xAA);
+        assert_eq!(m.cpu_peek(0x7200), 0x00);
+
+        // Swap to bank 1 write-enable only.
+        write_reg(&mut m, 0xA001, 0x40 | 0x20 | 0x80);
+        m.cpu_write(0x7000, 0xCC); // bank 0 — dropped
+        m.cpu_write(0x7200, 0xDD); // bank 1 — accepted
+        assert_eq!(m.cpu_peek(0x7000), 0xAA, "bank 0 write was dropped");
+        assert_eq!(m.cpu_peek(0x7200), 0xDD);
+    }
+
+    #[test]
+    fn mmc6_power_on_state_blocks_access() {
+        // Straight out of reset: bank_select = 0 (chip disable clear)
+        // and reg_a001 = 0 (all enables clear). Nothing should be
+        // readable or writable until the cart opts in.
+        let mut m = Mmc3::new(mmc6_cart());
+        m.cpu_write(0x7000, 0xFF);
+        assert_eq!(m.cpu_peek(0x7000), 0);
+        // Even after enabling reads but not the chip, still blocked.
+        write_reg(&mut m, 0xA001, 0xF0);
+        m.cpu_write(0x7000, 0xFF);
+        assert_eq!(m.cpu_peek(0x7000), 0);
+    }
+
+    #[test]
+    fn mmc6_half_boundary_at_71ff_and_7200() {
+        // Verify the split lands exactly between $71FF (bank 0) and
+        // $7200 (bank 1) — gate bank 0 only, write both sides, confirm
+        // only the bank 0 side was accepted.
+        let mut m = Mmc3::new(mmc6_cart());
+        mmc6_open_ram(&mut m);
+        // Write at the boundary through both mirrors.
+        m.cpu_write(0x71FF, 0x11);
+        m.cpu_write(0x7200, 0x22);
+        // Disable bank 1 write; preserve reads.
+        write_reg(&mut m, 0xA001, 0x10 | 0x20 | 0x80);
+        m.cpu_write(0x71FF, 0x99); // still writable (bank 0)
+        m.cpu_write(0x7200, 0x99); // dropped (bank 1)
+        assert_eq!(m.cpu_peek(0x71FF), 0x99);
+        assert_eq!(m.cpu_peek(0x7200), 0x22);
+    }
+
+    #[test]
+    fn mmc3_path_unaffected_when_is_mmc6_false() {
+        // Regression guard: the existing MMC3 PRG-RAM behavior must
+        // not change when MMC6 detection is off. $6000 writable,
+        // 8 KiB range, bits 7/6 of $A001 gate enable and write-protect.
+        let mut m = Mmc3::new(tagged_cart());
+        assert!(!m.is_mmc6);
+        m.cpu_write(0x6000, 0xAA);
+        m.cpu_write(0x7FFF, 0xBB);
+        assert_eq!(m.cpu_peek(0x6000), 0xAA);
+        assert_eq!(m.cpu_peek(0x7FFF), 0xBB);
+        // $A001 bit 7|6 — enable + write-protect.
+        write_reg(&mut m, 0xA001, 0xC0);
+        m.cpu_write(0x6000, 0xFF); // dropped
+        assert_eq!(m.cpu_peek(0x6000), 0xAA);
     }
 
     // ---- Register-address aliasing ----
