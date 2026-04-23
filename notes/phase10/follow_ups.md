@@ -1,28 +1,30 @@
 # Phase 10 follow-ups (MMC3)
 
-Two MMC3 test ROMs still fail after phases 10A/10B ship. Documented
-here so a future phase can resume cold.
+One MMC3 corner remains after phases 10A/10B + the F1 fix: Rev A /
+MMC6 runtime activation via iNES 1.0, which is structurally
+unavailable (no submapper info in the header). Documented here so a
+future phase can resume cold.
 
-Status snapshot (branch `phase10-mmc3` @ commit 388f7f0):
+Status snapshot (after the F1 fix on branch `mmc3-scanline-timing`):
 
 | suite | ROM | status |
 |---|---|---|
 | mmc3_test | 1-clocking | PASS |
 | mmc3_test | 2-details | PASS |
 | mmc3_test | 3-A12_clocking | PASS |
-| mmc3_test | 4-scanline_timing | FAIL #3 |
+| mmc3_test | 4-scanline_timing | **PASS** |
 | mmc3_test | 5-MMC3 | PASS |
-| mmc3_test | 6-MMC6 | FAIL #3 |
+| mmc3_test | 6-MMC6 | FAIL #3 (F2) |
 | mmc3_test_2 | 1-clocking | PASS |
 | mmc3_test_2 | 2-details | PASS |
 | mmc3_test_2 | 3-A12_clocking | PASS |
-| mmc3_test_2 | 4-scanline_timing | FAIL #3 |
+| mmc3_test_2 | 4-scanline_timing | **PASS** |
 | mmc3_test_2 | 5-MMC3 | PASS |
-| mmc3_test_2 | 6-MMC3_alt | FAIL #2 |
+| mmc3_test_2 | 6-MMC3_alt | FAIL #2 (F2) |
 
 ---
 
-## F1 — 4-scanline_timing #3 off-by-one PPU cycle
+## F1 — 4-scanline_timing #3 off-by-one PPU cycle — RESOLVED
 
 **Symptom.** `4-scanline_timing` tests IRQ fire relative to VBL flag
 set, at 1-PPU-cycle resolution. Tests 2 and 3 of the suite form a
@@ -82,11 +84,45 @@ A12 rise = first sprite pat-lo fetch of scanline 0 (dot 262).
    `tick_post_access` split is routing the fetch into the wrong
    half.
 
-**Out of scope until diagnosed.** Touching the PPU tick split or
-the A12-watcher storage timestamp risks regressing
-`cpu_interrupts_v2/3-nmi_and_irq` (which relies on mid-cycle PPU
-state visibility) and `mmc3_test/3-A12_clocking` (which validates
-the filter itself). Branch before touching.
+### Resolution
+
+Root cause was **both suspects 2 and 3 compounding**, each
+contributing a 1–3 PPU-cycle delay. Neither alone was enough to
+cross the test-3 boundary; both together are.
+
+1. **Sprite pat-lo fetch one dot late.** Our match arm was
+   `(dot - 257) % 8 == 5` (dot 262 for slot 0), but hardware
+   issues the address on the FIRST cycle of the 2-cycle fetch
+   (dot 261). Mesen2 uses `case 4: LoadSpriteTileInfo()` at
+   `(cycle - 257) % 8 == 4`. Fix: shift sprite fetch match arms
+   `{1, 3, 5, 7}` → `{0, 2, 4, 6}`, aligning to the first-dot
+   semantics the BG fetch already uses. Shifts the first A12
+   rise of scanline 0 from dot 262 → 261.
+
+2. **`bus.irq_line` only refreshed in `tick_pre_access`.**
+   A12 rises that landed in the post-access PPU-dot window set
+   the mapper's IRQ flag, but `bus.irq_line` (the OR of APU +
+   mapper) wasn't refreshed until the NEXT cycle's
+   `tick_pre_access`. The CPU's `prev_irq_line` polling
+   therefore saw it one CPU cycle (= 3 PPU cycles) late. Fix:
+   add the same OR refresh at the end of `tick_post_access`.
+   Safe because APU doesn't tick in post-access so the APU
+   side of the OR is stable — only the mapper's in-post-access
+   A12 rise gets promoted.
+
+Verified: full sweep passes with zero regressions across
+`cpu_interrupts_v2/*`, `apu_test/*`, `apu_reset/*`,
+`blargg_apu_2005/*`, `ppu_vbl_nmi/*`, `sprite_hit_tests`,
+`sprite_overflow`, `oam_stress`, `instr_test-v5`, `instr_misc`,
+DMA-integration tests, and the MMC3 suites above.
+
+### Load-bearing verification
+
+Reverted each fix individually and re-ran: neither alone passes
+`4-scanline_timing`. Sprite-dot fix alone shifts the rise by 1
+PPU cycle (not enough). Post-access refresh alone saves 3 PPU
+cycles of propagation but the rise itself is still on the wrong
+dot. Combined effect crosses the boundary.
 
 ---
 

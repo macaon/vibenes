@@ -101,18 +101,20 @@ harness used to bisect the prior DMC alignment fix
 `src/cpu/trace.rs`) stays on-hand for any future cycle-exact
 debugging.
 
-Remaining correctness work is MMC3-only:
+Remaining correctness work is a single MMC3 corner:
 
-- **MMC3 scanline-timing off-by-one** — `mmc3_test/4-scanline_timing`
-  (both suites) fails #3 by ≥1 PPU cycle. Suspect: `on_ppu_addr`
-  timestamp boundary vs Mesen2's CPU-cycle-granular filter.
-  `notes/phase10/follow_ups.md §F1`.
 - **MMC3 Rev A / MMC6** — Rev A firing semantics implemented and
   unit-tested, no runtime activation path (iNES 1.0 can't carry
   submapper info). `notes/phase10/follow_ups.md §F2`.
 
-**Bigger unlocks beyond the corners:** VRC family (2/4/6/7) and FDS
-mappers; MMC3 submapper activation path.
+`mmc3_test/4-scanline_timing` now passes on both suites after the
+combined sprite-fetch-dot + `irq_line` post-access refresh fix
+(`notes/phase10/follow_ups.md §F1`).
+
+**Bigger unlocks beyond this corner:** VRC family (2/4/6/7) and FDS
+mappers; MMC3 submapper activation path (iNES 2.0 submapper
+plumbing already present in `src/rom.rs`, just needs MMC3 to read
+it in `new`).
 
 ## Regression discipline
 

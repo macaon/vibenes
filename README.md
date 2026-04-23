@@ -68,20 +68,14 @@ Every ROM in these suites passes:
   hardware-unit-specific, won't-fix)
 
 **Mappers**
-- `mmc3_test/{1-clocking, 2-details, 3-A12_clocking, 5-MMC3}` (4/6)
-  and `mmc3_test_2/{1-clocking, 2-details, 3-A12_clocking, 5-MMC3}`
-  (4/6) — banking + A12-filtered IRQ counter + Rev B firing. See
-  "Not yet" for the remaining `4-scanline_timing` and Rev A /
-  `6-MMC3_alt` / `6-MMC6` details.
+- `mmc3_test/{1-clocking, 2-details, 3-A12_clocking, 4-scanline_timing,
+  5-MMC3}` (5/6) and `mmc3_test_2/{...same...}` (5/6) — banking +
+  A12-filtered IRQ counter + Rev B firing + 1-PPU-cycle-accurate
+  scanline IRQ timing. Only Rev A (`6-MMC3_alt` / `6-MMC6`) remains;
+  see "Not yet" for why.
 
 ### Not yet
 
-- **MMC3 scanline-timing off-by-one** — `mmc3_test/4-scanline_timing`
-  (both suites) fails test #3 by ≥1 PPU cycle. The A12 rise that
-  clocks the counter lands later than expected in the test's
-  VBL-anchored countdown. Suspect: `on_ppu_addr` timestamp boundary
-  vs Mesen2's CPU-cycle-granular filter. Write-up in
-  `notes/phase10/follow_ups.md §F1`.
 - **MMC3 Rev A / MMC6 submapper** — `6-MMC3_alt` and `6-MMC6` need
   Rev A firing semantics (no refire on reload-to-zero). The logic
   is implemented (`alt_irq_behavior` flag, unit-tested) but has no
@@ -250,6 +244,19 @@ so two rises within three CPU cycles count as one (prevents rendering
 BG/sprite fetches from spuriously ticking the counter). `on_ppu_addr`
 in the mapper trait is called from `ppu_bus_read`/`write` before the
 dot advances, so the timestamp is "at the start of this dot".
+
+Two subtle details are required for 1-PPU-cycle-accurate scanline
+IRQ timing (`mmc3_test/4-scanline_timing #3`):
+
+1. **Sprite pattern-lo/hi fetches issue their address on the FIRST
+   dot of each 2-dot access**, matching BG fetches. Sprite fetch
+   match arms therefore use `(dot - 257) % 8 == {0, 2, 4, 6}` (slot 0
+   issues NT at dot 257, AT at 259, pat-lo at 261, pat-hi at 263),
+   not the completion cycles.
+2. **`bus.irq_line` is refreshed at the end of both `tick_pre_access`
+   and `tick_post_access`.** A mapper IRQ raised during the
+   post-access PPU-dot window would otherwise wait a full CPU cycle
+   (3 PPU cycles) before `prev_irq_line` exposes it to CPU polling.
 
 ### Pixel-precise sprite-0 hit
 

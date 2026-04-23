@@ -468,17 +468,28 @@ impl Ppu {
             }
             // Sprite pattern fetch across dots 257–320 in eight 8-dot
             // slots, one per sprite. Per Mesen2 (NesPpu.cpp:899–933)
-            // and nesdev, each slot issues: garbage NT (cycle 1),
-            // garbage AT (cycle 3), sprite pattern lo (cycle 5),
-            // sprite pattern hi (cycle 7). The exact dots matter for
-            // MMC3 A12 counter filtering — batching all fetches at
-            // dot 257 would collapse 8 A12 rises into one.
+            // and nesdev, each slot issues four 2-cycle memory
+            // accesses; the FIRST cycle of each access is when the
+            // address goes on the bus (and A12 transitions). Slot 0
+            // issues: garbage NT at dot 257, garbage AT at dot 259,
+            // sprite pat-lo at dot 261, sprite pat-hi at dot 263.
+            //
+            // The exact dots matter for MMC3 A12 counter filtering —
+            // batching all fetches at dot 257 would collapse 8 A12
+            // rises into one, and firing one dot late (dots 258/260/
+            // 262/264) shifts the first A12 rise of scanline 0 by
+            // exactly one PPU cycle, which shows up as an off-by-one
+            // failure on `mmc3_test/4-scanline_timing #3`. The BG
+            // fetch block above uses `(dot - 1) % 8 == {0, 2, 4, 6}`
+            // — first-dot-of-access semantics — and this block is
+            // aligned the same way.
+            //
             // OAMADDR is held at 0 throughout this window (nesdev).
             if self.dot >= 257 && self.dot <= 320 {
                 self.oam_addr = 0;
                 let slot = ((self.dot - 257) / 8) as usize;
                 match (self.dot - 257) % 8 {
-                    1 => {
+                    0 => {
                         // Garbage NT fetch — drives A12 low. Tagged
                         // as a SpriteNametable so MMC5's IRQ detector
                         // (sub-C) can ignore it and only count the
@@ -486,7 +497,7 @@ impl Ppu {
                         let addr = 0x2000 | (self.v & 0x0FFF);
                         let _ = self.ppu_bus_read(addr, PpuFetchKind::SpriteNametable, mapper);
                     }
-                    3 => {
+                    2 => {
                         // Garbage AT fetch — drives A12 low.
                         let at_addr = 0x23C0
                             | (self.v & 0x0C00)
@@ -495,8 +506,8 @@ impl Ppu {
                         let _ =
                             self.ppu_bus_read(at_addr, PpuFetchKind::SpriteAttribute, mapper);
                     }
-                    5 => self.fetch_sprite_pattern_slot(slot, false, mapper),
-                    7 => self.fetch_sprite_pattern_slot(slot, true, mapper),
+                    4 => self.fetch_sprite_pattern_slot(slot, false, mapper),
+                    6 => self.fetch_sprite_pattern_slot(slot, true, mapper),
                     _ => {}
                 }
             }

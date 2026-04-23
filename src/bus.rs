@@ -314,6 +314,17 @@ impl Bus {
         for _ in 0..post_ticks {
             self.ppu.tick(&mut *self.mapper);
         }
+        // Re-OR the mapper's IRQ line into bus.irq_line. PPU ticks
+        // in post-access can raise a mapper IRQ (MMC3 A12 counter
+        // clocking on a sprite pattern fetch that lands in the
+        // post-access PPU-dot window); without this refresh, the
+        // rise wouldn't be visible to next cycle's `prev_irq_line`
+        // snapshot, delaying CPU recognition by one full CPU cycle
+        // (= 3 PPU cycles) — the `mmc3_test/4-scanline_timing #3`
+        // symptom. APU IRQ state doesn't change in post-access
+        // (APU ticks only in pre-access) so re-OR'ing it is a
+        // no-op for the APU side.
+        self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
         let nmi_flag = self.ppu.nmi_flag();
         if !self.prev_nmi_flag && nmi_flag {
             self.nmi_pending = true;
