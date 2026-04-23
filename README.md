@@ -10,87 +10,51 @@ for hardware specifics and describe the model in my own words.
 
 ## Status
 
-| Subsystem | State |
-|---|---|
-| iNES 1.0 / NES 2.0 loader | Complete, CRC32-keyed game DB for region + chip detection |
-| 6502 CPU core | All 256 opcodes (official + stable unofficial + ANE/XAA), cycle-accurate, full interrupt model including NMI hijack and branch-delays-IRQ quirk |
-| Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot pre/post-access split, unified parity-gated DMC + OAM DMA get/put loop (Mesen2 port) with mid-OAM DMC hijacking |
-| PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, level-triggered NMI signal (bus-side rising-edge detection), 1-cycle-delayed `rendering_enabled`, VBlank-race suppression, NTSC odd-frame dot skip, per-bit I/O open-bus decay, forced-blanking palette peek (`full_palette.nes`) |
-| APU | 5 channels, frame counter with `$4017` write delay, DMC with transfer-start delay + halt-cycle replay, staged length-counter writes, non-linear mixer |
-| Host audio | cpal + blip_buf, band-limited resampling, pre-filled ring buffer |
-| Windowed runtime | wgpu/wgsl renderer, NTSC/PAL-paced, keyboard input |
-| Overlay UI | egui-based NES-mini-style menu (F1) — scale, aspect ratio, recent ROMs, file swap, reset |
-| Mappers | NROM (0), MMC1/SxROM (1), UxROM (2), CNROM (3), MMC3/TxROM (4), MMC5/ExROM (5), AxROM (7) |
+### Subsystems
 
-### Tested green
+- ✅ **iNES 1.0 / NES 2.0 loader** — CRC32-keyed game DB
+- ✅ **6502 CPU core** — all 256 opcodes, cycle-accurate interrupts
+- ✅ **Master clock + bus** — unified parity-gated DMC + OAM DMA loop
+- ✅ **PPU** — full render pipeline, pixel-precise sprite-0 hit, odd-frame dot skip, open-bus decay
+- ✅ **APU** — 5 channels, frame counter, DMC
+- ✅ **Host audio** — cpal + blip_buf
+- ✅ **Windowed runtime** — wgpu, NTSC/PAL-paced, keyboard input
+- ✅ **Overlay UI** — egui menu (F1)
 
-Every ROM in these suites passes:
+### Supported mappers
 
-**CPU**
-- `instr_test-v5/*` (16/16), `instr_test-v3`, `instr_misc` (4/4)
-- `instr_timing` (2/2), `nes_instr_test` (11/11)
-- `cpu_dummy_reads`, `cpu_dummy_writes/*` (2/2)
-- `cpu_exec_space/{apu, ppuio}` (2/2)
-- `cpu_reset/{ram_after_reset, registers}` (2/2)
-- `blargg_nes_cpu_test5/{official, cpu}` (2/2)
-- `cpu_interrupts_v2/*` (5/5)
-- `cpu_timing_test6/cpu_timing_test` (1/1) — 16-second per-opcode timing test
-- `branch_timing_tests/*` (3/3)
+| # | Name | Status | Notes |
+|---|---|---|---|
+| 0 | NROM | ✅ | |
+| 1 | MMC1 / SxROM | ✅ | |
+| 2 | UxROM | ✅ | |
+| 3 | CNROM | ✅ | |
+| 4 | MMC3 / TxROM | ✅ | Rev A + Rev B; DB chip-prefix activation |
+| 5 | MMC5 / ExROM | ✅ | PRG/CHR banking + scanline IRQ + ExRAM modes 0/2/3 + multiplier |
+| 7 | AxROM | ✅ | |
 
-**APU**
-- `apu_test/*` (8/8), `apu_reset/*` (6/6)
-- `blargg_apu_2005.07.30/*` (11/11) — gated by the `blargg_apu_2005`
-  integration test
-- `dmc_dma_during_read4/*` (5/5) — strict-pattern integration tests:
-  `dma_4016_read` lands on the golden `08 08 07 08 08` (CRC
-  `F0AB808C`); `dma_2007_read` on a sanctioned `44 55` at iter 2
-  (CRC `5E3DF9C4`). Driven by Mesen2's parity-aware DMC stall (3
-  cycles entry-even, 4 entry-odd) plus a 1-tick DMC reset-timer
-  alignment. See `notes/phase11/dma_iter_alignment.md`.
-- `sprdma_and_dmc_dma{,_512}.nes` (2/2) — both pass with
-  Mesen-matching cycle patterns, including the 524-cycle iter 4
-  of the `_512` variant. Driven by the unified DMC/OAM DMA
-  get/put loop (port of Mesen2 `NesCpu.cpp:325-448`): DMC DMA
-  firing mid-OAM hijacks a sprite-read get cycle rather than
-  running as a separate stall. See `notes/phase11/dma_iter_alignment.md §6`.
+### Test-ROM coverage
 
-**PPU**
-- `sprite_hit_tests_2005.10.05/*` (11/11)
-- `sprite_overflow_tests/*` (5/5)
-- `ppu_vbl_nmi/*` (10/10) — VBlank set/clear timing, NMI
-  control/suppression/on/off timing, even/odd frame dot-skip timing
-- `oam_read`, `oam_stress`, `ppu_read_buffer/test_ppu_read_buffer`
-  (1/1 each)
-- `ppu_open_bus` — I/O bus per-bit decay (~600 ms), per-register
-  refresh masks, $2004 attribute-byte bit-2-4 masking
-- `blargg_ppu_tests_2005.09.15b/{palette_ram, sprite_ram,
-  vbl_clear_time, vram_access}` (4/5 — `power_up_palette` is
-  hardware-unit-specific, won't-fix)
+All ROMs in these suites pass:
 
-**Mappers**
-- `mmc3_test/*` (6/6), `mmc3_test_2/*` (6/6), `mmc3_irq_tests/*`
-  (6/6) — banking + A12-filtered IRQ counter + Rev B firing +
-  1-PPU-cycle-accurate scanline IRQ timing + Rev A semantics. The
-  default firing mode is Rev B; Rev A is activated via NES 2.0
-  submapper 4, a game-DB chip prefix of `MMC3A` (Mesen convention),
-  or `VIBENES_MMC3_FORCE_REV_A=1`. The three Rev A test ROMs
-  (`6-MMC3_alt`, `6-MMC6`, `5.MMC3_rev_A`) ship as iNES 1.0 and
-  aren't in upstream Mesen's DB, so they're added under a
-  `# vibenes additions` section in `data/nes_db.csv` with
-  `chip=MMC3A` so they auto-activate Rev A by CRC match.
+| Category | Suite | Result |
+|---|---|---|
+| CPU | `instr_test-v5`, `instr_test-v3`, `instr_misc`, `instr_timing`, `nes_instr_test`, `cpu_dummy_reads`, `cpu_dummy_writes`, `cpu_exec_space`, `cpu_reset`, `blargg_nes_cpu_test5`, `cpu_interrupts_v2`, `cpu_timing_test6`, `branch_timing_tests` | ✅ |
+| APU | `apu_test` (8/8), `apu_reset` (6/6), `blargg_apu_2005` (11/11), `dmc_dma_during_read4` (5/5, strict pattern), `sprdma_and_dmc_dma{,_512}` (2/2) | ✅ |
+| PPU | `sprite_hit_tests_2005` (11/11), `sprite_overflow_tests` (5/5), `ppu_vbl_nmi` (10/10), `oam_read`, `oam_stress`, `ppu_read_buffer`, `ppu_open_bus`, `blargg_ppu_tests_2005.09.15b` (4/5, see below) | ✅ |
+| MMC3 | `mmc3_test` (6/6), `mmc3_test_2` (6/6), `mmc3_irq_tests` (6/6) | ✅ |
 
 ### Not yet
 
-- **`blargg_ppu_tests_2005.09.15b/power_up_palette`** — **won't fix**.
-  Compares the power-on palette byte-for-byte against values
-  captured from blargg's specific NES unit; passing requires
-  hardcoding that unit's power-on contents, which isn't hardware
-  behavior worth reproducing.
-- **Additional mappers** — MMC1/3/5 + NROM/UxROM/CNROM/AxROM
-  cover a large slice of the commercial library; VRC family (2/4/6/7)
-  and FDS are the next meaningful unlocks.
+- **Additional mappers** — VRC family (2/4/6/7) and FDS are the next
+  meaningful unlocks for commercial-library coverage.
 - **Second controller + rebinding** — player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
+- **`blargg_ppu_tests_2005.09.15b/power_up_palette`** — **won't fix**.
+  Compares the power-on palette byte-for-byte against values captured
+  from blargg's specific NES unit; passing requires hardcoding that
+  unit's power-on contents, which isn't hardware behavior worth
+  reproducing.
 
 ## Building + running
 
@@ -128,10 +92,7 @@ including the `$81` reset request. `blargg_2005_report` watches for the
 CPU trapping in a `forever:` loop and scans nametable 0 for a result —
 recognizes `$hh` debug bytes (2005-era devcart loader), ca65 framework
 keywords (`Passed` / `Failed` / `Error N`), blargg keywords (`PASSED`
-/ `FAILED` / `FAIL OP`), and `All tests complete`. The scanner gates
-on a recognized marker so a long test's header text (e.g.
-`cpu_timing_test6`'s 16-second countdown) can't be mis-parsed as a
-result digit.
+/ `FAILED` / `FAIL OP`), and `All tests complete`.
 
 Integration test suites gate against curated ROM sets:
 - `tests/blargg_apu_2005.rs` — the 11-ROM 2005 APU suite
@@ -147,8 +108,7 @@ Mesen2 in headless `--testRunner` mode against `tools/mesen_trace.lua`
 and emits one line per executed instruction (cyc, pc, op, registers,
 master clock, DMC state). Our side has the matching trace gated by
 `VIBENES_TRACE_LIMIT=N` env var (`src/cpu/trace.rs`). `diff` on
-`(cyc, pc, op)` columns pinpoints the first divergence. This is what
-found the parity-aware DMC stall fix in commit `b413b09`.
+`(cyc, pc, op)` columns pinpoints the first divergence.
 
 ## Notable design decisions
 
@@ -166,14 +126,14 @@ In steady state on NTSC this produces a 2/1 split (2 dots in the
 start phase, 1 in the end phase) for both reads and writes. The
 2/1 split is required by `cpu_interrupts_v2/3-nmi_and_irq`: when
 scanline-241 dot 1 lands as the 3rd dot of a CPU cycle, VBL must
-not be visible to a same-cycle `$2002` read (otherwise `sync_vbl`
-exits one cycle early and every downstream timing drifts).
+not be visible to a same-cycle `$2002` read.
 
 `Bus::tick_pre_access(is_read)` wraps `start_cpu_cycle` and runs
 the APU tick, mapper tick, and IRQ-line refresh alongside the
 emitted PPU dots. `Bus::tick_post_access(is_read)` wraps
-`end_cpu_cycle` and performs NMI rising-edge detection on the
-PPU's live `nmi_flag`.
+`end_cpu_cycle`, re-refreshes `irq_line` (catches mapper IRQs
+raised during post-access PPU ticks), and performs NMI rising-edge
+detection on the PPU's live `nmi_flag`.
 
 APU tick stays in pre-access so `$4015` reads on the frame-IRQ
 assertion cycle see the flag set (blargg `08.irq_timing`). OAM DMA
@@ -203,14 +163,7 @@ branch (halt before dummy), which is what lets the DMC halt/dummy
 cycles overlap with active sprite reads — and why DMC firing
 mid-OAM hijacks a get cycle rather than adding a separate stall.
 This is the mechanism that produces the 524-cycle iter-4 pattern
-in `sprdma_and_dmc_dma_512` that a "standalone - 1" formula
-cannot.
-
-Side-effect reads of `pending_addr` on halt / dummy / align cycles
-are real bus reads, so `$2007` gets multiple buffer advances and
-`$4016`/`$4017` get the NES-flavour `skipDummyReads` single-shift
-behaviour required by `dmc_dma_during_read4/dma_4016_read`'s
-golden `08 08 07 08 08`.
+in `sprdma_and_dmc_dma_512` that a "standalone - 1" formula cannot.
 
 ### Staged length writes (APU)
 
@@ -258,6 +211,20 @@ IRQ timing (`mmc3_test/4-scanline_timing #3`):
    post-access PPU-dot window would otherwise wait a full CPU cycle
    (3 PPU cycles) before `prev_irq_line` exposes it to CPU polling.
 
+### MMC3 Rev A / Rev B activation
+
+Default is Rev B (IRQ fires whenever the counter reaches zero on an
+A12 rise). Rev A (IRQ fires only on a non-zero→zero transition) is
+selected in `Mmc3::new` via any of:
+
+1. NES 2.0 submapper 4.
+2. Game-DB chip prefix `MMC3A` — mirrors Mesen2's `_forceMmc3RevAIrqs`
+   check. The DB (`data/nes_db.csv`) is Mesen2's `MesenNesDB.txt`;
+   three Rev A test ROMs are pre-seeded under `# vibenes additions`
+   so they auto-activate. See `notes/phase10/follow_ups.md §F2` for
+   the deferred design question about those rows.
+3. `VIBENES_MMC3_FORCE_REV_A=1` env var.
+
 ### Pixel-precise sprite-0 hit
 
 Sprite-0 hit fires per-pixel during the BG/sprite mux at dots 2–257,
@@ -265,6 +232,13 @@ with all five hardware gates (both rendering enables, both left-8-col
 enables, non-transparent BG pixel, non-transparent sprite pixel,
 dot ≠ 256). Required by SMB's status-bar/playfield scroll split and
 NES Open Tournament Golf's title band.
+
+### Forced-blanking palette peek
+
+When rendering is disabled AND the PPU's internal `v` register points
+into `$3F00-$3FFF`, the output pixel is `palette[v & 0x1F]` instead of
+the normal backdrop. Used by visual palette tests
+(`full_palette.nes`). Matches Mesen2 `DefaultNesPpu.h:24-34`.
 
 ## Layout
 
@@ -305,6 +279,6 @@ assets/fonts/                         VT323 pixel font (SIL OFL) for
                                       the overlay menu
 
 notes/
-└── phase{9,10,11}/                   investigation notes for open
-                                      DMA/MMC3 corners
+└── phase{9,10,11}/                   investigation notes + deferred
+                                      design questions
 ```
