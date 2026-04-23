@@ -151,10 +151,11 @@ struct App {
     /// when a settings UI lands this gets loaded from disk (see
     /// [`vibenes::config`]).
     config: Config,
-    /// Frames since last autosave attempt. Reset each time
-    /// `nes.save_battery()` is called (successful flush OR skip
-    /// because nothing was dirty). Used to gate disk writes so the
-    /// common "game sits on title screen" case is cheap.
+    /// Frames since the last periodic safety flush. Reset on every
+    /// `nes.save_battery()` call from the autosave hook (whether or
+    /// not it wrote — either way we've consulted the mapper). The
+    /// authoritative save triggers are quit + ROM swap; this
+    /// counter only exists to narrow the SIGKILL-data-loss window.
     frames_since_autosave: u32,
 }
 
@@ -293,12 +294,27 @@ impl App {
                 // dirty 8-32 KiB write hits the disk in <1 ms on
                 // SSD, well within the 300 ms audio ring, so we
                 // stay on the frame-loop thread for now.
-                self.frames_since_autosave =
-                    self.frames_since_autosave.saturating_add(1);
-                if self.frames_since_autosave >= self.config.save.autosave_every_n_frames {
-                    self.frames_since_autosave = 0;
-                    if let Err(e) = nes.save_battery(&self.config.save) {
-                        eprintln!("vibenes: autosave failed: {e:#}");
+                // Periodic safety flush (3 min @ 60 fps by default).
+                // The authoritative save triggers are quit + ROM
+                // swap — this just narrows the SIGKILL-data-loss
+                // window. Skip entirely when the interval is 0.
+                if self.config.save.autosave_every_n_frames > 0 {
+                    self.frames_since_autosave =
+                        self.frames_since_autosave.saturating_add(1);
+                    if self.frames_since_autosave >= self.config.save.autosave_every_n_frames {
+                        self.frames_since_autosave = 0;
+                        match nes.save_battery(&self.config.save) {
+                            Ok(true) => {
+                                if let Some(p) = nes.save_path(&self.config.save) {
+                                    eprintln!(
+                                        "vibenes: periodic battery save → {}",
+                                        p.display()
+                                    );
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => eprintln!("vibenes: autosave failed: {e:#}"),
+                        }
                     }
                 }
             }
@@ -434,8 +450,23 @@ impl ApplicationHandler for App {
                 // `save_battery` is silent when there's nothing to
                 // do, so this is cheap for non-battery carts.
                 if let Some(nes) = self.nes.as_mut() {
-                    if let Err(e) = nes.save_battery(&self.config.save) {
-                        eprintln!("vibenes: shutdown save failed: {e:#}");
+                    match nes.save_battery(&self.config.save) {
+                        Ok(true) => {
+                            if let Some(p) = nes.save_path(&self.config.save) {
+                                eprintln!("vibenes: saved {} on exit", p.display());
+                            }
+                        }
+                        Ok(false) => {
+                            // If we have a save-able cart but nothing
+                            // is dirty, say so — otherwise users think
+                            // the save code never ran.
+                            if nes.bus.mapper.save_data().is_some() {
+                                eprintln!(
+                                    "vibenes: exit — no battery RAM changes to save"
+                                );
+                            }
+                        }
+                        Err(e) => eprintln!("vibenes: shutdown save failed: {e:#}"),
                     }
                 }
                 event_loop.exit();
@@ -521,7 +552,29 @@ impl App {
                 }
             }
             UiCommand::OpenRom(path) => self.load_rom(&path),
-            UiCommand::Quit => event_loop.exit(),
+            UiCommand::Quit => {
+                // Mirror the CloseRequested path — F1 → Quit is an
+                // equally valid "I'm done" signal and must flush any
+                // dirty battery RAM before tearing down.
+                if let Some(nes) = self.nes.as_mut() {
+                    match nes.save_battery(&self.config.save) {
+                        Ok(true) => {
+                            if let Some(p) = nes.save_path(&self.config.save) {
+                                eprintln!("vibenes: saved {} on quit", p.display());
+                            }
+                        }
+                        Ok(false) => {
+                            if nes.bus.mapper.save_data().is_some() {
+                                eprintln!(
+                                    "vibenes: quit — no battery RAM changes to save"
+                                );
+                            }
+                        }
+                        Err(e) => eprintln!("vibenes: shutdown save failed: {e:#}"),
+                    }
+                }
+                event_loop.exit();
+            }
             UiCommand::SetScale(n) => {
                 self.video = self.video.with_scale(n);
                 self.pending_window_resize = true;
@@ -625,6 +678,15 @@ impl App {
             region,
             pc,
         );
+        // Surface the save path eagerly for battery carts so users
+        // know where to look. No-op for non-battery carts.
+        if let Some(nes) = self.nes.as_ref() {
+            if nes.bus.mapper.save_data().is_some() {
+                if let Some(p) = nes.save_path(&self.config.save) {
+                    eprintln!("vibenes: battery save file → {}", p.display());
+                }
+            }
+        }
     }
 
     /// Map keyboard keys to NES controller-1 bits. The NES shifter

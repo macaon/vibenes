@@ -61,10 +61,19 @@ pub struct SaveConfig {
     /// actually needs the fallback path, so the dirs crate isn't a
     /// build-time dependency yet.
     pub dir_override: Option<PathBuf>,
-    /// How often to flush dirty battery RAM to disk during normal
-    /// emulation, measured in emulator frames. 60 ≈ once per wall-clock
-    /// second on NTSC. Writes are skipped when the mapper's dirty flag
-    /// is clear, so the common case is a cheap no-op.
+    /// Periodic safety-flush interval in emulator frames. The
+    /// authoritative save triggers are ROM swap + app quit (same as
+    /// Mesen2 / Nestopia); this interval is a belt-and-suspenders
+    /// against crashes and SIGKILL. 10800 frames @ 60 Hz ≈ 3
+    /// minutes, which mirrors puNES's `machine.fps * (60 * 3)` at
+    /// `core/emu.c:642`.
+    ///
+    /// None of the three reference emulators (Mesen2, puNES,
+    /// Nestopia) flush on every write — battery RAM is just normal
+    /// SRAM on real hardware and the game has no "save commit"
+    /// signal the emulator can latch on to. Emulators buffer writes
+    /// and flush at session boundaries; `0` disables the periodic
+    /// safety flush entirely and relies solely on quit/swap.
     pub autosave_every_n_frames: u32,
 }
 
@@ -73,7 +82,11 @@ impl Default for SaveConfig {
         Self {
             style: SaveStyle::default(),
             dir_override: None,
-            autosave_every_n_frames: 60,
+            // 3 minutes, matching puNES. Mesen2 and Nestopia flush
+            // only on quit/swap; we go with puNES's safety-flush to
+            // narrow the SIGKILL data-loss window without hammering
+            // the disk.
+            autosave_every_n_frames: 60 * 60 * 3,
         }
     }
 }

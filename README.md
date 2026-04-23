@@ -20,7 +20,7 @@ for hardware specifics and describe the model in my own words.
 - ✅ **Host audio** — cpal + blip_buf
 - ✅ **Windowed runtime** — wgpu, NTSC/PAL-paced, keyboard input
 - ✅ **Overlay UI** — egui menu (F1)
-- ✅ **Battery-backed saves** — `<rom>.sav` next to the ROM; atomic writes, autosave every 60 frames, flush on quit / ROM swap
+- ✅ **Battery-backed saves** — `<rom>.sav` next to the ROM; atomic writes, flush on quit / ROM swap, 3-min safety-flush
 
 ### Supported mappers
 
@@ -83,9 +83,26 @@ Cartridges with battery-backed PRG-RAM (iNES flag6 bit 1, or the
 NES 2.0 `prg_nvram_size` byte) persist their RAM to a `.sav` file
 next to the ROM. `kirby.nes` pairs with `kirby.sav`. The save is
 written atomically (temp file + rename) so a crash mid-write leaves
-either the old save or the new one — never a torn file. Autosave
-fires every 60 emulator frames (~1 second) when RAM is dirty, plus
-once on ROM swap and once on app quit.
+either the old save or the new one — never a torn file.
+
+Flush triggers (matching the industry-standard pattern — see
+Mesen2 `Core/Shared/Emulator.cpp:287,422`, Nestopia
+`Core/NstCartridge.cpp:382`, puNES `core/emu.c:642,1604`):
+
+1. **App quit** — both window-close and the F1 → Quit menu item.
+2. **ROM swap** — outgoing cart flushes before the new one loads.
+3. **Periodic safety flush** — every ~3 minutes of emulated time
+   (10800 frames @ 60 Hz), mirroring puNES's 3-minute interval.
+   Only narrows the SIGKILL data-loss window; the quit/swap
+   triggers above are the authoritative ones.
+
+None of the reference emulators flush per-write or per-frame —
+battery RAM on real hardware is just SRAM, and the game has no
+"save commit" signal to latch on. Writes buffer in memory and
+flush at session boundaries. `src/bin/battery_probe <rom>` is a
+diagnostic that exercises the full load→write→save→reload pipeline
+on any ROM so you can verify the save path end-to-end without
+reaching the in-game save trigger.
 
 Non-battery cartridges produce no save files.
 
