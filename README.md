@@ -29,7 +29,7 @@ for hardware specifics and describe the model in my own words.
 | 1 | MMC1 / SxROM | ✅ | |
 | 2 | UxROM | ✅ | |
 | 3 | CNROM | ✅ | |
-| 4 | MMC3 / TxROM | ✅ | Rev A + Rev B; DB chip-prefix activation |
+| 4 | MMC3 / MMC6 (TxROM / HKROM) | ✅ | Rev A + Rev B; MMC6 sub-mode with 1 KiB on-chip PRG-RAM |
 | 5 | MMC5 / ExROM | ✅ | PRG/CHR banking + scanline IRQ + ExRAM modes 0/2/3 + multiplier |
 | 7 | AxROM | ✅ | |
 
