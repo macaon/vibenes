@@ -75,7 +75,17 @@ fn run() -> Result<()> {
         {
             Ok(cart) => {
                 eprintln!("loaded: {}", cart.describe());
-                let nes = app::build_nes(cart)?;
+                // CRITICAL: the CLI-load path MUST attach save
+                // metadata before handing the Nes to App. Without
+                // this, `save_battery` early-returns on every
+                // trigger because `save_meta` is None — which is
+                // exactly what slipped past review and caused
+                // Zelda (et al.) to never persist progress. The
+                // File-menu path does its own attach inside
+                // `App::load_rom`; this is the companion.
+                let crc = cart.prg_chr_crc32;
+                let mut nes = app::build_nes(cart)?;
+                nes.attach_save_metadata(path.to_path_buf(), crc);
                 eprintln!("region={:?} reset PC=${:04X}", nes.region(), nes.cpu.pc);
                 Some(nes)
             }
@@ -178,7 +188,7 @@ impl App {
         // on the command line must retune before attach, otherwise
         // BlipBuf resamples at the wrong CPU clock rate (pitch ~7.6%
         // off, and the ring drains faster than it fills).
-        let (nes, pending_audio_sink) = match (nes, audio_sink) {
+        let (mut nes, pending_audio_sink) = match (nes, audio_sink) {
             (Some(mut nes), Some(mut sink)) => {
                 sink.set_cpu_clock(nes.region().cpu_clock_hz());
                 nes.attach_audio(sink);
@@ -186,6 +196,28 @@ impl App {
             }
             (nes, sink) => (nes, sink),
         };
+        let config = Config::default();
+        // If the CLI-loaded Nes has save metadata attached (battery
+        // cart), restore any existing `.sav` before the event loop
+        // runs a single instruction. Mirrors the load-after-attach
+        // sequence inside `load_rom` so both entry paths produce the
+        // same state. No-op for non-battery carts.
+        if let Some(nes) = nes.as_mut() {
+            match nes.load_battery(&config.save) {
+                Ok(true) => {
+                    if let Some(p) = nes.save_path(&config.save) {
+                        eprintln!("vibenes: loaded battery save from {}", p.display());
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => eprintln!("vibenes: load save failed: {e:#}"),
+            }
+            if nes.bus.mapper.save_data().is_some() {
+                if let Some(p) = nes.save_path(&config.save) {
+                    eprintln!("vibenes: battery save file → {}", p.display());
+                }
+            }
+        }
         Self {
             nes,
             window: None,
@@ -199,7 +231,7 @@ impl App {
             recent_roms,
             video: VideoSettings::default(),
             pending_window_resize: false,
-            config: Config::default(),
+            config,
             frames_since_autosave: 0,
         }
     }
