@@ -14,9 +14,9 @@ for hardware specifics and describe the model in my own words.
 |---|---|
 | iNES 1.0 / NES 2.0 loader | Complete, CRC32-keyed game DB for region + chip detection |
 | 6502 CPU core | All 256 opcodes (official + stable unofficial + ANE/XAA), cycle-accurate, full interrupt model including NMI hijack and branch-delays-IRQ quirk |
-| Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot pre/post-access split |
+| Master clock + bus | Region-aware, per-access tick, 2/1 PPU dot pre/post-access split, unified parity-gated DMC + OAM DMA get/put loop (Mesen2 port) with mid-OAM DMC hijacking |
 | PPU | Full render pipeline, per-dot sprite evaluation + pattern fetch, pixel-precise sprite-0 hit, level-triggered NMI signal (bus-side rising-edge detection), 1-cycle-delayed `rendering_enabled`, VBlank-race suppression, NTSC odd-frame dot skip, per-bit I/O open-bus decay |
-| APU | 5 channels, frame counter with `$4017` write delay, unified parity-gated DMC/OAM DMA get/put loop (Mesen2 port) with DMC-mid-OAM hijacking, halt-cycle replay, staged length-counter writes, non-linear mixer |
+| APU | 5 channels, frame counter with `$4017` write delay, DMC with transfer-start delay + halt-cycle replay, staged length-counter writes, non-linear mixer |
 | Host audio | cpal + blip_buf, band-limited resampling, pre-filled ring buffer |
 | Windowed runtime | wgpu/wgsl renderer, NTSC/PAL-paced, keyboard input |
 | Overlay UI | egui-based NES-mini-style menu (F1) — scale, aspect ratio, recent ROMs, file swap, reset |
@@ -186,6 +186,37 @@ assertion cycle see the flag set (blargg `08.irq_timing`). OAM DMA
 snapshots/restores `prev_irq_line`/`prev_nmi_pending` across its
 stall cycles so STA `$4014`'s CPU-level poll sees its own
 penultimate, not end-of-DMA state.
+
+### Unified DMA get/put loop
+
+`Bus::process_pending_dma` handles DMC DMA, OAM DMA, and their
+interleave in one parity-gated loop (port of Mesen2
+`NesCpu.cpp:325-448`). DMC arming inside `tick_pre_access` raises
+`need_halt` / `need_dummy_read`; the next CPU read enters the loop
+and drains DMA until both `dmc_dma_running` and `sprite_dma_running`
+are false.
+
+Each loop iteration decides its action from `cpu_cycles & 1`
+(get vs put) and current DMA state:
+
+- **Get (even) cycle:** DMC fetch if both pending flags are clear,
+  else sprite-DMA read, else dummy read of `pending_addr`.
+- **Put (odd) cycle:** sprite-DMA write to `$2004` if
+  `sprite_counter & 1`, else alignment read of `pending_addr`.
+
+A `processCycle`-equivalent flag clear runs at the start of every
+branch (halt before dummy), which is what lets the DMC halt/dummy
+cycles overlap with active sprite reads — and why DMC firing
+mid-OAM hijacks a get cycle rather than adding a separate stall.
+This is the mechanism that produces the 524-cycle iter-4 pattern
+in `sprdma_and_dmc_dma_512` that a "standalone - 1" formula
+cannot.
+
+Side-effect reads of `pending_addr` on halt / dummy / align cycles
+are real bus reads, so `$2007` gets multiple buffer advances and
+`$4016`/`$4017` get the NES-flavour `skipDummyReads` single-shift
+behaviour required by `dmc_dma_during_read4/dma_4016_read`'s
+golden `08 08 07 08 08`.
 
 ### Staged length writes (APU)
 
