@@ -478,29 +478,7 @@ impl ApplicationHandler for App {
         };
         match event {
             WindowEvent::CloseRequested => {
-                // Last-chance flush before the event loop tears down.
-                // `save_battery` is silent when there's nothing to
-                // do, so this is cheap for non-battery carts.
-                if let Some(nes) = self.nes.as_mut() {
-                    match nes.save_battery(&self.config.save) {
-                        Ok(true) => {
-                            if let Some(p) = nes.save_path(&self.config.save) {
-                                eprintln!("vibenes: saved {} on exit", p.display());
-                            }
-                        }
-                        Ok(false) => {
-                            // If we have a save-able cart but nothing
-                            // is dirty, say so — otherwise users think
-                            // the save code never ran.
-                            if nes.bus.mapper.save_data().is_some() {
-                                eprintln!(
-                                    "vibenes: exit — no battery RAM changes to save"
-                                );
-                            }
-                        }
-                        Err(e) => eprintln!("vibenes: shutdown save failed: {e:#}"),
-                    }
-                }
+                self.shutdown("exit");
                 event_loop.exit();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -539,6 +517,12 @@ impl ApplicationHandler for App {
                             ui.back_or_close_overlay();
                         }
                     } else {
+                        // Escape is a shutdown path too — flush
+                        // battery RAM before exit like the X button
+                        // and F1→Quit already do. Without this,
+                        // Esc-to-quit silently loses progress even
+                        // after the CLI-metadata-attach fix.
+                        self.shutdown("exit");
                         event_loop.exit();
                     }
                 } else if overlay_open {
@@ -585,26 +569,7 @@ impl App {
             }
             UiCommand::OpenRom(path) => self.load_rom(&path),
             UiCommand::Quit => {
-                // Mirror the CloseRequested path — F1 → Quit is an
-                // equally valid "I'm done" signal and must flush any
-                // dirty battery RAM before tearing down.
-                if let Some(nes) = self.nes.as_mut() {
-                    match nes.save_battery(&self.config.save) {
-                        Ok(true) => {
-                            if let Some(p) = nes.save_path(&self.config.save) {
-                                eprintln!("vibenes: saved {} on quit", p.display());
-                            }
-                        }
-                        Ok(false) => {
-                            if nes.bus.mapper.save_data().is_some() {
-                                eprintln!(
-                                    "vibenes: quit — no battery RAM changes to save"
-                                );
-                            }
-                        }
-                        Err(e) => eprintln!("vibenes: shutdown save failed: {e:#}"),
-                    }
-                }
+                self.shutdown("quit");
                 event_loop.exit();
             }
             UiCommand::SetScale(n) => {
@@ -625,6 +590,57 @@ impl App {
             self.halted_notice_shown = false;
             eprintln!("vibenes: reset (PC=${:04X})", nes.cpu.pc);
         }
+    }
+
+    /// Flush dirty battery RAM to disk before an exit event. `kind`
+    /// gets dropped into the log line so we can tell X / F1 / Esc
+    /// apart. Silent no-op when no cart is loaded or nothing is
+    /// dirty; logs the save path on success; logs and swallows on
+    /// failure so the event-loop tear-down always proceeds.
+    fn flush_battery_save(&mut self, kind: &str) {
+        let Some(nes) = self.nes.as_mut() else { return };
+        match nes.save_battery(&self.config.save) {
+            Ok(true) => {
+                if let Some(p) = nes.save_path(&self.config.save) {
+                    eprintln!("vibenes: saved {} on {kind}", p.display());
+                }
+            }
+            Ok(false) => {
+                if nes.bus.mapper.save_data().is_some() {
+                    eprintln!("vibenes: {kind} — no battery RAM changes to save");
+                }
+            }
+            Err(e) => eprintln!("vibenes: shutdown save failed: {e:#}"),
+        }
+    }
+
+    /// Clean shutdown: flush the save, then drop heavy resources in a
+    /// dependency-safe order **before** the event loop tears down.
+    ///
+    /// Winit/wgpu/egui on Wayland has a recurring class of segfaults
+    /// during the implicit drop cascade at process exit — typically
+    /// the cpal PipeWire stream's callback fires once more between
+    /// the sink's producer dropping and the consumer stopping, or an
+    /// egui-wgpu buffer releases into a device that's already gone.
+    /// Taking each `Option` field to `None` here forces destructors
+    /// to run at a known point in a known order, so any panic /
+    /// segfault surfaces with an obvious stack trace instead of a
+    /// post-exit crash the user has no handle on.
+    ///
+    /// Drop order (each `.take()` triggers the field's destructor):
+    ///  1. UI (egui-wgpu renderer — uses wgpu device/queue)
+    ///  2. Renderer (wgpu surface tied to the window)
+    ///  3. Nes (audio sink = ringbuf producer)
+    ///  4. Audio stream (cpal consumer; ring has no producer by now)
+    ///  5. Window (last remaining Arc clone released)
+    fn shutdown(&mut self, kind: &str) {
+        self.flush_battery_save(kind);
+        self.ui = None;
+        self.renderer = None;
+        self.nes = None;
+        self.pending_audio_sink = None;
+        self._audio_stream = None;
+        self.window = None;
     }
 
     fn load_rom(&mut self, path: &Path) {
