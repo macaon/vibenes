@@ -101,20 +101,22 @@ harness used to bisect the prior DMC alignment fix
 `src/cpu/trace.rs`) stays on-hand for any future cycle-exact
 debugging.
 
-Remaining correctness work is a single MMC3 corner:
+Core correctness work is complete. Every hardware test ROM in the
+CPU / PPU / APU / bus / MMC3 categories passes:
 
-- **MMC3 Rev A / MMC6** — Rev A firing semantics implemented and
-  unit-tested, no runtime activation path (iNES 1.0 can't carry
-  submapper info). `notes/phase10/follow_ups.md §F2`.
+- `mmc3_test/*` and `mmc3_test_2/*` both 6/6, including
+  `4-scanline_timing` (sprite-fetch-dot + `irq_line` post-access
+  refresh fix, `notes/phase10/follow_ups.md §F1`) and the Rev A
+  ROMs (`6-MMC3_alt` / `6-MMC6`) under
+  `VIBENES_MMC3_FORCE_REV_A=1`.
+- `mmc3_irq_tests/*` 6/6 (same env override gate for `5.MMC3_rev_A`).
 
-`mmc3_test/4-scanline_timing` now passes on both suites after the
-combined sprite-fetch-dot + `irq_line` post-access refresh fix
-(`notes/phase10/follow_ups.md §F1`).
+Rev A activation has three paths in `Mmc3::new`: NES 2.0 submapper 4,
+game-DB chip prefix `MMC3A` (Mesen convention), or the env var.
 
-**Bigger unlocks beyond this corner:** VRC family (2/4/6/7) and FDS
-mappers; MMC3 submapper activation path (iNES 2.0 submapper
-plumbing already present in `src/rom.rs`, just needs MMC3 to read
-it in `new`).
+**Bigger unlocks from here:** VRC family (2/4/6/7) and FDS mappers;
+populating the game DB with more `MMC3A` chip entries for commercial
+Rev A carts (Crystalis and others).
 
 ## Regression discipline
 

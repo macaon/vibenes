@@ -100,13 +100,39 @@ pub struct Mmc3 {
     /// MMC3 Rev A firing semantics. Default false (Rev B): IRQ fires
     /// whenever the counter hits zero at an A12 rise, including
     /// reload-from-zero (can double-fire). Rev A: IRQ fires only on a
-    /// non-zero→zero transition. Activated by submapper in the NES 2.0
-    /// header, or by a ROM-database override (phase 10D).
+    /// non-zero→zero transition. Three activation paths (see
+    /// `Mmc3::new`): NES 2.0 submapper 4, game-DB chip prefix "MMC3A"
+    /// (Mesen convention), or the `VIBENES_MMC3_FORCE_REV_A` env var
+    /// for test ROMs that ship as iNES 1.0.
     alt_irq_behavior: bool,
 }
 
 impl Mmc3 {
     pub fn new(cart: Cartridge) -> Self {
+        // Rev A vs Rev B firing semantics activation. Real carts
+        // need a data source richer than the iNES 1.0 header —
+        // submapper bits weren't carried, so the authoritative info
+        // is either the NES 2.0 header or a per-CRC game database.
+        //
+        // - NES 2.0 submapper 4: MMC3A per nesdev
+        //   (https://www.nesdev.org/wiki/NES_2.0_submappers, mapper 4).
+        // - Game DB chip prefix `MMC3A`: mirrors Mesen2's
+        //   `_forceMmc3RevAIrqs = Chip.substr(0,5) == "MMC3A"`
+        //   (MMC3.h:197-199). Covers Crystalis and other Rev A carts.
+        // - `VIBENES_MMC3_FORCE_REV_A` env var: iNES 1.0 test ROMs
+        //   (`mmc3_test/6-MMC3_alt`, `mmc3_test/6-MMC6`,
+        //   `mmc3_irq_tests/5.MMC3_rev_A`) aren't in the DB and carry
+        //   no submapper info, so a runtime override is the only way
+        //   to validate the Rev A code path against them.
+        let mut alt_irq_behavior = cart.is_nes2 && cart.submapper == 4;
+        if let Some(entry) = crate::gamedb::lookup(cart.prg_chr_crc32) {
+            if entry.chip.starts_with("MMC3A") {
+                alt_irq_behavior = true;
+            }
+        }
+        if std::env::var("VIBENES_MMC3_FORCE_REV_A").is_ok() {
+            alt_irq_behavior = true;
+        }
         let prg_bank_count_8k = (cart.prg_rom.len() / PRG_BANK_8K).max(1);
 
         let is_chr_ram = cart.chr_ram || cart.chr_rom.is_empty();
@@ -141,7 +167,7 @@ impl Mmc3 {
             irq_enabled: false,
             irq_line: false,
             a12_low_since: None,
-            alt_irq_behavior: false,
+            alt_irq_behavior,
         }
     }
 

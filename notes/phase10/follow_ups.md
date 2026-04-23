@@ -126,42 +126,35 @@ dot. Combined effect crosses the boundary.
 
 ---
 
-## F2 — Rev A / MMC6 submapper detection (6-MMC3_alt, 6-MMC6)
+## F2 — Rev A / MMC6 submapper detection (6-MMC3_alt, 6-MMC6) — RESOLVED
 
-**Symptom.** `Mmc3::alt_irq_behavior = true` passes the unit test
-`rev_a_does_not_refire_on_reload_from_zero`, and is the correct
-semantics for the two failing ROMs. But there's no activation path
-at runtime — iNES 1.0 headers don't expose submapper, and iNES 2.0
-for these ROMs would use submapper 3 (per Mesen's scheme) which our
-`src/rom.rs` already parses but these test ROMs ship as iNES 1.0.
+Three activation paths in `Mmc3::new`, any of which flips
+`alt_irq_behavior = true`:
 
-Mesen's approach: a ROM-hash database maps specific PRG/CHR hashes
-to chip names (e.g. "MMC3A"), and `InitMapper` does a prefix-match
-on the chip-name string to set `_forceMmc3RevAIrqs = true`. This is
-heavyweight for us.
+1. **NES 2.0 submapper 4** (`cart.is_nes2 && cart.submapper == 4`)
+   — per the nesdev NES 2.0 submapper registry for mapper 4. Covers
+   future NES 2.0 dumps that mark the cart as MMC3A.
+2. **Game DB chip prefix**
+   (`gamedb::lookup(cart.prg_chr_crc32).chip.starts_with("MMC3A")`)
+   — mirrors Mesen2's
+   `_forceMmc3RevAIrqs = Chip.substr(0,5) == "MMC3A"`
+   (MMC3.h:197-199). Covers Crystalis and any other Rev A carts
+   once they're added to the DB (currently none). The mechanism is
+   live so DB additions auto-activate.
+3. **Env override** (`VIBENES_MMC3_FORCE_REV_A=1`) — for test ROMs
+   that ship as iNES 1.0 without DB entries:
+   `mmc3_test/6-MMC3_alt`, `mmc3_test/6-MMC6`,
+   `mmc3_irq_tests/5.MMC3_rev_A`. All three pass under the env
+   override; default Rev B stays for the Rev B test ROMs.
 
-**Lightweight options:**
+### MMC6 note
 
-1. **CLI/env override.** A `VIBENES_MMC3_FORCE_REV_A=1` env var read
-   in `Mmc3::new` (plus a CLI flag in `test_runner`). Good enough
-   for running the two failing test ROMs; zero risk to the normal
-   path.
-2. **Per-ROM filename heuristic.** If the ROM path contains "alt"
-   or "Alt", flip to Rev A. Quick but fragile.
-3. **iNES 2.0 submapper detection (proper fix).** Submapper 3 =
-   MMC3 Rev A. Already plumbed through `Cartridge::submapper`;
-   MMC3 just needs to read it in `new`. Doesn't help these specific
-   ROMs (they're iNES 1.0) but is the long-term right answer for
-   NES 2.0 ROMs.
-4. **ROM-hash database.** Eventually — when we want to ship a
-   general MMC3 emulator that "just works" for real games.
-
-**MMC6 (`6-MMC6.nes`) note.** The test name is misleading — it
-actually tests Rev A semantics ("IRQ shouldn't occur when reloading
-after counter normally reaches 0"). MMC6's distinctive feature
-(1 KB on-chip PRG-RAM with per-half enable/protect at $7000-$7FFF)
-is not exercised here; implementing that is Phase 10E, independent
-of this Rev A fix.
+The test name `6-MMC6.nes` is misleading — it actually tests Rev A
+IRQ semantics ("IRQ shouldn't occur when reloading after counter
+normally reaches 0"). MMC6's distinctive feature (1 KB on-chip
+PRG-RAM with per-half enable/protect at `$7000-$7FFF`) is not
+exercised here; implementing that is an independent mapper-scope
+follow-up if we want to support the Star Tropics (MMC6) ROMs.
 
 ---
 

@@ -68,19 +68,21 @@ Every ROM in these suites passes:
   hardware-unit-specific, won't-fix)
 
 **Mappers**
-- `mmc3_test/{1-clocking, 2-details, 3-A12_clocking, 4-scanline_timing,
-  5-MMC3}` (5/6) and `mmc3_test_2/{...same...}` (5/6) — banking +
+- `mmc3_test/*` (6/6) and `mmc3_test_2/*` (6/6) — banking +
   A12-filtered IRQ counter + Rev B firing + 1-PPU-cycle-accurate
-  scanline IRQ timing. Only Rev A (`6-MMC3_alt` / `6-MMC6`) remains;
-  see "Not yet" for why.
+  scanline IRQ timing + Rev A semantics. The default firing mode is
+  Rev B; Rev A is activated via NES 2.0 submapper 4, a game-DB chip
+  prefix of `MMC3A` (Mesen convention), or
+  `VIBENES_MMC3_FORCE_REV_A=1`. The `6-MMC3_alt` / `6-MMC6` ROMs
+  pass under `VIBENES_MMC3_FORCE_REV_A=1` since they ship as iNES 1.0
+  and aren't in the DB.
+- `mmc3_irq_tests/*` (6/6) — `1.Clocking`, `2.Details`,
+  `3.A12_clocking`, `4.Scanline_timing`, `6.MMC3_rev_B` pass in
+  default Rev B mode; `5.MMC3_rev_A` passes under
+  `VIBENES_MMC3_FORCE_REV_A=1`.
 
 ### Not yet
 
-- **MMC3 Rev A / MMC6 submapper** — `6-MMC3_alt` and `6-MMC6` need
-  Rev A firing semantics (no refire on reload-to-zero). The logic
-  is implemented (`alt_irq_behavior` flag, unit-tested) but has no
-  runtime activation path; iNES 1.0 can't carry submapper info.
-  Write-up in `notes/phase10/follow_ups.md §F2`.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`** — **won't fix**.
   Compares the power-on palette byte-for-byte against values
   captured from blargg's specific NES unit; passing requires
