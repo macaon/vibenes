@@ -971,12 +971,24 @@ impl App {
     /// `next_event()` is required for connect/disconnect state to
     /// propagate inside gilrs.
     fn poll_gamepad(&mut self) {
+        use gilrs::{Axis, Button};
         const DEADBAND: f32 = 0.5;
         let Some(g) = self.gamepad.as_mut() else { return };
         while g.next_event().is_some() {}
+        // Pick the first device that actually *looks* like a game
+        // controller. gilrs happily enumerates HID devices that
+        // Linux classifies as gamepads but that are really keyboards
+        // with consumer-control pages (e.g. Keychron keyboard dock)
+        // and puts them before the real pad — the "first connected"
+        // strategy lands on the wrong one. Require at least one
+        // standard face button *or* a left stick axis to be mapped.
         let mut bits = 0u8;
-        if let Some((_, pad)) = g.gamepads().next() {
-            use gilrs::{Axis, Button};
+        let pad = g.gamepads().find(|(_, p)| {
+            p.button_code(Button::South).is_some()
+                || p.button_code(Button::DPadUp).is_some()
+                || p.axis_code(Axis::LeftStickX).is_some()
+        });
+        if let Some((_, pad)) = pad {
             if pad.is_pressed(Button::South)     { bits |= 0x01; }
             if pad.is_pressed(Button::West)      { bits |= 0x02; }
             if pad.is_pressed(Button::Select)    { bits |= 0x04; }
