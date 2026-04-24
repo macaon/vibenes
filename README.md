@@ -17,10 +17,12 @@ for hardware specifics and describe the model in my own words.
 - ✅ **Master clock + bus** — unified parity-gated DMC + OAM DMA loop
 - ✅ **PPU** — full render pipeline, pixel-precise sprite-0 hit, odd-frame dot skip, open-bus decay
 - ✅ **APU** — 5 channels, frame counter, DMC
+- ✅ **Expansion audio** — bus-level mixer with per-chip pre-scaled blend (FDS wavetable+mod, VRC6 pulse×2 + saw). MMC5 / N163 / Sunsoft 5B / VRC7 land behind the same `Mapper::audio_output` hook.
 - ✅ **Host audio** — cpal + blip_buf
 - ✅ **Windowed runtime** — wgpu, NTSC/PAL-paced, keyboard input
 - ✅ **Overlay UI** — egui menu (F1)
 - ✅ **Battery-backed saves** — `~/.config/vibenes/saves/<rom-stem>.sav`; atomic writes, flush on quit / ROM swap, 3-min safety-flush
+- ✅ **FDS** — mapper 20 with BIOS at `$E000-$FFFF`, 32 KiB PRG-RAM, disk transport, IRQ timer + disk IRQ, F4 multi-disk swap, IPS sidecar saves compatible with Mesen2/FCEUX, RP2C33 wavetable+FM audio synth
 
 ### Supported mappers
 
@@ -38,6 +40,9 @@ for hardware specifics and describe the model in my own words.
 | 16 | Bandai FCG-1/2 / LZ93D50 | ✅ | All submappers (0/3/4/5); 24C01 / 24C02 serial EEPROM with battery save (Dragon Ball, Dragon Ball Z, SD Gundam Gaiden) |
 | 18 | Jaleco SS88006 | ✅ | Nibble-paired PRG/CHR regs; 4-size IRQ counter (4/8/12/16 bit); 8 KB battery PRG-RAM (Pizza Pop!, The Lord of King, Shin Satomi Hakkenden) |
 | 19 / 210 | Namco 163 / 175 / 340 | ✅ | Variant auto-detect; 15-bit IRQ; CIRAM-as-CHR nametable routing; 8 KB battery PRG-RAM + 128 B audio RAM (Rolling Thunder, Star Wars, Battle Fleet, Megami Tensei II). Audio DSP deferred. |
+| 20 | Famicom Disk System | ✅ | `.fds` fwNES format (1-4 sides), BIOS-resolver search path, F4 disk swap, 16-bit timer IRQ + disk transfer IRQ, RP2C33 audio, IPS sidecar saves (Mesen2/FCEUX-compatible) |
+| 24 | Konami VRC6a | ✅ | PRG (16 KB @ $8000, 8 KB @ $C000), CHR 8 × 1 KB, scanline/cycle VRC IRQ, 2 pulse + sawtooth audio (Akumajō Densetsu / JP Castlevania III) |
+| 26 | Konami VRC6b | ✅ | VRC6a with A0/A1 swapped on register writes (Madara, Esper Dream 2) |
 | 66 | GxROM / MHROM | ✅ | 32 KB PRG + 8 KB CHR bank select (e.g. SMB + Duck Hunt) |
 | 159 | Bandai LZ93D50 + 24C01 | ✅ | Shared impl with mapper 16 — always 128-byte 24C01 EEPROM (DBZ: Kyoushuu!, Magical Taruruuto-kun 1/2, SD Gundam Gaiden) |
 
@@ -54,8 +59,10 @@ All ROMs in these suites pass:
 
 ### Not yet
 
-- **Additional mappers** — VRC family (2/4/6/7) and FDS are the next
-  meaningful unlocks for commercial-library coverage.
+- **Additional mappers** — VRC2 / VRC4 / VRC7 are the remaining Konami
+  gaps; Sunsoft 5B (mapper 69, used by Gimmick!) is another high-value
+  unlock. All of them plug into the existing `Mapper::audio_output`
+  expansion-audio mixer.
 - **Second controller + rebinding** — player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`** — **won't fix**.
@@ -307,8 +314,15 @@ src/
 ├── apu/                              pulse × 2, triangle, noise, DMC,
 │                                     frame counter, envelope, sweep,
 │                                     length counter
-├── mapper/                           NROM, MMC1, UxROM, CNROM, MMC3,
-│                                     MMC5, AxROM
+├── mapper/                           NROM, MMC1-5, UxROM, CNROM, AxROM,
+│                                     MMC2/4 (Punch-Out, Fire Emblem),
+│                                     Bandai FCG + 24C0x EEPROM, Jaleco
+│                                     SS88006, Namco 163/175/340, FDS
+│                                     (mapper 20), VRC6 (24/26), GxROM.
+│                                     Expansion audio: fds_audio,
+│                                     vrc6_audio. Shared FDS-side
+│                                     transport in src/fds/ (image, ips,
+│                                     bios).
 ├── gfx/                              wgpu renderer + wgsl passthrough
 ├── ui/                               egui overlay (menus, commands,
 │                                     recent ROMs)

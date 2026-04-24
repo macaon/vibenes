@@ -18,6 +18,8 @@ pub mod mmc5;
 pub mod namco163;
 pub mod nrom;
 pub mod uxrom;
+pub mod vrc6;
+pub mod vrc6_audio;
 
 /// Classification of a PPU bus access, forwarded to the mapper via
 /// [`Mapper::on_ppu_addr`]. MMC5 needs this to pick the BG vs sprite
@@ -309,6 +311,8 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         18 => Ok(Box::new(jaleco_ss88006::JalecoSs88006::new(cart))),
         19 => Ok(Box::new(namco163::Namco163::new(cart))),
         20 => Ok(Box::new(fds::Fds::new(cart))),
+        24 => Ok(Box::new(vrc6::Vrc6::new_a(cart))),
+        26 => Ok(Box::new(vrc6::Vrc6::new_b(cart))),
         159 => Ok(Box::new(bandai_fcg::BandaiFcg::new(cart))),
         210 => Ok(Box::new(namco163::Namco163::new(cart))),
         5 => Ok(Box::new(mmc5::Mmc5::new(cart))),

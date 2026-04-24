@@ -43,12 +43,21 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
-/// Scale factor from APU's `0.0..=1.0` analog level into signed 16-bit
-/// range. Peak NES output hits 1.0 with all five channels at max, so
-/// 25000 leaves ~0.24 dB of headroom before i16 saturation. The blip
-/// filter is DC-blocking, so absolute offset doesn't matter — only
-/// delta magnitude.
-const AMP_SCALE: f32 = 25_000.0;
+/// Scale factor from the bus-combined analog level (APU + cart-side
+/// expansion audio) into signed 16-bit range.
+///
+/// Peak 2A03 output is ~1.0 with all five channels at max. Expansion
+/// chips (FDS ≈ 0.26, VRC6 ≈ 0.91, MMC5/N163/Sunsoft 5B/VRC7 TBD)
+/// add on top linearly, so the bus sum can comfortably exceed 1.0
+/// when an FDS or VRC6 cart hits its loud spots. `20000` gives us
+/// 32768/20000 ≈ 1.64× headroom — enough to keep APU + VRC6 +
+/// FDS peaks below the i16 ceiling without clipping into the
+/// harmonic-distortion regime that was making our output sound
+/// louder than Mesen2.
+///
+/// When a settings UI lands, this becomes the "100% master volume"
+/// reference and users get a proper slider.
+const AMP_SCALE: f32 = 20_000.0;
 
 /// Ring-buffer depth in milliseconds — upper bound on audio latency
 /// and the size of the stall this path can absorb without silencing.
