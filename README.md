@@ -37,6 +37,7 @@ for hardware specifics and describe the model in my own words.
 | 10 | MMC4 / FxROM | ✅ | MMC2 latch + 16 KB PRG banks + 8 KB battery PRG-RAM (Fire Emblem, Famicom Wars) |
 | 16 | Bandai FCG-1/2 / LZ93D50 | ✅ | All submappers (0/3/4/5); 24C01 / 24C02 serial EEPROM with battery save (Dragon Ball, Dragon Ball Z, SD Gundam Gaiden) |
 | 18 | Jaleco SS88006 | ✅ | Nibble-paired PRG/CHR regs; 4-size IRQ counter (4/8/12/16 bit); 8 KB battery PRG-RAM (Pizza Pop!, The Lord of King, Shin Satomi Hakkenden) |
+| 19 / 210 | Namco 163 / 175 / 340 | ✅ | Variant auto-detect; 15-bit IRQ; CIRAM-as-CHR nametable routing; 8 KB battery PRG-RAM + 128 B audio RAM (Rolling Thunder, Star Wars, Battle Fleet, Megami Tensei II). Audio DSP deferred. |
 | 66 | GxROM / MHROM | ✅ | 32 KB PRG + 8 KB CHR bank select (e.g. SMB + Duck Hunt) |
 | 159 | Bandai LZ93D50 + 24C01 | ✅ | Shared impl with mapper 16 — always 128-byte 24C01 EEPROM (DBZ: Kyoushuu!, Magical Taruruuto-kun 1/2, SD Gundam Gaiden) |
 
