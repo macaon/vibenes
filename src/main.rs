@@ -14,6 +14,8 @@ use vibenes::app;
 use vibenes::audio;
 use vibenes::clock::Region;
 use vibenes::config::Config;
+use vibenes::fds::{BiosError, FdsBios, FdsImage};
+use vibenes::fds::bios::BiosSearch;
 use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
@@ -51,7 +53,8 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let rom_path = parse_args();
+    let cli = parse_args();
+    let rom_path = cli.rom_path.clone();
 
     // Audio stream opens eagerly with the NTSC clock. If the user
     // later loads a PAL ROM the sink is re-tuned inside swap_cartridge
@@ -70,6 +73,28 @@ fn run() -> Result<()> {
     };
 
     let initial_nes = match rom_path.as_deref() {
+        Some(path) if is_fds_extension(path) => {
+            // FDS path — Phase 0 loads the image + BIOS and prints a
+            // summary, then falls through to the no-ROM state because
+            // the mapper implementation isn't wired yet (Phase 1).
+            // This keeps the "can't legally bundle BIOS" UX honest:
+            // users get clear feedback on BIOS discovery before any
+            // attempt to step the CPU.
+            match load_fds_info(path, cli.fds_bios.as_deref()) {
+                Ok(()) => {
+                    eprintln!(
+                        "vibenes: FDS file parsed successfully, but disk emulation \
+                         is not yet implemented — use File → Open ROM… to pick an \
+                         iNES cart, or wait for the next phase."
+                    );
+                    None
+                }
+                Err(e) => {
+                    eprintln!("vibenes: {e:#}");
+                    None
+                }
+            }
+        }
         Some(path) => match Cartridge::load(path)
             .with_context(|| format!("loading ROM {}", path.display()))
         {
@@ -116,8 +141,80 @@ fn frame_period_for(region: Region) -> Duration {
     }
 }
 
-fn parse_args() -> Option<PathBuf> {
-    std::env::args_os().skip(1).next().map(PathBuf::from)
+/// Parsed command-line arguments. Add fields here when new flags
+/// land — keeping all CLI state in one struct keeps `run()` free of
+/// arg-parsing tangles.
+struct CliArgs {
+    rom_path: Option<PathBuf>,
+    /// `--fds-bios <path>`. Overrides the XDG / ROM-dir BIOS search
+    /// for this session only. Also accepted via the
+    /// `VIBENES_FDS_BIOS` environment variable (see
+    /// [`vibenes::fds::bios`]).
+    fds_bios: Option<PathBuf>,
+}
+
+fn parse_args() -> CliArgs {
+    let mut rom_path = None;
+    let mut fds_bios = None;
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--fds-bios" {
+            fds_bios = args.next().map(PathBuf::from);
+        } else if rom_path.is_none() {
+            rom_path = Some(PathBuf::from(arg));
+        } else {
+            eprintln!(
+                "vibenes: ignoring extra positional argument '{}'",
+                PathBuf::from(&arg).display()
+            );
+        }
+    }
+    CliArgs { rom_path, fds_bios }
+}
+
+/// True when a path looks like an FDS disk image (`.fds` or `.qd`
+/// extension, case-insensitive).
+fn is_fds_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("fds") || e.eq_ignore_ascii_case("qd"))
+        .unwrap_or(false)
+}
+
+/// Phase 0 FDS load stub: parse the disk image, resolve the BIOS,
+/// print the `loaded:` line. Returns `Ok(())` when everything worked
+/// or an error describing what's missing. The mapper + disk-transport
+/// state machine that would actually run the game come in Phase 1.
+fn load_fds_info(path: &Path, cli_bios: Option<&Path>) -> Result<()> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading FDS image {}", path.display()))?;
+    let image = FdsImage::from_bytes(&bytes)
+        .with_context(|| format!("parsing FDS image {}", path.display()))?;
+
+    // Warn about any validation oddities — malformed homebrew dumps,
+    // non-standard side counts, etc. — without failing the load.
+    for w in &image.warnings {
+        eprintln!("vibenes: {}", w);
+    }
+
+    let search = BiosSearch {
+        cli_override: cli_bios.map(Path::to_path_buf),
+        config: None, // wired via Config once the settings UI lands
+        rom_dir: path.parent().map(Path::to_path_buf),
+    };
+    let bios = FdsBios::resolve(&search).map_err(|e: BiosError| anyhow::Error::new(e))?;
+
+    eprintln!(
+        "loaded: {} BIOS={} ({})",
+        image.describe(),
+        bios.source.display(),
+        if bios.is_known_good {
+            "known-good CRC"
+        } else {
+            "unrecognized CRC, proceeding anyway"
+        },
+    );
+    Ok(())
 }
 
 /// Window + renderer + optional NES owner. Each RedrawRequested drives

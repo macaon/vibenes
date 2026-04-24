@@ -50,6 +50,7 @@ impl Default for SaveStyle {
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub save: SaveConfig,
+    pub fds: FdsConfig,
 }
 
 /// Save-file-related settings. Factored out so a future settings UI
@@ -92,6 +93,32 @@ impl Default for SaveConfig {
             // narrow the SIGKILL data-loss window without hammering
             // the disk.
             autosave_every_n_frames: 60 * 60 * 3,
+        }
+    }
+}
+
+/// Famicom Disk System configuration. All fields are `None` by
+/// default; vibenes falls through to the `VIBENES_FDS_BIOS` env var
+/// + XDG + ROM-directory search order defined in
+/// [`crate::fds::bios`].
+#[derive(Debug, Clone)]
+pub struct FdsConfig {
+    /// Absolute path to `disksys.rom`. Set here by a future settings
+    /// UI; can be overridden per-run by the `--fds-bios` CLI flag or
+    /// the `VIBENES_FDS_BIOS` environment variable.
+    pub bios_path: Option<PathBuf>,
+    /// Whether to auto-insert disk side 0 on power-on / reset.
+    /// Default true (matches Mesen2's `FdsAutoLoadDisk`): users load
+    /// a `.fds` file expecting the BIOS splash + title screen
+    /// without having to manually reach for the disk-swap menu.
+    pub auto_insert: bool,
+}
+
+impl Default for FdsConfig {
+    fn default() -> Self {
+        Self {
+            bios_path: None,
+            auto_insert: true,
         }
     }
 }

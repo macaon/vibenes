@@ -7,6 +7,7 @@ pub mod clock;
 pub mod config;
 pub mod cpu;
 pub mod crc32;
+pub mod fds;
 pub mod gamedb;
 pub mod gfx;
 pub mod mapper;
