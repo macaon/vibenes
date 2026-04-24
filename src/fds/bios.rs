@@ -17,8 +17,10 @@
 //! 2. `--fds-bios <path>` CLI flag (parsed in `main.rs`, threaded in
 //!    as `cli_override`).
 //! 3. `config.fds.bios_path` — where a future settings UI writes.
-//! 4. `$XDG_CONFIG_HOME/vibenes/disksys.rom` (default
-//!    `$HOME/.config/vibenes/disksys.rom`).
+//! 4. `$XDG_CONFIG_HOME/vibenes/bios/disksys.rom` (default
+//!    `$HOME/.config/vibenes/bios/disksys.rom`). The `bios/`
+//!    subdir mirrors the existing `saves/` layout so firmware and
+//!    save data live side-by-side in the config directory.
 //! 5. Same directory as the `.fds` being loaded — last-ditch for
 //!    users who keep everything next to the ROM.
 //!
@@ -223,15 +225,25 @@ fn gather_candidate_paths(search: &BiosSearch) -> Vec<PathBuf> {
     )
 }
 
-/// `$XDG_CONFIG_HOME/vibenes/disksys.rom` — falling back to
-/// `$HOME/.config/vibenes/disksys.rom` when `XDG_CONFIG_HOME` is unset.
-/// Returns `None` only when neither env var is set (headless CI that
-/// has no HOME, basically).
+/// `$XDG_CONFIG_HOME/vibenes/bios/disksys.rom` — falling back to
+/// `$HOME/.config/vibenes/bios/disksys.rom` when `XDG_CONFIG_HOME`
+/// is unset. The `bios/` subdir mirrors the existing `saves/` layout
+/// (see `SaveStyle::ConfigDir`), so `.config/vibenes/` cleanly
+/// separates firmware from save data. Returns `None` only when
+/// neither env var is set (headless CI that has no HOME, basically).
 fn xdg_config_path() -> Option<PathBuf> {
     let base: PathBuf = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))?;
-    Some(base.join("vibenes").join(BIOS_FILENAME))
+    Some(xdg_config_path_for(&base))
+}
+
+/// Pure layout helper: given an XDG config base dir, compose the
+/// full BIOS path. Separated so tests can pin down the exact
+/// subdirectory convention (`vibenes/bios/disksys.rom`) without
+/// mutating global env vars.
+fn xdg_config_path_for(base: &Path) -> PathBuf {
+    base.join("vibenes").join("bios").join(BIOS_FILENAME)
 }
 
 #[cfg(test)]
@@ -332,6 +344,18 @@ mod tests {
         assert!(text.contains("/xdg.rom"), "got: {text}");
         assert!(text.contains("VIBENES_FDS_BIOS"), "got: {text}");
         assert!(text.contains("--fds-bios"), "got: {text}");
+    }
+
+    #[test]
+    fn xdg_layout_is_vibenes_bios_disksys_rom() {
+        // The BIOS lives under a dedicated `bios/` subdir so it
+        // mirrors the existing `saves/` layout — both live side-by-
+        // side under `$XDG_CONFIG_HOME/vibenes/`.
+        let out = xdg_config_path_for(Path::new("/home/alice/.config"));
+        assert_eq!(
+            out,
+            PathBuf::from("/home/alice/.config/vibenes/bios/disksys.rom")
+        );
     }
 
     #[test]
