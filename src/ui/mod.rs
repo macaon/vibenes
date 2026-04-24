@@ -87,6 +87,13 @@ impl UiLayer {
         self.overlay.back_or_close();
     }
 
+    /// Open the overlay directly on the Disk submenu. Wired to the F4
+    /// hotkey; FDS games commonly need quick disk-side swaps mid-play
+    /// and tabbing through the root menu each time would be tedious.
+    pub fn open_disk_menu(&mut self) {
+        self.overlay.open_disk();
+    }
+
     /// Forward a winit event to egui. Callers should check the returned
     /// `EventResponse::consumed` and skip their own handling when
     /// egui has taken ownership (e.g. while a text field is focused).
@@ -112,6 +119,7 @@ impl UiLayer {
         video: &VideoSettings,
         region: Option<Region>,
         nes_loaded: bool,
+        fds: Option<crate::nes::FdsInfo>,
         cmds: &mut Vec<UiCommand>,
     ) {
         // Keep ctx's pixels_per_point in sync with winit's current
@@ -147,6 +155,7 @@ impl UiLayer {
                 region,
                 recent,
                 nes_loaded,
+                fds,
                 cmds,
             );
         });

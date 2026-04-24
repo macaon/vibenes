@@ -31,4 +31,11 @@ pub enum UiCommand {
     SetAspectRatio(ParMode),
     /// Warm reset (the console's Reset button).
     Reset,
+    /// FDS only: eject the currently-inserted disk side. No-op on
+    /// non-FDS carts.
+    FdsEject,
+    /// FDS only: insert the specified 0-indexed disk side. If a disk
+    /// is already loaded the mapper handles the eject+pause+reinsert
+    /// dance automatically so games detect the swap edge.
+    FdsInsert(u8),
 }

@@ -194,6 +194,43 @@ pub trait Mapper: Send {
     /// Called by the save pipeline after a successful write to disk.
     /// Clears the dirty flag.
     fn mark_saved(&mut self) {}
+
+    /// FDS-only: return a `&mut dyn FdsControl` for disk-swap + status
+    /// queries. Every other mapper leaves this `None`, which lets the
+    /// UI layer gray out the "Disk…" menu for iNES carts without any
+    /// `Any` downcasting.
+    fn as_fds_mut(&mut self) -> Option<&mut dyn FdsControl> {
+        None
+    }
+
+    /// Immutable counterpart for status queries — building the disk-
+    /// submenu doesn't need mutation.
+    fn as_fds(&self) -> Option<&dyn FdsControl> {
+        None
+    }
+}
+
+/// Narrow interface exposed by mapper 20 for the host app: query
+/// disk-side count / current side, eject the loaded disk, insert a
+/// specific side. Wired from the overlay menu (`Screen::Disk`) and
+/// the F4 hotkey. Plain trait so the UI layer stays decoupled from
+/// `crate::mapper::fds::Fds`'s concrete type.
+pub trait FdsControl {
+    /// Total number of disk sides in the image. Always ≥ 1 for
+    /// well-formed ROMs.
+    fn side_count(&self) -> u8;
+    /// Currently-inserted side (0-indexed), or `None` when ejected.
+    fn current_side(&self) -> Option<u8>;
+    /// Remove the current disk. Subsequent `$4032` polls see the
+    /// "disk not present" bits set. Called again during the
+    /// physical-swap pause of [`FdsControl::insert`].
+    fn eject(&mut self);
+    /// Insert a specific side. If a disk is already inserted, ejects
+    /// first and schedules the new side to appear after a short
+    /// pause — games check the `disk removed → disk present`
+    /// transition on `$4032`, so we can't jump directly from one
+    /// side to another.
+    fn insert(&mut self, side: u8);
 }
 
 pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {

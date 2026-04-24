@@ -215,4 +215,39 @@ impl Nes {
             sink.end_frame();
         }
     }
+
+    /// FDS disk status for the overlay menu. `None` on non-FDS carts.
+    /// Returns `(side_count, current_side_or_none)`.
+    pub fn fds_info(&self) -> Option<FdsInfo> {
+        let control = self.bus.mapper.as_fds()?;
+        Some(FdsInfo {
+            side_count: control.side_count(),
+            current_side: control.current_side(),
+        })
+    }
+
+    /// Eject the current FDS disk side. No-op on non-FDS carts.
+    pub fn fds_eject(&mut self) {
+        if let Some(fds) = self.bus.mapper.as_fds_mut() {
+            fds.eject();
+        }
+    }
+
+    /// Insert the given FDS disk side (0-indexed). No-op on non-FDS
+    /// carts or when `side` is out of range.
+    pub fn fds_insert(&mut self, side: u8) {
+        if let Some(fds) = self.bus.mapper.as_fds_mut() {
+            fds.insert(side);
+        }
+    }
+}
+
+/// Snapshot of an FDS drive's current state for the UI. Deliberately
+/// a plain copy (not a borrow) so the overlay-menu render pass can
+/// build items without holding a live reference into the mapper.
+#[derive(Debug, Clone, Copy)]
+pub struct FdsInfo {
+    pub side_count: u8,
+    /// Currently-inserted side (0-indexed). `None` when ejected.
+    pub current_side: Option<u8>,
 }

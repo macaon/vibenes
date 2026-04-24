@@ -396,6 +396,10 @@ impl App {
 
         let mut cmds: Vec<UiCommand> = Vec::new();
         let surface_size = renderer.surface_size();
+        // Snapshot the FDS drive state (if any) for the overlay. The
+        // UI needs an owned copy rather than a borrow into `nes` so
+        // the egui render closure stays flexible about borrows.
+        let fds_info = self.nes.as_ref().and_then(|n| n.fds_info());
         if let (Some(ui), Some(window)) = (self.ui.as_mut(), self.window.as_ref()) {
             ui.run(
                 window,
@@ -404,6 +408,7 @@ impl App {
                 &self.video,
                 region,
                 nes_loaded,
+                fds_info,
                 &mut cmds,
             );
         }
@@ -564,6 +569,14 @@ impl ApplicationHandler for App {
                     if let Some(ui) = self.ui.as_mut() {
                         ui.toggle_overlay();
                     }
+                } else if code == KeyCode::F4 && state == ElementState::Pressed {
+                    // Jump straight into the Disk submenu. Only useful
+                    // on FDS carts — but harmless otherwise: the
+                    // submenu will show "(not an FDS cart)" and Esc
+                    // backs out.
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.open_disk_menu();
+                    }
                 } else if code == KeyCode::Escape && state == ElementState::Pressed {
                     // Esc backs out of the overlay (or closes it from
                     // root); when the overlay is closed it quits the
@@ -637,6 +650,16 @@ impl App {
                 self.pending_window_resize = true;
             }
             UiCommand::Reset => self.reset_nes(),
+            UiCommand::FdsEject => {
+                if let Some(nes) = self.nes.as_mut() {
+                    nes.fds_eject();
+                }
+            }
+            UiCommand::FdsInsert(side) => {
+                if let Some(nes) = self.nes.as_mut() {
+                    nes.fds_insert(side);
+                }
+            }
         }
     }
 

@@ -11,6 +11,7 @@
 use egui::{Align2, Color32, Context, FontId, Key, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 
 use crate::clock::Region;
+use crate::nes::FdsInfo;
 use crate::ui::{RecentRoms, UiCommand};
 use crate::video::{ParMode, PixelAspectRatio, VideoSettings};
 
@@ -21,6 +22,10 @@ pub enum Screen {
     Scale,
     Aspect,
     Recent,
+    /// FDS-only: disk-side chooser. Enabled from Root when the loaded
+    /// cart is a Famicom Disk System image; greyed out otherwise.
+    /// Also reachable via the F4 hotkey.
+    Disk,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,6 +49,16 @@ impl OverlayState {
     pub fn open_root(&mut self) {
         self.open = true;
         self.screen = Screen::Root;
+        self.cursor = 0;
+    }
+
+    /// Jump the overlay straight into the disk-swap submenu. Used by
+    /// the F4 hotkey — "please insert side B" prompts are common
+    /// enough during multi-disk play that making the user tab through
+    /// Root every time would be annoying.
+    pub fn open_disk(&mut self) {
+        self.open = true;
+        self.screen = Screen::Disk;
         self.cursor = 0;
     }
 
@@ -123,6 +138,7 @@ fn items_for(
     region: Option<Region>,
     recent: &RecentRoms,
     nes_loaded: bool,
+    fds: Option<FdsInfo>,
 ) -> Vec<Item> {
     match screen {
         Screen::Root => {
@@ -142,6 +158,14 @@ fn items_for(
                 Item::new("Aspect ratio", Selected::Goto(Screen::Aspect))
                     .with_badge(par_badge(video.par_mode, region)),
             );
+            // Disk submenu — enabled only for FDS carts.
+            let mut disk_item = Item::new("Disk", Selected::Goto(Screen::Disk));
+            if let Some(info) = fds {
+                disk_item = disk_item.with_badge(fds_root_badge(info));
+            } else {
+                disk_item = disk_item.disabled();
+            }
+            items.push(disk_item);
             let reset_item = Item::new("Reset", Selected::Cmd(UiCommand::Reset));
             items.push(if nes_loaded { reset_item } else { reset_item.disabled() });
             items.push(Item::new("Quit", Selected::Cmd(UiCommand::Quit)));
@@ -196,6 +220,55 @@ fn items_for(
                     .collect()
             }
         }
+        Screen::Disk => {
+            let Some(info) = fds else {
+                return vec![Item::new("(not an FDS cart)", Selected::Back).disabled()];
+            };
+            let mut items = Vec::with_capacity(info.side_count as usize + 1);
+            for side in 0..info.side_count {
+                let label = fds_side_label(side, info.side_count);
+                let mut item = Item::new(label, Selected::Cmd(UiCommand::FdsInsert(side)));
+                if info.current_side == Some(side) {
+                    item = item.with_badge("●");
+                }
+                items.push(item);
+            }
+            let mut eject = Item::new("Eject", Selected::Cmd(UiCommand::FdsEject));
+            if info.current_side.is_none() {
+                // Already ejected — nothing to do.
+                eject = eject.disabled();
+            }
+            items.push(eject);
+            items
+        }
+    }
+}
+
+/// Badge for the "Disk" entry on the root menu. Summarizes current
+/// side + total-count in a single line, e.g. `Side A / 2` or
+/// `ejected / 2`.
+fn fds_root_badge(info: FdsInfo) -> String {
+    match info.current_side {
+        Some(s) => format!("{} / {}", fds_side_label(s, info.side_count), info.side_count),
+        None => format!("ejected / {}", info.side_count),
+    }
+}
+
+/// Human-readable label for one FDS disk side. Two-side games are
+/// almost universally labeled Side A / Side B; larger counts (3+
+/// sides on rare multi-disk games) get `Disk 1 Side A`, `Disk 1 Side
+/// B`, `Disk 2 Side A`, ...
+fn fds_side_label(side: u8, total: u8) -> String {
+    if total <= 2 {
+        match side {
+            0 => "Side A".to_string(),
+            1 => "Side B".to_string(),
+            _ => format!("Side {}", side),
+        }
+    } else {
+        let disk = side / 2 + 1;
+        let face = if side & 1 == 0 { 'A' } else { 'B' };
+        format!("Disk {disk} Side {face}")
     }
 }
 
@@ -212,6 +285,7 @@ fn screen_title(screen: Screen) -> &'static str {
         Screen::Scale => "Scale",
         Screen::Aspect => "Aspect ratio",
         Screen::Recent => "Recent ROMs",
+        Screen::Disk => "Disk",
     }
 }
 
@@ -547,6 +621,7 @@ pub fn run_overlay(
     region: Option<Region>,
     recent: &RecentRoms,
     nes_loaded: bool,
+    fds: Option<FdsInfo>,
     cmds: &mut Vec<UiCommand>,
 ) -> bool {
     if !state.open {
@@ -558,7 +633,7 @@ pub fn run_overlay(
     // Build items, clamp cursor, capture pending selection, paint —
     // all in one pass. We resolve the pending selection by rebuilding
     // items just-in-time so the action carries the right `Selected`.
-    let mut items = items_for(state.screen, video, region, recent, nes_loaded);
+    let mut items = items_for(state.screen, video, region, recent, nes_loaded, fds);
     if items.is_empty() {
         items.push(Item::new("(empty)", Selected::Back).disabled());
     }

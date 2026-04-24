@@ -37,7 +37,7 @@
 //! behavior (e.g. the `149 not 150` quirk for Ai Senshi Nicol).
 
 use crate::fds::FdsData;
-use crate::mapper::Mapper;
+use crate::mapper::{FdsControl, Mapper};
 use crate::rom::{Cartridge, Mirroring};
 
 /// Sentinel value for "no disk inserted in the drive."
@@ -56,6 +56,14 @@ const INTER_BYTE_DELAY: u32 = 149;
 /// Size of the audio register window `$4040-$4097`. Storage-only for
 /// now; synthesis comes later.
 const AUDIO_REG_COUNT: usize = 0x4098 - 0x4040;
+
+/// CPU cycles to spend in the ejected state before auto-inserting a
+/// pending side on a swap. ~280 ms at 1.79 MHz — enough frames for
+/// the game's `$4032` polling loop to register the disk-removed edge
+/// before the new side becomes readable. Matches the "real physical
+/// swap takes a moment" UX and what Mesen2 does via its eject
+/// counter (`_autoDiskSwitchCounter`), scaled to CPU cycles.
+const SWAP_EJECT_CYCLES: u32 = 500_000;
 
 pub struct Fds {
     // --- Memory ---
@@ -146,6 +154,15 @@ pub struct Fds {
     /// External-connector write register (`$4026` in, `$4033` out).
     /// Stored verbatim so reads from `$4033` round-trip.
     ext_con_reg: u8,
+
+    /// Pending-insert bookkeeping. When the user asks for a disk
+    /// swap while another side is loaded, we first simulate a
+    /// physical eject for [`SWAP_EJECT_CYCLES`] CPU cycles, then
+    /// auto-insert the pending side. Games check for the removed→
+    /// present transition on `$4032` — without the pause they'd see
+    /// no edge and reject the "swap."
+    pending_insert_side: Option<u8>,
+    pending_insert_cycles: u32,
 }
 
 impl Fds {
@@ -195,11 +212,20 @@ impl Fds {
             disk_irq_line: false,
             audio_regs: [0; AUDIO_REG_COUNT],
             ext_con_reg: 0,
+            pending_insert_side: None,
+            pending_insert_cycles: 0,
         }
     }
 
     fn is_disk_inserted(&self) -> bool {
         self.disk_number != NO_DISK_INSERTED
+    }
+
+    fn raw_eject(&mut self) {
+        self.disk_number = NO_DISK_INSERTED;
+        self.scanning_disk = false;
+        self.end_of_head = true;
+        self.disk_position = 0;
     }
 
     fn current_side_len(&self) -> u32 {
@@ -224,6 +250,29 @@ impl Fds {
                 // Phase 3 will set a dirty flag here to feed the IPS
                 // save-pipeline. For now writes land in memory only.
             }
+        }
+    }
+
+    /// Drive the pending-swap counter. When it reaches zero, insert
+    /// the queued side. The counter only runs between `insert()` and
+    /// the actual re-insertion — off the hot path for non-FDS carts
+    /// (trait default `None`) and for FDS sessions without any pending
+    /// swap (`pending_insert_side.is_none()`).
+    fn tick_pending_insert(&mut self) {
+        let Some(pending_side) = self.pending_insert_side else {
+            return;
+        };
+        if self.pending_insert_cycles == 0 {
+            self.pending_insert_side = None;
+            // Auto-insert — bypass the eject-first dance because we
+            // already ejected when the swap was scheduled.
+            if (pending_side as usize) < self.disk_sides.len() {
+                self.disk_number = pending_side as u32;
+                self.disk_position = 0;
+                self.end_of_head = true;
+            }
+        } else {
+            self.pending_insert_cycles -= 1;
         }
     }
 
@@ -494,8 +543,17 @@ impl Mapper for Fds {
     }
 
     fn on_cpu_cycle(&mut self) {
+        self.tick_pending_insert();
         self.clock_timer_irq();
         self.clock_disk();
+    }
+
+    fn as_fds_mut(&mut self) -> Option<&mut dyn FdsControl> {
+        Some(self)
+    }
+
+    fn as_fds(&self) -> Option<&dyn FdsControl> {
+        Some(self)
     }
 
     fn irq_line(&self) -> bool {
@@ -575,6 +633,51 @@ impl Fds {
                 self.audio_regs[idx] = value;
             }
             _ => {}
+        }
+    }
+}
+
+impl FdsControl for Fds {
+    fn side_count(&self) -> u8 {
+        self.disk_sides.len() as u8
+    }
+
+    fn current_side(&self) -> Option<u8> {
+        if self.is_disk_inserted() {
+            Some(self.disk_number as u8)
+        } else {
+            None
+        }
+    }
+
+    fn eject(&mut self) {
+        self.raw_eject();
+        // User-initiated eject cancels any pending auto-insert.
+        self.pending_insert_side = None;
+        self.pending_insert_cycles = 0;
+    }
+
+    fn insert(&mut self, side: u8) {
+        let count = self.side_count();
+        if count == 0 || side >= count {
+            return;
+        }
+        if self.is_disk_inserted() {
+            // Currently loaded — eject first, schedule the new side
+            // to appear after the pause window. Games check the
+            // removed→present transition on $4032 before accepting
+            // a swap as valid.
+            self.raw_eject();
+            self.pending_insert_side = Some(side);
+            self.pending_insert_cycles = SWAP_EJECT_CYCLES;
+        } else if self.pending_insert_side.is_some() {
+            // Already mid-swap; just retarget the pending side.
+            self.pending_insert_side = Some(side);
+        } else {
+            // Empty drive → insert directly, no pause needed.
+            self.disk_number = side as u32;
+            self.disk_position = 0;
+            self.end_of_head = true;
         }
     }
 }
@@ -854,6 +957,90 @@ mod tests {
     }
 
     // ---- CRC accumulator ----
+
+    /// Build an FDS cart with two distinct sides — a minimum
+    /// fixture for exercising disk-swap semantics.
+    fn make_two_side_cart() -> Cartridge {
+        let mut cart = make_cart();
+        let data = cart.fds_data.as_mut().unwrap();
+        // Clone side 0 to give us a side 1. Actual contents don't
+        // matter for swap tests — only side-count presence does.
+        let clone = data.gapped_sides[0].clone();
+        data.gapped_sides.push(clone);
+        let hdr_clone = data.headers[0].clone();
+        data.headers.push(hdr_clone);
+        cart
+    }
+
+    // ---- FdsControl: eject / insert with post-swap pause ----
+
+    #[test]
+    fn fds_control_reports_side_count_and_current_side() {
+        let m = Fds::new(make_two_side_cart());
+        assert_eq!(FdsControl::side_count(&m), 2);
+        // Auto-insert side 0 at power-on.
+        assert_eq!(FdsControl::current_side(&m), Some(0));
+    }
+
+    #[test]
+    fn fds_eject_clears_disk_number_and_reports_ejected() {
+        let mut m = Fds::new(make_two_side_cart());
+        FdsControl::eject(&mut m);
+        assert_eq!(FdsControl::current_side(&m), None);
+        // $4032 bits 0,1,2 all set when ejected.
+        let v = m.cpu_read_ex(0x4032).unwrap();
+        assert_eq!(v & 0x07, 0x07);
+    }
+
+    #[test]
+    fn fds_insert_from_ejected_goes_direct() {
+        let mut m = Fds::new(make_two_side_cart());
+        FdsControl::eject(&mut m);
+        FdsControl::insert(&mut m, 1);
+        // No pause when inserting into empty drive.
+        assert_eq!(FdsControl::current_side(&m), Some(1));
+    }
+
+    #[test]
+    fn fds_insert_while_loaded_ejects_then_reinserts_after_pause() {
+        let mut m = Fds::new(make_two_side_cart());
+        // Side 0 is loaded at power-on.
+        assert_eq!(FdsControl::current_side(&m), Some(0));
+        FdsControl::insert(&mut m, 1);
+        // Immediately ejected; new side pending.
+        assert_eq!(FdsControl::current_side(&m), None);
+        assert_eq!(m.pending_insert_side, Some(1));
+        assert_eq!(m.pending_insert_cycles, SWAP_EJECT_CYCLES);
+
+        // Tick through the pause. One cycle short — still ejected.
+        for _ in 0..SWAP_EJECT_CYCLES {
+            m.on_cpu_cycle();
+        }
+        assert_eq!(FdsControl::current_side(&m), None);
+
+        // Next cycle applies the pending insert.
+        m.on_cpu_cycle();
+        assert_eq!(FdsControl::current_side(&m), Some(1));
+        assert!(m.pending_insert_side.is_none());
+    }
+
+    #[test]
+    fn fds_insert_out_of_range_is_noop() {
+        let mut m = Fds::new(make_two_side_cart());
+        FdsControl::eject(&mut m);
+        FdsControl::insert(&mut m, 99); // bogus
+        assert_eq!(FdsControl::current_side(&m), None);
+    }
+
+    #[test]
+    fn fds_eject_cancels_pending_swap() {
+        let mut m = Fds::new(make_two_side_cart());
+        FdsControl::insert(&mut m, 1); // schedule swap
+        assert!(m.pending_insert_side.is_some());
+        FdsControl::eject(&mut m);
+        assert!(m.pending_insert_side.is_none());
+        assert_eq!(FdsControl::current_side(&m), None);
+    }
 
     #[test]
     fn update_crc_matches_ccitt_polynomial() {
