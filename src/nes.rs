@@ -124,6 +124,78 @@ impl Nes {
         save::save_path_for(&meta.rom_path, meta.prg_chr_crc32, cfg)
     }
 
+    /// Resolve the FDS disk-save (`.ips`) path for the current cart,
+    /// or `None` when no metadata is attached. Same routing rules as
+    /// [`Nes::save_path`], just a different extension — a single cart
+    /// can carry both a `.sav` (battery) and `.ips` (disk) file side
+    /// by side.
+    pub fn disk_save_path(&self, cfg: &SaveConfig) -> Option<PathBuf> {
+        let meta = self.save_meta.as_ref()?;
+        save::save_path_for_with_ext(
+            &meta.rom_path,
+            meta.prg_chr_crc32,
+            cfg,
+            save::DISK_SAVE_EXT,
+        )
+    }
+
+    /// Load the FDS disk-save sidecar (`<stem>.ips`) and hand it to
+    /// the mapper. No-op on non-FDS carts. Returns `Ok(true)` when a
+    /// patch was applied, `Ok(false)` on "nothing to do," `Err` only
+    /// for real I/O errors.
+    pub fn load_disk(&mut self, cfg: &SaveConfig) -> Result<bool> {
+        let Some(meta) = self.save_meta.as_ref() else {
+            return Ok(false);
+        };
+        // Mapper declines (returns None) on non-FDS carts; skip I/O.
+        if self.bus.mapper.disk_save_data().is_none() {
+            return Ok(false);
+        }
+        let Some(path) = save::save_path_for_with_ext(
+            &meta.rom_path,
+            meta.prg_chr_crc32,
+            cfg,
+            save::DISK_SAVE_EXT,
+        ) else {
+            return Ok(false);
+        };
+        match save::load(&path)? {
+            None => Ok(false),
+            Some(bytes) => {
+                self.bus.mapper.load_disk_save(&bytes);
+                self.bus.mapper.mark_disk_saved();
+                Ok(true)
+            }
+        }
+    }
+
+    /// Persist the FDS disk-save sidecar when the mapper's disk is
+    /// dirty. No-op on non-FDS carts and when nothing has changed.
+    /// Returns `Ok(true)` on a successful write, `Ok(false)` when
+    /// there was nothing to do, `Err` on I/O error.
+    pub fn save_disk(&mut self, cfg: &SaveConfig) -> Result<bool> {
+        let Some(meta) = self.save_meta.as_ref() else {
+            return Ok(false);
+        };
+        if !self.bus.mapper.disk_save_dirty() {
+            return Ok(false);
+        }
+        let Some(bytes) = self.bus.mapper.disk_save_data() else {
+            return Ok(false);
+        };
+        let Some(path) = save::save_path_for_with_ext(
+            &meta.rom_path,
+            meta.prg_chr_crc32,
+            cfg,
+            save::DISK_SAVE_EXT,
+        ) else {
+            return Ok(false);
+        };
+        save::write(&path, &bytes)?;
+        self.bus.mapper.mark_disk_saved();
+        Ok(true)
+    }
+
     /// Currently-attached ROM path, for convenience in the app layer
     /// (e.g. to rebuild metadata after a cart swap).
     pub fn current_rom_path(&self) -> Option<&Path> {

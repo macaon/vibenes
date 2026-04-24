@@ -152,6 +152,11 @@ impl Cartridge {
             bios: bios.bytes,
             bios_known_good: bios.is_known_good,
             had_header: image.had_header,
+            // Pristine raw sides feed the IPS save-diff pipeline. Clone
+            // out of the image before it goes out of scope — mapping to
+            // gapped/headers above already consumed what we needed from
+            // it via shared references.
+            original_raw_sides: image.sides.clone(),
         };
 
         Ok(Self {

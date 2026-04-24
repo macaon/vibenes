@@ -25,15 +25,33 @@ use anyhow::{Context, Result};
 
 use crate::config::{SaveConfig, SaveStyle};
 
-/// Extension appended to the ROM stem for save files.
+/// Extension appended to the ROM stem for battery-RAM save files.
 pub const SAVE_EXT: &str = "sav";
 
-/// Resolve the save-file path for a cartridge loaded from `rom_path`.
-/// Returns `None` if no sensible path can be produced (for example
-/// `rom_path` has no filename, or the config-dir style is selected
-/// but neither `XDG_CONFIG_HOME` nor `HOME` is set). The caller
-/// should log and skip rather than panic.
+/// Extension appended to the ROM stem for FDS disk-save sidecars.
+/// Matches Mesen2's `.ips` naming so users can move saves between
+/// emulators.
+pub const DISK_SAVE_EXT: &str = "ips";
+
+/// Resolve the save-file path for a cartridge loaded from `rom_path`,
+/// using the default battery-RAM extension [`SAVE_EXT`].
 pub fn save_path_for(rom_path: &Path, crc: u32, cfg: &SaveConfig) -> Option<PathBuf> {
+    save_path_for_with_ext(rom_path, crc, cfg, SAVE_EXT)
+}
+
+/// Resolve the save-file path for a cartridge loaded from `rom_path`,
+/// letting the caller pick the extension. FDS disk saves pass
+/// [`DISK_SAVE_EXT`] so `<rom-stem>.ips` lives alongside any battery
+/// `.sav` for carts that use both channels. Returns `None` when no
+/// sensible path can be produced (no filename on `rom_path`, or the
+/// config-dir style is selected but neither `XDG_CONFIG_HOME` nor
+/// `HOME` is set).
+pub fn save_path_for_with_ext(
+    rom_path: &Path,
+    crc: u32,
+    cfg: &SaveConfig,
+    ext: &str,
+) -> Option<PathBuf> {
     match cfg.style {
         SaveStyle::ConfigDir => {
             let stem = rom_path.file_stem()?;
@@ -43,10 +61,10 @@ pub fn save_path_for(rom_path: &Path, crc: u32, cfg: &SaveConfig) -> Option<Path
                 .or_else(saves_dir)?;
             let mut p = dir;
             p.push(stem);
-            p.set_extension(SAVE_EXT);
+            p.set_extension(ext);
             Some(p)
         }
-        SaveStyle::NextToRom => Some(rom_path.with_extension(SAVE_EXT)),
+        SaveStyle::NextToRom => Some(rom_path.with_extension(ext)),
         SaveStyle::ByCrc => {
             let dir = cfg
                 .dir_override
@@ -54,7 +72,7 @@ pub fn save_path_for(rom_path: &Path, crc: u32, cfg: &SaveConfig) -> Option<Path
                 .or_else(saves_dir)?;
             let mut p = dir;
             p.push(format!("{crc:08X}"));
-            p.set_extension(SAVE_EXT);
+            p.set_extension(ext);
             Some(p)
         }
     }

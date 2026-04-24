@@ -250,9 +250,23 @@ impl App {
                 Ok(false) => {}
                 Err(e) => eprintln!("vibenes: load save failed: {e:#}"),
             }
+            match nes.load_disk(&config.save) {
+                Ok(true) => {
+                    if let Some(p) = nes.disk_save_path(&config.save) {
+                        eprintln!("vibenes: loaded FDS disk save from {}", p.display());
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => eprintln!("vibenes: load disk save failed: {e:#}"),
+            }
             if nes.bus.mapper.save_data().is_some() {
                 if let Some(p) = nes.save_path(&config.save) {
                     eprintln!("vibenes: battery save file → {}", p.display());
+                }
+            }
+            if nes.bus.mapper.disk_save_data().is_some() {
+                if let Some(p) = nes.disk_save_path(&config.save) {
+                    eprintln!("vibenes: FDS disk save file → {}", p.display());
                 }
             }
         }
@@ -385,6 +399,18 @@ impl App {
                             }
                             Ok(false) => {}
                             Err(e) => eprintln!("vibenes: autosave failed: {e:#}"),
+                        }
+                        match nes.save_disk(&self.config.save) {
+                            Ok(true) => {
+                                if let Some(p) = nes.disk_save_path(&self.config.save) {
+                                    eprintln!(
+                                        "vibenes: periodic FDS disk save → {}",
+                                        p.display()
+                                    );
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => eprintln!("vibenes: disk autosave failed: {e:#}"),
                         }
                     }
                 }
@@ -691,6 +717,19 @@ impl App {
             }
             Err(e) => eprintln!("vibenes: shutdown save failed: {e:#}"),
         }
+        match nes.save_disk(&self.config.save) {
+            Ok(true) => {
+                if let Some(p) = nes.disk_save_path(&self.config.save) {
+                    eprintln!("vibenes: saved FDS {} on {kind}", p.display());
+                }
+            }
+            Ok(false) => {
+                if nes.bus.mapper.disk_save_data().is_some() {
+                    eprintln!("vibenes: {kind} — no FDS disk changes to save");
+                }
+            }
+            Err(e) => eprintln!("vibenes: shutdown disk save failed: {e:#}"),
+        }
     }
 
     /// Clean shutdown: flush the save, then drop heavy resources in a
@@ -734,11 +773,15 @@ impl App {
         let incoming_crc = cart.prg_chr_crc32;
         let region = match self.nes.as_mut() {
             Some(nes) => {
-                // Flush the outgoing cart's battery RAM before we
-                // drop its mapper. After this we can't recover the
-                // bytes — swap_cartridge consumes the mapper.
+                // Flush the outgoing cart's battery RAM and FDS disk
+                // save before we drop its mapper. After this we can't
+                // recover the bytes — swap_cartridge consumes the
+                // mapper.
                 if let Err(e) = nes.save_battery(&self.config.save) {
                     eprintln!("vibenes: save before swap failed: {e:#}");
+                }
+                if let Err(e) = nes.save_disk(&self.config.save) {
+                    eprintln!("vibenes: disk save before swap failed: {e:#}");
                 }
                 if let Err(e) = nes.swap_cartridge(cart) {
                     eprintln!("vibenes: swap failed: {e:#}");
@@ -753,6 +796,15 @@ impl App {
                     }
                     Ok(false) => {}
                     Err(e) => eprintln!("vibenes: load save failed: {e:#}"),
+                }
+                match nes.load_disk(&self.config.save) {
+                    Ok(true) => {
+                        if let Some(p) = nes.disk_save_path(&self.config.save) {
+                            eprintln!("vibenes: loaded FDS disk save from {}", p.display());
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => eprintln!("vibenes: load disk save failed: {e:#}"),
                 }
                 nes.region()
             }
@@ -781,6 +833,15 @@ impl App {
                     }
                     Ok(false) => {}
                     Err(e) => eprintln!("vibenes: load save failed: {e:#}"),
+                }
+                match nes.load_disk(&self.config.save) {
+                    Ok(true) => {
+                        if let Some(p) = nes.disk_save_path(&self.config.save) {
+                            eprintln!("vibenes: loaded FDS disk save from {}", p.display());
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => eprintln!("vibenes: load disk save failed: {e:#}"),
                 }
                 let region = nes.region();
                 self.nes = Some(nes);

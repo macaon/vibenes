@@ -77,4 +77,12 @@ pub struct FdsData {
     /// header. Phase 3 re-emits the header when saving a rebuilt
     /// image if the original had one.
     pub had_header: bool,
+    /// Pristine per-side raw bytes (exactly [`image::SIDE_SIZE`] each)
+    /// captured at load time. This is the diff base for IPS save
+    /// encoding: the patch encodes the delta between "current disk"
+    /// (rebuilt from the gapped runtime buffer) and "original disk"
+    /// (this vec). On the load path, an IPS patch is applied to a
+    /// reconstructed raw file built from these sides, which then gets
+    /// re-sliced and re-gapped into a fresh runtime buffer.
+    pub original_raw_sides: Vec<Vec<u8>>,
 }

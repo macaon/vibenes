@@ -208,6 +208,53 @@ pub trait Mapper: Send {
     fn as_fds(&self) -> Option<&dyn FdsControl> {
         None
     }
+
+    // ---- FDS disk-save persistence ----
+    //
+    // Parallel to the battery-save hooks above but distinct so the FDS
+    // mapper can expose both channels: it has no battery-backed PRG-RAM
+    // in the iNES sense (the "save" lives on the disk itself), and its
+    // on-disk state is encoded as an IPS diff rather than a blob.
+    //
+    // Non-FDS mappers keep all four methods as no-op defaults.
+    //
+    // Contract:
+    //  * `disk_save_data` returns `None` outside mapper 20, and on
+    //    mapper 20 returns an IPS patch (`PATCH` + records + `EOF`)
+    //    encoding the delta between the current disk bytes and the
+    //    pristine-on-load snapshot. Interop with Mesen2's `.ips`
+    //    format is the design goal — users can move `.ips` files
+    //    between emulators.
+    //  * `load_disk_save` is invoked once, right after cart mount,
+    //    before the CPU reset. The IPS patch is applied to the
+    //    pristine raw file and the result re-sliced / re-gapped into
+    //    the runtime buffer the transport reads from.
+    //  * `disk_save_dirty` flips true on any disk-write that actually
+    //    changes a byte (write_disk_byte guards the compare). Cleared
+    //    by `mark_disk_saved` after a successful flush.
+
+    /// FDS disk state serialized as an IPS patch. `None` on non-FDS
+    /// carts; on FDS carts returns a patch even when no writes have
+    /// happened yet (magic + `EOF`, 8 bytes).
+    fn disk_save_data(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Apply an IPS patch to restore disk state. Non-FDS mappers no-op.
+    /// FDS mappers silently ignore malformed patches (the save file is
+    /// user data — surfacing a parse error would block the game from
+    /// booting with a known-working ROM).
+    fn load_disk_save(&mut self, _ips_bytes: &[u8]) {}
+
+    /// True when any disk byte has been modified since the last
+    /// `mark_disk_saved` call. Non-FDS mappers always false.
+    fn disk_save_dirty(&self) -> bool {
+        false
+    }
+
+    /// Called by the save pipeline after a successful IPS write.
+    /// Clears the disk-dirty flag. No-op outside FDS.
+    fn mark_disk_saved(&mut self) {}
 }
 
 /// Narrow interface exposed by mapper 20 for the host app: query

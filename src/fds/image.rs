@@ -253,6 +253,18 @@ impl FdsImage {
         self.sides.iter().map(|s| add_gaps(s)).collect()
     }
 
+    /// 16-byte fwNES header that matches the one Mesen2 emits when it
+    /// round-trips a disk: `'F','D','S',0x1A`, side count, then eleven
+    /// zero-padding bytes. Used by [`rebuild_raw_file`] so IPS saves
+    /// are byte-identical to Mesen2's when the original carried a
+    /// header.
+    pub fn fwnes_header_bytes(side_count: u8) -> [u8; FWNES_HEADER_SIZE] {
+        let mut hdr = [0u8; FWNES_HEADER_SIZE];
+        hdr[0..4].copy_from_slice(&FWNES_HEADER);
+        hdr[4] = side_count;
+        hdr
+    }
+
     /// Extract the 56-byte disk-header block content from each side
     /// (the bytes right after the block-type `0x01` tag). Used by
     /// the auto-insert matching heuristic in Phase 2+. Returns an
@@ -284,6 +296,16 @@ impl FdsImage {
             },
         )
     }
+}
+
+/// Standalone variant of [`FdsImage::gapped_sides`] that accepts a
+/// pre-sliced list of raw sides (the form produced by
+/// [`split_raw_sides`]) and returns one gapped buffer per side. Used
+/// by the load-save path: apply the IPS patch to the pristine raw
+/// file, split back into sides, then re-gap here to rebuild the
+/// runtime scan buffer the mapper addresses.
+pub fn gap_raw_sides(raw_sides: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    raw_sides.iter().map(|s| add_gaps(s)).collect()
 }
 
 /// Walk the block structure of a raw 65500-byte side and emit the
@@ -363,6 +385,170 @@ fn add_gaps(raw_side: &[u8]) -> Vec<u8> {
     }
 
     out
+}
+
+/// Inverse of [`add_gaps`]. Given a gapped side — the scan-ready form
+/// the disk transport addresses — reconstruct the [`SIDE_SIZE`]-byte
+/// raw representation by emitting only block-data bytes and dropping
+/// the leading gap, per-block sync markers, fake CRC bytes, and
+/// inter-block gaps.
+///
+/// The walker is a state machine with two states:
+///
+/// - **In gap**: advance until the next `0x80` sync byte; switch to
+///   out-of-gap on the byte after.
+/// - **Out of gap**: decode the block-type byte. Lengths come from
+///   Mesen2's `RebuildFdsFile` table:
+///     * `1` (disk header) → 56 bytes
+///     * `2` (file count) → 2 bytes
+///     * `3` (file header) → 16 bytes; stash the size field at
+///       offsets 13/14 for the next type-4 block
+///     * `4` (file data) → `1 + stashed_file_size`
+///     * anything else → copy the rest of the gapped side verbatim
+///       and stop. Matches Mesen2's fallback for non-standard dumps.
+///
+///   After emitting the block, skip the 2-byte fake CRC and return
+///   to the in-gap state.
+///
+/// Output is padded (or truncated) to exactly [`SIDE_SIZE`] bytes so a
+/// round-trip `raw → add_gaps → rebuild_raw` is length-stable.
+///
+/// **Port note:** mirrors Mesen2's `FdsLoader::RebuildFdsFile`
+/// (`~/Git/Mesen2/Core/NES/Loaders/FdsLoader.cpp:93-158`) per-side
+/// logic. Byte-identical output for all block-type sequences we've
+/// tested, which is the interop guarantee — saved `.ips` files
+/// round-trip between vibenes and Mesen2.
+pub fn rebuild_raw(gapped_side: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(SIDE_SIZE);
+    let len = gapped_side.len();
+    let mut i = 0usize;
+    let mut in_gap = true;
+    let mut file_size: usize = 0;
+
+    while i < len {
+        if in_gap {
+            if gapped_side[i] == BLOCK_SYNC_BYTE {
+                in_gap = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        let block_type = gapped_side[i];
+        let block_len: usize = match block_type {
+            1 => DISK_HEADER_BLOCK_LEN,
+            2 => FILE_COUNT_BLOCK_LEN,
+            3 => {
+                // File-header block: stash the file-size field at
+                // offsets +13 / +14 (little-endian) for the next
+                // type-4 block that follows.
+                if i + 14 < len {
+                    file_size =
+                        gapped_side[i + 13] as usize | ((gapped_side[i + 14] as usize) << 8);
+                }
+                FILE_HEADER_BLOCK_LEN
+            }
+            4 => 1 + file_size,
+            _ => {
+                // Non-standard tag — copy the rest of the gapped side
+                // as-is. Matches Mesen2's recovery path for homebrew
+                // dumps with unexpected trailer bytes.
+                out.extend_from_slice(&gapped_side[i..]);
+                break;
+            }
+        };
+
+        if i + block_len >= SIDE_SIZE {
+            // Mesen2's bound: if emitting this block would push the
+            // raw-output index past a full side, stop. The `resize`
+            // below pads the rest with zeros.
+            break;
+        }
+        if i + block_len > len {
+            // Guard against a truncated gapped buffer — shouldn't
+            // happen in practice (gapped sides are always ≥ raw side
+            // size) but defensive.
+            break;
+        }
+
+        out.extend_from_slice(&gapped_side[i..i + block_len]);
+        i += block_len;
+        // Skip the 2-byte fake CRC that lives between block and gap.
+        i += 2;
+        in_gap = true;
+    }
+
+    // Pad (or truncate) to exactly SIDE_SIZE so concatenations across
+    // sides remain aligned on SIDE_SIZE boundaries — IPS offsets rely
+    // on this.
+    out.resize(SIDE_SIZE, 0);
+    out
+}
+
+/// Build a `.fds` file-level byte stream from a set of gapped sides.
+/// Each side is passed through [`rebuild_raw`] to strip gaps/syncs/
+/// CRCs, then concatenated. If `need_header` is true, a 16-byte fwNES
+/// header is prepended — matching Mesen2's `RebuildFdsFile(needHeader=true)`
+/// output byte-for-byte, which is what lets our saved `.ips` patches
+/// interoperate with Mesen2's.
+///
+/// Consumers pass `need_header` based on whether the *original* file
+/// carried one; the re-emitted header has the same shape (`FDS\x1A`,
+/// side count, zero-padded) that Mesen2 uses, so the diff against the
+/// original stays empty in the header region.
+pub fn rebuild_raw_file(gapped_sides: &[Vec<u8>], need_header: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(
+        (if need_header { FWNES_HEADER_SIZE } else { 0 }) + gapped_sides.len() * SIDE_SIZE,
+    );
+    if need_header {
+        out.extend_from_slice(&FdsImage::fwnes_header_bytes(gapped_sides.len() as u8));
+    }
+    for side in gapped_sides {
+        out.extend_from_slice(&rebuild_raw(side));
+    }
+    out
+}
+
+/// Mirror of [`rebuild_raw_file`] but for sides that are *already*
+/// raw (the `original_raw_sides` snapshot we stash at load time, or a
+/// freshly IPS-patched snapshot). Skips the per-side `rebuild_raw`
+/// step and just concatenates.
+pub fn build_raw_file_from_raw(raw_sides: &[Vec<u8>], need_header: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(
+        (if need_header { FWNES_HEADER_SIZE } else { 0 }) + raw_sides.len() * SIDE_SIZE,
+    );
+    if need_header {
+        out.extend_from_slice(&FdsImage::fwnes_header_bytes(raw_sides.len() as u8));
+    }
+    for side in raw_sides {
+        // Each raw side must be exactly SIDE_SIZE — be defensive and
+        // pad/truncate so the output aligns.
+        if side.len() >= SIDE_SIZE {
+            out.extend_from_slice(&side[..SIDE_SIZE]);
+        } else {
+            out.extend_from_slice(side);
+            out.resize(out.len() + (SIDE_SIZE - side.len()), 0);
+        }
+    }
+    out
+}
+
+/// Split a raw `.fds` file byte stream (with optional leading fwNES
+/// header) back into per-side [`SIDE_SIZE`]-byte buffers. Used on the
+/// load path: apply the saved IPS patch to the pristine raw file, then
+/// re-slice into sides that [`add_gaps`] can turn into runtime
+/// scan-ready buffers. Returns empty when the input can't accommodate
+/// at least one full side.
+pub fn split_raw_sides(bytes: &[u8], has_header: bool) -> Vec<Vec<u8>> {
+    let offset = if has_header { FWNES_HEADER_SIZE } else { 0 };
+    if bytes.len() < offset + SIDE_SIZE {
+        return Vec::new();
+    }
+    let data = &bytes[offset..];
+    let side_count = data.len() / SIDE_SIZE;
+    (0..side_count)
+        .map(|i| data[i * SIDE_SIZE..(i + 1) * SIDE_SIZE].to_vec())
+        .collect()
 }
 
 /// If the file starts with the fwNES magic, split off the 16-byte
@@ -598,6 +784,125 @@ mod tests {
         assert_eq!(gapped[..LEADING_GAP_BYTES], vec![0u8; LEADING_GAP_BYTES]);
         assert_eq!(gapped[LEADING_GAP_BYTES], BLOCK_SYNC_BYTE);
         assert_eq!(&gapped[LEADING_GAP_BYTES + 1..LEADING_GAP_BYTES + 17], &raw[..]);
+    }
+
+    /// Round-trip property for the save/load path: take a synthesized
+    /// raw side with a realistic block sequence (disk header, file
+    /// count, file header with size field, file data, file header /
+    /// data pair #2), run it through `add_gaps`, rebuild the raw side
+    /// from the gapped form, and expect byte-identical output to the
+    /// original raw. This is the load-bearing property of the IPS
+    /// save path: edits made to the gapped buffer must show up at the
+    /// right raw offsets when we diff.
+    #[test]
+    fn rebuild_raw_round_trips_add_gaps() {
+        let mut raw = vec![0u8; SIDE_SIZE];
+        // Disk header block (type 1, 56 bytes payload).
+        raw[0] = BLOCK_TAG_DISK_HEADER;
+        raw[1..1 + NINTENDO_HVC.len()].copy_from_slice(NINTENDO_HVC);
+        // File count block (type 2, 2 bytes payload).
+        raw[DISK_HEADER_BLOCK_LEN] = 2;
+        raw[DISK_HEADER_BLOCK_LEN + 1] = 2; // two files
+        // File header #1 (type 3, 16 bytes payload; size=5 at offsets 13/14).
+        let fh1 = DISK_HEADER_BLOCK_LEN + FILE_COUNT_BLOCK_LEN;
+        raw[fh1] = 3;
+        raw[fh1 + 13] = 5;
+        raw[fh1 + 14] = 0;
+        // File data #1 (type 4, 1 + 5 bytes payload).
+        let fd1 = fh1 + FILE_HEADER_BLOCK_LEN;
+        raw[fd1] = 4;
+        for i in 0..5 {
+            raw[fd1 + 1 + i] = 0x40 + i as u8;
+        }
+        // File header #2 (type 3; size=3).
+        let fh2 = fd1 + 1 + 5;
+        raw[fh2] = 3;
+        raw[fh2 + 13] = 3;
+        raw[fh2 + 14] = 0;
+        // File data #2 (type 4, 1 + 3 bytes).
+        let fd2 = fh2 + FILE_HEADER_BLOCK_LEN;
+        raw[fd2] = 4;
+        raw[fd2 + 1] = 0xAA;
+        raw[fd2 + 2] = 0xBB;
+        raw[fd2 + 3] = 0xCC;
+
+        let gapped = add_gaps(&raw);
+        let rebuilt = rebuild_raw(&gapped);
+
+        assert_eq!(rebuilt.len(), SIDE_SIZE);
+        // The emitted block region must match byte-for-byte.
+        let end = fd2 + 4;
+        assert_eq!(
+            &rebuilt[..end],
+            &raw[..end],
+            "rebuilt raw diverges from original in block region",
+        );
+        // Tail (gap-zero padding) is zero in both.
+        assert!(rebuilt[end..].iter().all(|&b| b == 0));
+    }
+
+    /// Unknown block-type tags cause `add_gaps` to fall through into
+    /// a raw-copy. The inverse walker (`rebuild_raw`) mirrors this:
+    /// when it hits a non-standard tag after the gap, it copies the
+    /// remainder as-is. Together the round-trip still holds for the
+    /// structured prefix.
+    #[test]
+    fn rebuild_raw_preserves_disk_header_only() {
+        // Single-block side: just the disk header, rest zeros.
+        let mut raw = vec![0u8; SIDE_SIZE];
+        raw[0] = BLOCK_TAG_DISK_HEADER;
+        raw[1..1 + NINTENDO_HVC.len()].copy_from_slice(NINTENDO_HVC);
+
+        let gapped = add_gaps(&raw);
+        let rebuilt = rebuild_raw(&gapped);
+        assert_eq!(rebuilt.len(), SIDE_SIZE);
+        // Block 1 region matches.
+        assert_eq!(&rebuilt[..DISK_HEADER_BLOCK_LEN], &raw[..DISK_HEADER_BLOCK_LEN]);
+    }
+
+    #[test]
+    fn rebuild_raw_file_prepends_fwnes_header_when_asked() {
+        let raw = vec![0u8; SIDE_SIZE];
+        let gapped = add_gaps(&raw);
+        let sides = vec![gapped];
+        let out = rebuild_raw_file(&sides, true);
+        // Header: "FDS\x1A", side count 1, then 11 zero bytes.
+        assert_eq!(&out[0..4], b"FDS\x1A");
+        assert_eq!(out[4], 1);
+        for b in &out[5..FWNES_HEADER_SIZE] {
+            assert_eq!(*b, 0);
+        }
+        // Plus one full side.
+        assert_eq!(out.len(), FWNES_HEADER_SIZE + SIDE_SIZE);
+    }
+
+    #[test]
+    fn rebuild_raw_file_without_header_is_just_concatenation() {
+        let a = add_gaps(&vec![0u8; SIDE_SIZE]);
+        let b = add_gaps(&vec![0u8; SIDE_SIZE]);
+        let out = rebuild_raw_file(&[a, b], false);
+        assert_eq!(out.len(), 2 * SIDE_SIZE);
+        // All zeros — gap-only side rebuilds to zeros.
+        assert!(out.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn split_raw_sides_handles_header_and_bareform() {
+        // Two-side file with header.
+        let mut headered = Vec::new();
+        headered.extend_from_slice(&FdsImage::fwnes_header_bytes(2));
+        headered.extend_from_slice(&vec![1u8; SIDE_SIZE]);
+        headered.extend_from_slice(&vec![2u8; SIDE_SIZE]);
+        let sides = split_raw_sides(&headered, true);
+        assert_eq!(sides.len(), 2);
+        assert!(sides[0].iter().all(|&b| b == 1));
+        assert!(sides[1].iter().all(|&b| b == 2));
+
+        // One-side bare file.
+        let bare = vec![3u8; SIDE_SIZE];
+        let sides = split_raw_sides(&bare, false);
+        assert_eq!(sides.len(), 1);
+        assert!(sides[0].iter().all(|&b| b == 3));
     }
 
     #[test]

@@ -36,7 +36,10 @@
 //! kept Mesen2's comments in-place where they document tested
 //! behavior (e.g. the `149 not 150` quirk for Ai Senshi Nicol).
 
-use crate::fds::FdsData;
+use crate::fds::image::{
+    build_raw_file_from_raw, gap_raw_sides, rebuild_raw_file, split_raw_sides, SIDE_SIZE,
+};
+use crate::fds::{ips, FdsData};
 use crate::mapper::{FdsControl, Mapper};
 use crate::rom::{Cartridge, Mirroring};
 
@@ -163,6 +166,24 @@ pub struct Fds {
     /// no edge and reject the "swap."
     pending_insert_side: Option<u8>,
     pending_insert_cycles: u32,
+
+    // --- IPS save persistence ---
+    /// Pristine raw sides captured at load time. The diff base for
+    /// IPS encoding: `encode(original_raw_file, current_raw_file)`.
+    /// Cloned once on cart mount and kept immutable for the session;
+    /// disk-write traffic modifies `disk_sides` (gapped) instead.
+    original_raw_sides: Vec<Vec<u8>>,
+    /// Whether the loaded `.fds` file carried the 16-byte fwNES
+    /// header. Preserved here so the raw-file reconstructions on the
+    /// save/load path keep their offsets byte-aligned with Mesen2's
+    /// `.ips` files for cross-emulator interop.
+    had_header: bool,
+    /// Flips true the first time a disk byte actually changes
+    /// relative to the preceding value. Cleared by `mark_disk_saved`.
+    /// The transport emits a `WriteFdsDisk` every scan cycle in write
+    /// mode; the byte-compare in [`Fds::write_disk_byte`] keeps gaps
+    /// and unchanged overwrites from marking the save dirty.
+    save_dirty: bool,
 }
 
 impl Fds {
@@ -177,6 +198,8 @@ impl Fds {
 
         let mirroring = cart.mirroring;
         let prg_ram_size = cart.prg_ram_size.max(32 * 1024);
+        let original_raw_sides = data.original_raw_sides;
+        let had_header = data.had_header;
 
         Self {
             prg_ram: vec![0u8; prg_ram_size],
@@ -214,6 +237,9 @@ impl Fds {
             ext_con_reg: 0,
             pending_insert_side: None,
             pending_insert_cycles: 0,
+            original_raw_sides,
+            had_header,
+            save_dirty: false,
         }
     }
 
@@ -246,9 +272,13 @@ impl Fds {
     fn write_disk_byte(&mut self, value: u8) {
         if let Some(side) = self.disk_sides.get_mut(self.disk_number as usize) {
             if let Some(slot) = side.get_mut(self.disk_position as usize) {
-                *slot = value;
-                // Phase 3 will set a dirty flag here to feed the IPS
-                // save-pipeline. For now writes land in memory only.
+                if *slot != value {
+                    *slot = value;
+                    // Real changes mark the save dirty for the IPS
+                    // flush pipeline. Unchanged overwrites (the common
+                    // case during gap-zero scans) stay silent.
+                    self.save_dirty = true;
+                }
             }
         }
     }
@@ -559,6 +589,68 @@ impl Mapper for Fds {
     fn irq_line(&self) -> bool {
         self.timer_irq_line || self.disk_irq_line
     }
+
+    fn disk_save_data(&self) -> Option<Vec<u8>> {
+        // Rebuild the current raw-file view from the live gapped
+        // buffer, diff against the pristine snapshot, and IPS-encode
+        // the delta. Empty deltas still produce a valid (8-byte)
+        // patch — the caller decides whether to persist it.
+        let original = build_raw_file_from_raw(&self.original_raw_sides, self.had_header);
+        let current = rebuild_raw_file(&self.disk_sides, self.had_header);
+        // Defensive: if lengths diverge (side count changed via some
+        // future code path), fall back to empty so we never write a
+        // malformed diff.
+        if original.len() != current.len() {
+            return None;
+        }
+        ips::encode(&original, &current).ok()
+    }
+
+    fn load_disk_save(&mut self, ips_bytes: &[u8]) {
+        // Nothing to do on an empty / missing file — caller-side
+        // upstream already skipped the write in that case. Defensive
+        // double-check so a zero-byte file from a crashed previous
+        // run can't break boot.
+        if ips_bytes.is_empty() {
+            return;
+        }
+        let original = build_raw_file_from_raw(&self.original_raw_sides, self.had_header);
+        let patched = match ips::apply(&original, ips_bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("FDS: ignoring malformed IPS save: {e}");
+                return;
+            }
+        };
+        let raw_sides = split_raw_sides(&patched, self.had_header);
+        if raw_sides.len() != self.original_raw_sides.len() {
+            log::warn!(
+                "FDS: IPS save produced {} sides; expected {} — ignoring",
+                raw_sides.len(),
+                self.original_raw_sides.len(),
+            );
+            return;
+        }
+        if raw_sides.iter().any(|s| s.len() != SIDE_SIZE) {
+            log::warn!("FDS: IPS save has a side of unexpected length — ignoring");
+            return;
+        }
+        // Swap the runtime gapped buffer for a freshly-gapped version
+        // of the patched sides. The disk transport will scan these on
+        // the next cycle; because this is called before CPU reset the
+        // game never sees the mid-swap state.
+        self.disk_sides = gap_raw_sides(&raw_sides);
+        // Newly-loaded state is clean until the game writes to it.
+        self.save_dirty = false;
+    }
+
+    fn disk_save_dirty(&self) -> bool {
+        self.save_dirty
+    }
+
+    fn mark_disk_saved(&mut self) {
+        self.save_dirty = false;
+    }
 }
 
 impl Fds {
@@ -723,6 +815,7 @@ mod tests {
                 bios,
                 bios_known_good: true,
                 had_header: false,
+                original_raw_sides: image.sides.clone(),
             }),
         }
     }
@@ -1040,6 +1133,115 @@ mod tests {
         FdsControl::eject(&mut m);
         assert!(m.pending_insert_side.is_none());
         assert_eq!(FdsControl::current_side(&m), None);
+    }
+
+    // ---- IPS disk save persistence ----
+
+    /// Starting state: no disk writes yet. `disk_save_dirty` is false
+    /// and `disk_save_data` produces an IPS patch that is just
+    /// `"PATCH"` + `"EOF"` — 8 bytes, no records.
+    #[test]
+    fn disk_save_data_empty_when_nothing_written() {
+        let m = Fds::new(make_cart());
+        assert!(!Mapper::disk_save_dirty(&m));
+        let patch = Mapper::disk_save_data(&m).expect("FDS mapper must produce Some");
+        assert_eq!(&patch[0..5], b"PATCH");
+        assert_eq!(&patch[5..8], b"EOF");
+        assert_eq!(patch.len(), 8, "empty diff must be PATCH+EOF only");
+    }
+
+    /// Writing into a block-data region via the transport's
+    /// `WriteFdsDisk` path marks the save dirty and produces an IPS
+    /// patch that round-trips: applying it to a fresh mapper
+    /// reproduces the write.
+    #[test]
+    fn disk_save_roundtrip_reproduces_write() {
+        // Tweak a byte inside the gapped buffer directly — simulates
+        // a write done by the disk transport post-CRC.
+        let mut m = Fds::new(make_cart());
+        // Pick an arbitrary position inside the first block (after
+        // the leading gap + sync).
+        let target = crate::fds::image::SIDE_SIZE / 2;
+        // Simulate a transport write by going through write_disk_byte.
+        m.disk_position = target as u32;
+        m.write_disk_byte(0x5A);
+        assert!(Mapper::disk_save_dirty(&m));
+
+        let patch = Mapper::disk_save_data(&m).unwrap();
+        // Apply to a fresh mapper and verify the byte lands at the
+        // same gapped position.
+        let mut fresh = Fds::new(make_cart());
+        Mapper::load_disk_save(&mut fresh, &patch);
+        assert_eq!(
+            fresh.disk_sides[0][target],
+            0x5A,
+            "IPS-loaded disk should reproduce the write at the same gapped offset",
+        );
+        // Load-path clears the dirty flag.
+        assert!(!Mapper::disk_save_dirty(&fresh));
+    }
+
+    /// `mark_disk_saved` clears the dirty flag so the save pipeline
+    /// skips repeat flushes until the next real write.
+    #[test]
+    fn mark_disk_saved_clears_dirty() {
+        let mut m = Fds::new(make_cart());
+        m.disk_position = 100;
+        m.write_disk_byte(0x99);
+        assert!(Mapper::disk_save_dirty(&m));
+        Mapper::mark_disk_saved(&mut m);
+        assert!(!Mapper::disk_save_dirty(&m));
+    }
+
+    /// `write_disk_byte` must NOT dirty when the underlying byte
+    /// already matches — the transport re-writes unchanged gap zeros
+    /// on every scan cycle, and we don't want that to flag saves.
+    #[test]
+    fn write_disk_byte_does_not_dirty_on_unchanged_value() {
+        let mut m = Fds::new(make_cart());
+        // Gap bytes are zeros; writing zero must stay silent.
+        m.disk_position = 0;
+        m.write_disk_byte(0);
+        assert!(!Mapper::disk_save_dirty(&m));
+    }
+
+    /// Malformed IPS data (wrong magic / truncated) must not crash or
+    /// alter the current disk state — boot has to succeed even if the
+    /// save file was corrupted by an interrupted previous run.
+    #[test]
+    fn load_disk_save_ignores_malformed_patch() {
+        let mut m = Fds::new(make_cart());
+        let before = m.disk_sides.clone();
+        Mapper::load_disk_save(&mut m, b"NOTAPATCH");
+        assert_eq!(m.disk_sides, before);
+    }
+
+    /// Non-FDS mappers must keep the default no-op behavior — the
+    /// save pipeline relies on `disk_save_data() == None` as its
+    /// "this cart doesn't need IPS flushes" signal.
+    #[test]
+    fn non_fds_mapper_has_no_disk_save() {
+        use crate::mapper::nrom::Nrom;
+        use crate::rom::{Cartridge, Mirroring, TvSystem};
+        let cart = Cartridge {
+            prg_rom: vec![0xEA; 16 * 1024],
+            chr_rom: vec![0u8; 8 * 1024],
+            chr_ram: false,
+            mapper_id: 0,
+            submapper: 0,
+            mirroring: Mirroring::Horizontal,
+            battery_backed: false,
+            prg_ram_size: 0,
+            prg_nvram_size: 0,
+            tv_system: TvSystem::Ntsc,
+            is_nes2: false,
+            prg_chr_crc32: 0,
+            db_matched: false,
+            fds_data: None,
+        };
+        let m = Nrom::new(cart);
+        assert!(Mapper::disk_save_data(&m).is_none());
+        assert!(!Mapper::disk_save_dirty(&m));
     }
 
     #[test]
