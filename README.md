@@ -103,9 +103,10 @@ matched to it.
 
 **Gamepad** (P1, fixed mapping for now — remapping UI is future
 work): Xbox-style `A`=A, `X`=B, `Back`=Select, `Menu/Start`=Start,
-D-pad or left stick for the D-pad. Keyboard and gamepad state OR
-together, so either works at any time. Controller 2 is still future
-work.
+D-pad or left stick for the D-pad. `Home`/`Guide` toggles the overlay
+menu; while the menu is open, D-pad up/down moves the cursor, `A`
+confirms, `B` backs out. Keyboard and gamepad state OR together, so
+either works at any time. Controller 2 is still future work.
 
 The overlay menu (F1) pauses the emulator and shows a centered modal
 over a darkened freeze-frame: Scale (1x-6x), Aspect (Auto / 1:1 / 5:4

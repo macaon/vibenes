@@ -34,6 +34,11 @@ pub struct OverlayState {
     pub open: bool,
     pub screen: Screen,
     pub cursor: usize,
+    /// Last observed pointer position. The mouse-hover handler only
+    /// steals the cursor from the keyboard / gamepad when the pointer
+    /// *moves*; a stationary mouse that happens to sit over an item
+    /// would otherwise overwrite every ↑/↓ input on the next frame.
+    last_pointer: Option<Pos2>,
 }
 
 impl Default for OverlayState {
@@ -42,6 +47,7 @@ impl Default for OverlayState {
             open: false,
             screen: Screen::Root,
             cursor: 0,
+            last_pointer: None,
         }
     }
 }
@@ -588,7 +594,22 @@ fn hit_test_rows(
     let (pointer_pos, clicked) = ctx.input(|i| {
         (i.pointer.hover_pos(), i.pointer.primary_clicked())
     });
-    let Some(pos) = pointer_pos else { return };
+    let Some(pos) = pointer_pos else {
+        state.last_pointer = None;
+        return;
+    };
+
+    // Only let the mouse drive the cursor when it has actually moved
+    // since the last frame. Without this, a stationary pointer that
+    // happens to sit over an item would overwrite keyboard / gamepad
+    // navigation every frame, pinning the highlight to the mouse
+    // position. A click is always honored regardless — the user
+    // clearly wants the row they clicked on.
+    let moved = state
+        .last_pointer
+        .map(|prev| (prev - pos).length_sq() > 0.0)
+        .unwrap_or(true);
+    state.last_pointer = Some(pos);
 
     let first_row_y = TITLE_H + MARGIN;
     for (idx, item) in items.iter().enumerate() {
@@ -598,7 +619,9 @@ fn hit_test_rows(
         let row_y = first_row_y + idx as f32 * ROW_H;
         let rect = vrect(origin, s, 2.0, row_y, VW - 4.0, ROW_H);
         if rect.contains(pos) {
-            state.cursor = idx;
+            if moved || clicked {
+                state.cursor = idx;
+            }
             if clicked {
                 ctx.data_mut(|d| {
                     d.insert_temp(

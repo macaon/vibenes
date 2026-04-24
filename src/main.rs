@@ -18,7 +18,7 @@ use vibenes::config::Config;
 use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
-use vibenes::ui::{RecentRoms, UiCommand, UiLayer};
+use vibenes::ui::{NavKey, RecentRoms, UiCommand, UiLayer};
 use vibenes::video::VideoSettings;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -231,6 +231,13 @@ struct App {
     /// re-sampled. Steam may still grab the same button at the OS
     /// level — this just gives the emulator its own binding.
     pending_menu_toggle: bool,
+    /// Edge-triggered menu navigation events from the gamepad
+    /// (D-pad + South/East face buttons). Drained after
+    /// `poll_gamepad` and fed into the overlay via
+    /// [`UiLayer::queue_nav`]. Queuing regardless of overlay state
+    /// is safe: the overlay's `consume_key` only fires when
+    /// showing, and unused egui input is silently dropped.
+    pending_nav: Vec<NavKey>,
 }
 
 impl App {
@@ -330,6 +337,7 @@ impl App {
             gamepad,
             active_pad: None,
             pending_menu_toggle: false,
+            pending_nav: Vec::new(),
         }
     }
 
@@ -377,6 +385,14 @@ impl App {
             self.pending_menu_toggle = false;
             if let Some(ui) = self.ui.as_mut() {
                 ui.toggle_overlay();
+            }
+        }
+        if !self.pending_nav.is_empty() {
+            let nav = std::mem::take(&mut self.pending_nav);
+            if let Some(ui) = self.ui.as_mut() {
+                for n in nav {
+                    ui.queue_nav(n);
+                }
             }
         }
 
@@ -1022,8 +1038,26 @@ impl App {
                         eprintln!("gamepad[{:?}] Mode pressed -> menu toggle", ev.id);
                     }
                 }
-                EventType::ButtonPressed(..)
-                | EventType::ButtonReleased(..)
+                EventType::ButtonPressed(btn, _) => {
+                    self.active_pad = Some(ev.id);
+                    // Edge-triggered menu nav. South/East are the
+                    // Xbox A/B face buttons: South = confirm, East
+                    // = back (matches the dominant convention
+                    // across modern emulators, Steam Big Picture,
+                    // and the Nintendo-style physical layout once
+                    // rotated). D-pad up/down drives the cursor.
+                    match btn {
+                        Button::DPadUp => self.pending_nav.push(NavKey::Up),
+                        Button::DPadDown => self.pending_nav.push(NavKey::Down),
+                        Button::South => self.pending_nav.push(NavKey::Select),
+                        Button::East => self.pending_nav.push(NavKey::Back),
+                        _ => {}
+                    }
+                    if debug {
+                        eprintln!("gamepad[{:?}] pressed {:?}", ev.id, btn);
+                    }
+                }
+                EventType::ButtonReleased(..)
                 | EventType::AxisChanged(..)
                 | EventType::ButtonChanged(..) => {
                     self.active_pad = Some(ev.id);

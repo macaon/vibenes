@@ -32,6 +32,18 @@ pub use commands::UiCommand;
 pub use menus::OverlayState;
 pub use recent::RecentRoms;
 
+/// Logical navigation directions the overlay understands. Queued by
+/// the host from non-keyboard sources (gamepad D-pad, face buttons)
+/// and translated to synthesized egui key events inside
+/// [`UiLayer::run`]. Keeps egui out of the host's public API.
+#[derive(Clone, Copy, Debug)]
+pub enum NavKey {
+    Up,
+    Down,
+    Select,
+    Back,
+}
+
 pub struct UiLayer {
     ctx: Context,
     winit_state: EguiWinit,
@@ -41,6 +53,11 @@ pub struct UiLayer {
     /// is a no-op (safer than panicking when a caller skips a frame).
     pending: Option<egui::FullOutput>,
     overlay: OverlayState,
+    /// egui events queued by the host between frames (e.g. from the
+    /// gamepad). Prepended to `raw_input.events` at the start of
+    /// `run()` so the existing menu `consume_key` logic picks them
+    /// up unchanged — no second code path for gamepad navigation.
+    queued_events: Vec<egui::Event>,
 }
 
 impl UiLayer {
@@ -66,6 +83,31 @@ impl UiLayer {
             renderer,
             pending: None,
             overlay: OverlayState::default(),
+            queued_events: Vec::new(),
+        }
+    }
+
+    /// Queue a synthetic navigation key (press + release) to be fed
+    /// into egui on the next `run()`. Used for gamepad menu nav —
+    /// the overlay then handles it via the same `consume_key` path
+    /// the keyboard uses. Calling this while the overlay is closed
+    /// is a no-op in practice: the menu only consumes these keys
+    /// when it's showing, and egui discards them otherwise.
+    pub fn queue_nav(&mut self, nav: NavKey) {
+        let key = match nav {
+            NavKey::Up => egui::Key::ArrowUp,
+            NavKey::Down => egui::Key::ArrowDown,
+            NavKey::Select => egui::Key::Enter,
+            NavKey::Back => egui::Key::Backspace,
+        };
+        for pressed in [true, false] {
+            self.queued_events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
         }
     }
 
@@ -133,6 +175,15 @@ impl UiLayer {
         }
 
         let mut raw_input = self.winit_state.take_egui_input(window);
+        // Splice in any host-queued events (gamepad nav). They go
+        // at the front so they're processed before whatever egui
+        // has synthesized itself this frame.
+        if !self.queued_events.is_empty() {
+            let queued = std::mem::take(&mut self.queued_events);
+            let mut combined = queued;
+            combined.append(&mut raw_input.events);
+            raw_input.events = combined;
+        }
         // Pin egui's screen_rect to the wgpu surface we'll render
         // into. Belt-and-suspenders alongside the per-frame surface
         // sync in `advance_and_present`: if `window.inner_size()`
