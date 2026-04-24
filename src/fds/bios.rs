@@ -105,7 +105,7 @@ impl fmt::Display for BiosError {
                 writeln!(
                     f,
                     "FDS BIOS ({}) not found. Nintendo's copyrighted BIOS is required \
-                     to run FDS games; vibenes2 cannot legally bundle it.",
+                     to run FDS games; vibenes cannot legally bundle it.",
                     BIOS_FILENAME
                 )?;
                 writeln!(f)?;
