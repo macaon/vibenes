@@ -33,6 +33,7 @@ for hardware specifics and describe the model in my own words.
 | 4 | MMC3 / MMC6 (TxROM / HKROM) | ✅ | Rev A + Rev B; MMC6 sub-mode with 1 KiB on-chip PRG-RAM |
 | 5 | MMC5 / ExROM | ✅ | PRG/CHR banking + scanline IRQ + ExRAM modes 0/2/3 + multiplier |
 | 7 | AxROM | ✅ | |
+| 9 | MMC2 / PxROM | ✅ | PPU-snooped CHR latch for Punch-Out!!'s giant-sprite animation |
 | 66 | GxROM / MHROM | ✅ | 32 KB PRG + 8 KB CHR bank select (e.g. SMB + Duck Hunt) |
 
 ### Test-ROM coverage
