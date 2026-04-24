@@ -7,6 +7,7 @@ pub mod bandai_fcg;
 pub mod cnrom;
 pub mod eeprom_24c0x;
 pub mod gxrom;
+pub mod jaleco_ss88006;
 pub mod mmc1;
 pub mod mmc2;
 pub mod mmc3;
@@ -203,6 +204,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         9 => Ok(Box::new(mmc2::Mmc2::new(cart))),
         10 => Ok(Box::new(mmc4::Mmc4::new(cart))),
         16 => Ok(Box::new(bandai_fcg::BandaiFcg::new(cart))),
+        18 => Ok(Box::new(jaleco_ss88006::JalecoSs88006::new(cart))),
         159 => Ok(Box::new(bandai_fcg::BandaiFcg::new(cart))),
         5 => Ok(Box::new(mmc5::Mmc5::new(cart))),
         7 => Ok(Box::new(axrom::Axrom::new(cart))),
