@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! MMC3 / TxROM (mapper 4) + MMC6 / HKROM sub-mode.
 //!
 //! The MMC3 is the workhorse NES mapper — roughly 28% of the licensed

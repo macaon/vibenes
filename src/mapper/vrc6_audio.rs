@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Konami VRC6 expansion audio — 2 pulse channels + 1 sawtooth.
 //!
 //! Three voices on the cart, summed linearly into one DAC line that

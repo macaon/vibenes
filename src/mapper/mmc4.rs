@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! MMC4 / FxROM (mapper 10).
 //!
 //! The sibling of MMC2 — same register layout, same CHR latch trick,

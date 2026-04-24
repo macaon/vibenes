@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! CNROM (mapper 3).
 //!
 //! PRG-ROM is fixed (16KB or 32KB mapped into $8000-$FFFF, 16KB mirrors

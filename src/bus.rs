@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::apu::Apu;
 use crate::audio::AudioSink;
 use crate::clock::{MasterClock, Region};

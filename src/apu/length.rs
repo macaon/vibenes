@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Shared 5-bit length counter used by pulse, triangle, and noise
 //! channels.
 //!

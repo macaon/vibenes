@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Namco 163 / 175 / 340 (iNES mappers 19 and 210).
 //!
 //! Namco's late-era workhorse. Mapper 19 is the full Namco 163 ASIC

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Host audio output.
 //!
 //! The APU produces a single analog-style sample in 0.0..=1.0 on every

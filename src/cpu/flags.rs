@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! 6502 status register. Stored as individual booleans so branch code
 //! stays self-documenting; converted to the packed byte when pushed to
 //! the stack.

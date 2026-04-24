@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! MMC5 / ExROM (mapper 5) — sub-phase A: PRG banking + PRG-RAM only.
 //!
 //! MMC5 is the most complex official NES mapper. This sub-phase ships

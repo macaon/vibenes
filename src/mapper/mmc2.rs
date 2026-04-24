@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! MMC2 / PxROM (mapper 9).
 //!
 //! Shipped on exactly two carts: Mike Tyson's Punch-Out!! and its

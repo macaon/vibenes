@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Most-recently-opened ROM list for the File menu. In-memory for
 //! sub-phase 2 — disk persistence (to `~/.config/vibenes/recent.json`)
 //! is a follow-up.

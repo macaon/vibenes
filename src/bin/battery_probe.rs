@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Diagnostic: load a cart, optionally run the CPU for N emulated
 //! seconds, then dump PRG-RAM state + save-dirty flag + trigger the
 //! save pipeline. Lets us verify end-to-end that:

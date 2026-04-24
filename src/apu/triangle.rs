@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Triangle channel. 32-step sequencer clocked at CPU rate. Advances
 //! only when both the linear counter and length counter are nonzero.
 //!

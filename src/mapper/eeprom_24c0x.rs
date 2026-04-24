@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Serial EEPROMs used by Bandai LZ93D50 boards — 24C01 (128 bytes) and
 //! 24C02 (256 bytes). Implements the I²C-style two-wire protocol
 //! (START / STOP / clock-transfer / ACK) that the cart exposes to the

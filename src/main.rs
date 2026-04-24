@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `vibenes` — the windowed emulator binary. Phase 6A.4 hooks the
 //! PPU's real framebuffer in: step the NES until a frame completes,
 //! upload the result, present, repeat. Pace is vsync via wgpu's Fifo

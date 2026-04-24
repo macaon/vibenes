@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Pre-$6000-protocol blargg test reporter.
 //!
 //! The `blargg_apu_2005.07.30` suite (and a handful of other early

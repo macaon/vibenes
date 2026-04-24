@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! NES Mini-style overlay menu. When [`OverlayState::open`] is true the
 //! emulator pauses and a centered modal is drawn on top of a darkened
 //! freeze-frame of the last rendered NES output. Items are picked with

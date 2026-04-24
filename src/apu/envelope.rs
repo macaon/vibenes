@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Envelope generator — shared by pulse 1, pulse 2, and noise.
 
 #[derive(Debug, Default)]

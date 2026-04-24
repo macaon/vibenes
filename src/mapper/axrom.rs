@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! AxROM (mapper 7).
 //!
 //! One-register mapper with two coupled controls in the same byte:

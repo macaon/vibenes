@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Famicom Disk System (FDS) support.
 //!
 //! The FDS is a disk-drive peripheral Nintendo sold in Japan 1986-1990.

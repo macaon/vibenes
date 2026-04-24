@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Integration tests for `~/Git/nes-test-roms/dmc_dma_during_read4/*.nes`.
 //!
 //! This suite exercises the DMC DMA interaction with CPU reads of

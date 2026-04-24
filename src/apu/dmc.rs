@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! DMC (delta modulation channel).
 //!
 //! A 7-bit output level that changes by ±2 for each bit shifted out of a

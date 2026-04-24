@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! IPS patch codec.
 //!
 //! IPS (International Patching System) is the simplest possible

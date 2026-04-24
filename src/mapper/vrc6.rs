@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Konami VRC6 — iNES mappers 24 (VRC6a) and 26 (VRC6b).
 //!
 //! The VRC6 is a Konami-proprietary mapper/audio ASIC found on five

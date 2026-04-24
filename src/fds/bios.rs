@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! FDS BIOS (`disksys.rom`) file resolution.
 //!
 //! Nintendo's 8 KiB FDS BIOS is copyrighted and not legally

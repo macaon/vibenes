@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Pulse channel (one of two). Combines an envelope, a sweep unit, a
 //! length counter, an 11-bit timer, and an 8-step duty sequencer.
 

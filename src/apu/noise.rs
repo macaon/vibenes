@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Noise channel — 15-bit LFSR driven at APU rate by a region-specific
 //! period table. Two feedback modes: long (XOR bit 0 with bit 1) and
 //! short (XOR bit 0 with bit 6), selected by $400E bit 7.

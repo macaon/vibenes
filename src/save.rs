@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Battery-backed cartridge save file I/O.
 //!
 //! Default layout: `$XDG_CONFIG_HOME/vibenes/saves/<rom-stem>.sav`

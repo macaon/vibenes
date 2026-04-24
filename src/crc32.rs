@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! CRC32/IEEE-802.3 (polynomial `0xEDB88320`, reflected). Table-based
 //! implementation — ~1 KB of precomputed table for a ~1 byte/cycle loop.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Famicom Disk System (iNES mapper 20).
 //!
 //! Implements the RAM adapter hardware that replaces the cart on

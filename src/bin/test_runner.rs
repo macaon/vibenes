@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Headless blargg test runner. Loads a cartridge, runs the CPU, and
 //! watches the battery-backed PRG-RAM at $6000 for the standard status
 //! handshake:

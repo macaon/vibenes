@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! FDS disk-image file parsing (`.fds` format, optional fwNES header).
 //!
 //! ## The `.fds` format

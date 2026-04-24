@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Jaleco SS88006 (iNES mapper 18).
 //!
 //! Jaleco's workhorse 1990-1991 ASIC. Shipped on JF-23 through JF-40

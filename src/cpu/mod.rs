@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! 6502 (Ricoh 2A03/2A07) CPU core.
 //!
 //! Timing model: every `bus.read` / `bus.write` costs exactly one CPU

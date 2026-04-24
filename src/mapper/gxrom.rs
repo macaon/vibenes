@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! GxROM / MHROM (mapper 66).
 //!
 //! One-register discrete logic board. A single 8-bit write to any

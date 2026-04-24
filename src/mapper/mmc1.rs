@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! MMC1 / SxROM (mapper 1).
 //!
 //! Writes to $8000-$FFFF feed a 5-bit serial shift register. After the

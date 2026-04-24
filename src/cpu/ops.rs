@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Official 6502 opcode set (151 instructions) with cycle-accurate bus
 //! access patterns. Dummy reads/writes are emitted so the bus charges the
 //! right number of cycles.

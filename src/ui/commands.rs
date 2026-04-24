@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Commands produced by the UI layer and consumed by the host app.
 //!
 //! egui widgets must not mutate emulator state directly — they push

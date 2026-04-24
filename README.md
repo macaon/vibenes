@@ -1,50 +1,66 @@
 # vibenes
 
-A clean-room, cycle-accurate NES emulator in Rust. Single master clock
-drives every subsystem. Correctness first — each subsystem lands with a
-passing suite of hardware test ROMs before the next.
+A cycle-accurate NES emulator in Rust.
 
-Clean-room means no code is copied from other emulators. Mesen2, puNES,
-and nestopia live under `~/Git/` as behavioral references; I read them
-for hardware specifics and describe the model in my own words.
+## About this project
+
+The goal was simple: find out whether a maintainable, cycle-accurate
+NES emulator could be built with AI as the coding assistant, without
+directly porting code from existing emulators. Every subsystem had to
+land with a passing suite of hardware test ROMs before the next one
+started.
+
+The strict "no copying" rule held for the CPU, PPU, APU, bus, DMA, and
+the first batch of mappers. Later, some well-trodden corners (FDS
+audio synth, VRC6 audio, FDS disk-image rebuild) were ported directly
+from Mesen2 under GPL-3.0-or-later compatibility rather than
+reinventing well-understood math. Those ports are attributed in the
+commit history and in the source files.
+
+So this is not "clean-room" in the strict two-team sense. It is an
+AI-assisted re-implementation that used Mesen2, puNES, and Nestopia as
+behavioral references, with a handful of direct ports where GPL
+compatibility allowed it and reinvention offered no benefit.
 
 ## Status
 
 ### Subsystems
 
-- ✅ **iNES 1.0 / NES 2.0 loader** — CRC32-keyed game DB
-- ✅ **6502 CPU core** — all 256 opcodes, cycle-accurate interrupts
-- ✅ **Master clock + bus** — unified parity-gated DMC + OAM DMA loop
-- ✅ **PPU** — full render pipeline, pixel-precise sprite-0 hit, odd-frame dot skip, open-bus decay
-- ✅ **APU** — 5 channels, frame counter, DMC
-- ✅ **Expansion audio** — bus-level mixer with per-chip pre-scaled blend (FDS wavetable+mod, VRC6 pulse×2 + saw). MMC5 / N163 / Sunsoft 5B / VRC7 land behind the same `Mapper::audio_output` hook.
-- ✅ **Host audio** — cpal + blip_buf
-- ✅ **Windowed runtime** — wgpu, NTSC/PAL-paced, keyboard input
-- ✅ **Overlay UI** — egui menu (F1)
-- ✅ **Battery-backed saves** — `~/.config/vibenes/saves/<rom-stem>.sav`; atomic writes, flush on quit / ROM swap, 3-min safety-flush
-- ✅ **FDS** — mapper 20 with BIOS at `$E000-$FFFF`, 32 KiB PRG-RAM, disk transport, IRQ timer + disk IRQ, F4 multi-disk swap, IPS sidecar saves compatible with Mesen2/FCEUX, RP2C33 wavetable+FM audio synth
+- iNES 1.0 / NES 2.0 loader with CRC32-keyed game DB
+- 6502 CPU core, all 256 opcodes, cycle-accurate interrupts
+- Master clock + bus with unified parity-gated DMC + OAM DMA loop
+- PPU with full render pipeline, pixel-precise sprite-0 hit,
+  odd-frame dot skip, open-bus decay
+- APU with 5 channels, frame counter, DMC
+- Expansion audio via bus-level mixer with per-chip pre-scaled blend
+- Host audio via cpal + blip_buf
+- Windowed runtime on wgpu, NTSC/PAL-paced, keyboard input
+- Overlay UI (egui, F1)
+- Battery-backed saves with atomic writes and flush-on-quit/swap
+- Famicom Disk System (mapper 20) with BIOS, disk swap, IPS sidecar
+  saves, RP2C33 audio
 
 ### Supported mappers
 
-| # | Name | Status | Notes |
-|---|---|---|---|
-| 0 | NROM | ✅ | |
-| 1 | MMC1 / SxROM | ✅ | |
-| 2 | UxROM | ✅ | |
-| 3 | CNROM | ✅ | |
-| 4 | MMC3 / MMC6 (TxROM / HKROM) | ✅ | Rev A + Rev B; MMC6 sub-mode with 1 KiB on-chip PRG-RAM |
-| 5 | MMC5 / ExROM | ✅ | PRG/CHR banking + scanline IRQ + ExRAM modes 0/2/3 + multiplier |
-| 7 | AxROM | ✅ | |
-| 9 | MMC2 / PxROM | ✅ | PPU-snooped CHR latch for Punch-Out!!'s giant-sprite animation |
-| 10 | MMC4 / FxROM | ✅ | MMC2 latch + 16 KB PRG banks + 8 KB battery PRG-RAM (Fire Emblem, Famicom Wars) |
-| 16 | Bandai FCG-1/2 / LZ93D50 | ✅ | All submappers (0/3/4/5); 24C01 / 24C02 serial EEPROM with battery save (Dragon Ball, Dragon Ball Z, SD Gundam Gaiden) |
-| 18 | Jaleco SS88006 | ✅ | Nibble-paired PRG/CHR regs; 4-size IRQ counter (4/8/12/16 bit); 8 KB battery PRG-RAM (Pizza Pop!, The Lord of King, Shin Satomi Hakkenden) |
-| 19 / 210 | Namco 163 / 175 / 340 | ✅ | Variant auto-detect; 15-bit IRQ; CIRAM-as-CHR nametable routing; 8 KB battery PRG-RAM + 128 B audio RAM (Rolling Thunder, Star Wars, Battle Fleet, Megami Tensei II). Audio DSP deferred. |
-| 20 | Famicom Disk System | ✅ | `.fds` fwNES format (1-4 sides), BIOS-resolver search path, F4 disk swap, 16-bit timer IRQ + disk transfer IRQ, RP2C33 audio, IPS sidecar saves (Mesen2/FCEUX-compatible) |
-| 24 | Konami VRC6a | ✅ | PRG (16 KB @ $8000, 8 KB @ $C000), CHR 8 × 1 KB, scanline/cycle VRC IRQ, 2 pulse + sawtooth audio (Akumajō Densetsu / JP Castlevania III) |
-| 26 | Konami VRC6b | ✅ | VRC6a with A0/A1 swapped on register writes (Madara, Esper Dream 2) |
-| 66 | GxROM / MHROM | ✅ | 32 KB PRG + 8 KB CHR bank select (e.g. SMB + Duck Hunt) |
-| 159 | Bandai LZ93D50 + 24C01 | ✅ | Shared impl with mapper 16 — always 128-byte 24C01 EEPROM (DBZ: Kyoushuu!, Magical Taruruuto-kun 1/2, SD Gundam Gaiden) |
+| # | Name | Status |
+|---|---|---|
+| 0 | NROM | done |
+| 1 | MMC1 / SxROM | done |
+| 2 | UxROM | done |
+| 3 | CNROM | done |
+| 4 | MMC3 / MMC6 (TxROM / HKROM) | done (Rev A + Rev B) |
+| 5 | MMC5 / ExROM | done |
+| 7 | AxROM | done |
+| 9 | MMC2 / PxROM | done |
+| 10 | MMC4 / FxROM | done |
+| 16 | Bandai FCG-1/2 / LZ93D50 | done |
+| 18 | Jaleco SS88006 | done |
+| 19 / 210 | Namco 163 / 175 / 340 | done (audio DSP deferred) |
+| 20 | Famicom Disk System | done |
+| 24 | Konami VRC6a | done |
+| 26 | Konami VRC6b | done |
+| 66 | GxROM / MHROM | done |
+| 159 | Bandai LZ93D50 + 24C01 | done |
 
 ### Test-ROM coverage
 
@@ -52,26 +68,26 @@ All ROMs in these suites pass:
 
 | Category | Suite | Result |
 |---|---|---|
-| CPU | `instr_test-v5`, `instr_test-v3`, `instr_misc`, `instr_timing`, `nes_instr_test`, `cpu_dummy_reads`, `cpu_dummy_writes`, `cpu_exec_space`, `cpu_reset`, `blargg_nes_cpu_test5`, `cpu_interrupts_v2`, `cpu_timing_test6`, `branch_timing_tests` | ✅ |
-| APU | `apu_test` (8/8), `apu_reset` (6/6), `blargg_apu_2005` (11/11), `dmc_dma_during_read4` (5/5, strict pattern), `sprdma_and_dmc_dma{,_512}` (2/2) | ✅ |
-| PPU | `sprite_hit_tests_2005` (11/11), `sprite_overflow_tests` (5/5), `ppu_vbl_nmi` (10/10), `oam_read`, `oam_stress`, `ppu_read_buffer`, `ppu_open_bus`, `blargg_ppu_tests_2005.09.15b` (4/5, see below) | ✅ |
-| MMC3 | `mmc3_test` (6/6), `mmc3_test_2` (6/6), `mmc3_irq_tests` (6/6) | ✅ |
+| CPU | `instr_test-v5`, `instr_test-v3`, `instr_misc`, `instr_timing`, `nes_instr_test`, `cpu_dummy_reads`, `cpu_dummy_writes`, `cpu_exec_space`, `cpu_reset`, `blargg_nes_cpu_test5`, `cpu_interrupts_v2`, `cpu_timing_test6`, `branch_timing_tests` | pass |
+| APU | `apu_test` (8/8), `apu_reset` (6/6), `blargg_apu_2005` (11/11), `dmc_dma_during_read4` (5/5, strict pattern), `sprdma_and_dmc_dma{,_512}` (2/2) | pass |
+| PPU | `sprite_hit_tests_2005` (11/11), `sprite_overflow_tests` (5/5), `ppu_vbl_nmi` (10/10), `oam_read`, `oam_stress`, `ppu_read_buffer`, `ppu_open_bus`, `blargg_ppu_tests_2005.09.15b` (4/5, see below) | pass |
+| MMC3 | `mmc3_test` (6/6), `mmc3_test_2` (6/6), `mmc3_irq_tests` (6/6) | pass |
 
-### Not yet
+### Known gaps
 
-- **Additional mappers** — VRC2 / VRC4 / VRC7 are the remaining Konami
+- **Additional mappers.** VRC2 / VRC4 / VRC7 are the remaining Konami
   gaps; Sunsoft 5B (mapper 69, used by Gimmick!) is another high-value
   unlock. All of them plug into the existing `Mapper::audio_output`
   expansion-audio mixer.
-- **Second controller + rebinding** — player 1 is wired to the
+- **Second controller + rebinding.** Player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
-- **`blargg_ppu_tests_2005.09.15b/power_up_palette`** — **won't fix**.
+- **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.
   Compares the power-on palette byte-for-byte against values captured
   from blargg's specific NES unit; passing requires hardcoding that
   unit's power-on contents, which isn't hardware behavior worth
   reproducing.
 
-## Building + running
+## Building and running
 
 ```
 cargo build --release
@@ -87,43 +103,40 @@ matched to it.
 `R`=reset, `F1`=overlay menu, `Esc`=back/quit.
 
 The overlay menu (F1) pauses the emulator and shows a centered modal
-over a darkened freeze-frame: Scale (1×–6×), Aspect (Auto / 1:1 / 5:4
+over a darkened freeze-frame: Scale (1x-6x), Aspect (Auto / 1:1 / 5:4
 / 8:7 NTSC / 11:8 PAL), Recent ROMs, Load ROM, Reset, Quit. Navigate
-with ↑/↓/Enter/Esc or the mouse.
+with arrows / Enter / Esc or the mouse.
 
 ## Saves
 
 Cartridges with battery-backed PRG-RAM (iNES flag6 bit 1, or the
 NES 2.0 `prg_nvram_size` byte) persist their RAM to
 `~/.config/vibenes/saves/<rom-stem>.sav` (respects
-`$XDG_CONFIG_HOME`). Matches Mesen2's
-`~/.config/Mesen2/Saves/<rom-stem>.sav` convention. The save is
-written atomically (temp file + rename) so a crash mid-write leaves
-either the old save or the new one — never a torn file.
+`$XDG_CONFIG_HOME`). The save is written atomically (temp file +
+rename) so a crash mid-write leaves either the old save or the new
+one, never a torn file.
 
 Alternative layouts are selectable via [`SaveStyle`](src/config.rs):
-- `NextToRom` — FCEUX style, `<rom-dir>/<rom-stem>.sav`.
-- `ByCrc` — `<saves-dir>/<PRG+CHR CRC32>.sav`; survives ROM renames.
+- `NextToRom` writes `<rom-dir>/<rom-stem>.sav`.
+- `ByCrc` writes `<saves-dir>/<PRG+CHR CRC32>.sav`, which survives ROM
+  renames.
 
-Today the selection is a compile-time `Default`; a settings UI is
+Today the selection is a compile-time default; a settings UI is
 planned.
 
-Flush triggers (matching the industry-standard pattern — see
-Mesen2 `Core/Shared/Emulator.cpp:287,422`, Nestopia
-`Core/NstCartridge.cpp:382`, puNES `core/emu.c:642,1604`):
+Flush triggers:
 
-1. **App quit** — both window-close and the F1 → Quit menu item.
-2. **ROM swap** — outgoing cart flushes before the new one loads.
-3. **Periodic safety flush** — every ~3 minutes of emulated time
-   (10800 frames @ 60 Hz), mirroring puNES's 3-minute interval.
-   Only narrows the SIGKILL data-loss window; the quit/swap
-   triggers above are the authoritative ones.
+1. App quit (window close and the F1 -> Quit menu item).
+2. ROM swap (outgoing cart flushes before the new one loads).
+3. Periodic safety flush every ~3 minutes of emulated time
+   (10800 frames at 60 Hz). This only narrows the SIGKILL
+   data-loss window; the quit/swap triggers above are the
+   authoritative ones.
 
-None of the reference emulators flush per-write or per-frame —
-battery RAM on real hardware is just SRAM, and the game has no
+Battery RAM on real hardware is just SRAM; the game has no
 "save commit" signal to latch on. Writes buffer in memory and
 flush at session boundaries. `src/bin/battery_probe <rom>` is a
-diagnostic that exercises the full load→write→save→reload pipeline
+diagnostic that exercises the full load/write/save/reload pipeline
 on any ROM so you can verify the save path end-to-end without
 reaching the in-game save trigger.
 
@@ -131,10 +144,7 @@ Non-battery cartridges produce no save files.
 
 Runtime settings live in [`src/config.rs`](src/config.rs) as plain
 Rust defaults. A future settings UI will load them from
-`~/.config/vibenes/config.toml` (XDG standard) via `dirs` + `toml`.
-The `SaveStyle::ByCrc` alternative (saves in a central data dir,
-keyed by PRG+CHR CRC32 so renaming the ROM doesn't lose progress) is
-stubbed but falls through to `NextToRom` until that UI lands.
+`~/.config/vibenes/config.toml` via `dirs` + `toml`.
 
 ## Testing
 
@@ -149,206 +159,83 @@ cargo test --release
 
 `test_runner` handles the standard blargg `$6000` status-byte protocol
 including the `$81` reset request. `blargg_2005_report` watches for the
-CPU trapping in a `forever:` loop and scans nametable 0 for a result —
-recognizes `$hh` debug bytes (2005-era devcart loader), ca65 framework
+CPU trapping in a `forever:` loop and scans nametable 0 for a result,
+recognizing `$hh` debug bytes (2005-era devcart loader), ca65 framework
 keywords (`Passed` / `Failed` / `Error N`), blargg keywords (`PASSED`
 / `FAILED` / `FAIL OP`), and `All tests complete`.
 
 Integration test suites gate against curated ROM sets:
-- `tests/blargg_apu_2005.rs` — the 11-ROM 2005 APU suite
-- `tests/dmc_dma_during_read4.rs` — 5 DMC/DMA interaction ROMs,
+- `tests/blargg_apu_2005.rs` for the 11-ROM 2005 APU suite.
+- `tests/dmc_dma_during_read4.rs` for the 5 DMC/DMA interaction ROMs,
   strict-pattern (golden CRC `F0AB808C` on `dma_4016_read`,
-  sanctioned `5E3DF9C4` on `dma_2007_read`)
-- `tests/battery_save.rs` — synthetic NROM battery cart, writes
+  sanctioned `5E3DF9C4` on `dma_2007_read`).
+- `tests/battery_save.rs` for a synthetic NROM battery cart; writes
   PRG-RAM via the bus, saves, drops the Nes, reloads, verifies
-  persistence; asserts non-battery carts never create a `.sav`
-
-### Cycle-exact bisection harness
-
-For DMA / interrupt / sub-instruction work where our model drifts
-from hardware test ROMs, `tools/trace_mesen.sh <rom> <cycles>` runs
-Mesen2 in headless `--testRunner` mode against `tools/mesen_trace.lua`
-and emits one line per executed instruction (cyc, pc, op, registers,
-master clock, DMC state). Our side has the matching trace gated by
-`VIBENES_TRACE_LIMIT=N` env var (`src/cpu/trace.rs`). `diff` on
-`(cyc, pc, op)` columns pinpoints the first divergence.
-
-## Notable design decisions
-
-### Master-clock-driven bus cycle
-
-`clock.start_cpu_cycle(is_read)` and `clock.end_cpu_cycle(is_read)`
-split each CPU cycle into two phases. On NTSC, a read advances the
-master clock by 5 (start) then 7 (end); a write by 7 (start) then
-5 (end) — matching Mesen2 `NesCpu.cpp:73-75,317-322`. PPU runs to
-`master_cycles - ppu_offset` (`ppu_offset = 1` per Mesen2 default),
-so the number of PPU dots ticked per phase is derived from
-master-clock phase rather than hardcoded.
-
-In steady state on NTSC this produces a 2/1 split (2 dots in the
-start phase, 1 in the end phase) for both reads and writes. The
-2/1 split is required by `cpu_interrupts_v2/3-nmi_and_irq`: when
-scanline-241 dot 1 lands as the 3rd dot of a CPU cycle, VBL must
-not be visible to a same-cycle `$2002` read.
-
-`Bus::tick_pre_access(is_read)` wraps `start_cpu_cycle` and runs
-the APU tick, mapper tick, and IRQ-line refresh alongside the
-emitted PPU dots. `Bus::tick_post_access(is_read)` wraps
-`end_cpu_cycle`, re-refreshes `irq_line` (catches mapper IRQs
-raised during post-access PPU ticks), and performs NMI rising-edge
-detection on the PPU's live `nmi_flag`.
-
-APU tick stays in pre-access so `$4015` reads on the frame-IRQ
-assertion cycle see the flag set (blargg `08.irq_timing`). OAM DMA
-snapshots/restores `prev_irq_line`/`prev_nmi_pending` across its
-stall cycles so STA `$4014`'s CPU-level poll sees its own
-penultimate, not end-of-DMA state.
-
-### Unified DMA get/put loop
-
-`Bus::process_pending_dma` handles DMC DMA, OAM DMA, and their
-interleave in one parity-gated loop (port of Mesen2
-`NesCpu.cpp:325-448`). DMC arming inside `tick_pre_access` raises
-`need_halt` / `need_dummy_read`; the next CPU read enters the loop
-and drains DMA until both `dmc_dma_running` and `sprite_dma_running`
-are false.
-
-Each loop iteration decides its action from `cpu_cycles & 1`
-(get vs put) and current DMA state:
-
-- **Get (even) cycle:** DMC fetch if both pending flags are clear,
-  else sprite-DMA read, else dummy read of `pending_addr`.
-- **Put (odd) cycle:** sprite-DMA write to `$2004` if
-  `sprite_counter & 1`, else alignment read of `pending_addr`.
-
-A `processCycle`-equivalent flag clear runs at the start of every
-branch (halt before dummy), which is what lets the DMC halt/dummy
-cycles overlap with active sprite reads — and why DMC firing
-mid-OAM hijacks a get cycle rather than adding a separate stall.
-This is the mechanism that produces the 524-cycle iter-4 pattern
-in `sprdma_and_dmc_dma_512` that a "standalone - 1" formula cannot.
-
-### Staged length writes (APU)
-
-Length-counter halt and reload writes are buffered in `LengthCounter::
-{pending_halt, pending_reload}` and committed at end of cycle *after*
-any same-cycle half-frame clock. Mirrors Mesen2's `_newHaltValue` /
-`_previousValue` pattern. Required by `blargg_apu_2005/10.len_halt_
-timing` and `11.len_reload_timing`.
-
-### Branch-delays-IRQ quirk
-
-Taken branch with no page cross (3 cycles) suppresses IRQ recognition
-iff the IRQ line rose *during* the penultimate cycle. The gate lives in
-`ops::branch()` — it snapshots `bus.prev_irq_line` right after operand
-fetch (end-of-cycle-1) and only marks the quirk when the line was
-still low. Matches Mesen2 `BranchRelative` + puNES `BRC`.
-
-### NMI hijack on BRK / IRQ
-
-After the push phase of BRK or IRQ service, if an NMI is pending the
-vector fetch is redirected from `$FFFE` to `$FFFA` (and the NMI latch
-cleared). `prev_nmi_pending` is always cleared at the end of the
-service so a late NMI (cycles 6–7) is deferred until after the
-handler's first instruction — matches Mesen2's explicit
-`_prevNeedNmi = false` at the end of `BRK()`.
-
-### A12-filtered MMC3 IRQ counter
-
-MMC3's scanline counter clocks on A12 low→high transitions, filtered
-so two rises within three CPU cycles count as one (prevents rendering
-BG/sprite fetches from spuriously ticking the counter). `on_ppu_addr`
-in the mapper trait is called from `ppu_bus_read`/`write` before the
-dot advances, so the timestamp is "at the start of this dot".
-
-Two subtle details are required for 1-PPU-cycle-accurate scanline
-IRQ timing (`mmc3_test/4-scanline_timing #3`):
-
-1. **Sprite pattern-lo/hi fetches issue their address on the FIRST
-   dot of each 2-dot access**, matching BG fetches. Sprite fetch
-   match arms therefore use `(dot - 257) % 8 == {0, 2, 4, 6}` (slot 0
-   issues NT at dot 257, AT at 259, pat-lo at 261, pat-hi at 263),
-   not the completion cycles.
-2. **`bus.irq_line` is refreshed at the end of both `tick_pre_access`
-   and `tick_post_access`.** A mapper IRQ raised during the
-   post-access PPU-dot window would otherwise wait a full CPU cycle
-   (3 PPU cycles) before `prev_irq_line` exposes it to CPU polling.
-
-### MMC3 Rev A / Rev B activation
-
-Default is Rev B (IRQ fires whenever the counter reaches zero on an
-A12 rise). Rev A (IRQ fires only on a non-zero→zero transition) is
-selected in `Mmc3::new` via any of:
-
-1. NES 2.0 submapper 4.
-2. Game-DB chip prefix `MMC3A` — mirrors Mesen2's `_forceMmc3RevAIrqs`
-   check. The DB (`data/nes_db.csv`) is Mesen2's `MesenNesDB.txt`;
-   three Rev A test ROMs are pre-seeded under `# vibenes additions`
-   so they auto-activate. See `notes/phase10/follow_ups.md §F2` for
-   the deferred design question about those rows.
-3. `VIBENES_MMC3_FORCE_REV_A=1` env var.
-
-### Pixel-precise sprite-0 hit
-
-Sprite-0 hit fires per-pixel during the BG/sprite mux at dots 2–257,
-with all five hardware gates (both rendering enables, both left-8-col
-enables, non-transparent BG pixel, non-transparent sprite pixel,
-dot ≠ 256). Required by SMB's status-bar/playfield scroll split and
-NES Open Tournament Golf's title band.
-
-### Forced-blanking palette peek
-
-When rendering is disabled AND the PPU's internal `v` register points
-into `$3F00-$3FFF`, the output pixel is `palette[v & 0x1F]` instead of
-the normal backdrop. Used by visual palette tests
-(`full_palette.nes`). Matches Mesen2 `DefaultNesPpu.h:24-34`.
+  persistence; asserts non-battery carts never create a `.sav`.
 
 ## Layout
 
 ```
 src/
-├── main.rs, app.rs                   windowed binary + shared glue
-├── bus.rs, clock.rs                  CPU bus + master clock
-├── cpu/{mod,flags,ops}.rs            6502 core, status, all opcodes
-├── ppu.rs                            2C02 render pipeline
-├── apu/                              pulse × 2, triangle, noise, DMC,
-│                                     frame counter, envelope, sweep,
-│                                     length counter
-├── mapper/                           NROM, MMC1-5, UxROM, CNROM, AxROM,
-│                                     MMC2/4 (Punch-Out, Fire Emblem),
-│                                     Bandai FCG + 24C0x EEPROM, Jaleco
-│                                     SS88006, Namco 163/175/340, FDS
-│                                     (mapper 20), VRC6 (24/26), GxROM.
-│                                     Expansion audio: fds_audio,
-│                                     vrc6_audio. Shared FDS-side
-│                                     transport in src/fds/ (image, ips,
-│                                     bios).
-├── gfx/                              wgpu renderer + wgsl passthrough
-├── ui/                               egui overlay (menus, commands,
-│                                     recent ROMs)
-├── audio.rs                          cpal + blip_buf
-├── video.rs                          scale + pixel-aspect settings
-├── gamedb.rs, crc32.rs               CRC32-keyed region/chip DB
-├── nes.rs, rom.rs                    system glue + iNES parser
-├── blargg_2005_scan.rs               stuck-PC + nametable scanner
-└── bin/
-    ├── test_runner.rs                $6000-protocol runner
-    ├── blargg_2005_report.rs         pre-$6000-protocol runner
-    ├── frame_dump.rs                 framebuffer PNG dump
-    └── dma_4016_dump.rs              DMC/DMA ROM nametable dumper
+  main.rs, app.rs             windowed binary + shared glue
+  bus.rs, clock.rs            CPU bus + master clock
+  cpu/{mod,flags,ops}.rs      6502 core, status, all opcodes
+  ppu.rs                      2C02 render pipeline
+  apu/                        pulse x 2, triangle, noise, DMC,
+                              frame counter, envelope, sweep,
+                              length counter
+  mapper/                     NROM, MMC1-5, UxROM, CNROM, AxROM,
+                              MMC2/4, Bandai FCG + 24C0x EEPROM,
+                              Jaleco SS88006, Namco 163/175/340,
+                              FDS (mapper 20), VRC6 (24/26), GxROM.
+                              Expansion audio: fds_audio,
+                              vrc6_audio. Shared FDS-side transport
+                              in src/fds/ (image, ips, bios).
+  gfx/                        wgpu renderer + wgsl passthrough
+  ui/                         egui overlay (menus, commands,
+                              recent ROMs)
+  audio.rs                    cpal + blip_buf
+  video.rs                    scale + pixel-aspect settings
+  gamedb.rs, crc32.rs         CRC32-keyed region/chip DB
+  nes.rs, rom.rs              system glue + iNES parser
+  blargg_2005_scan.rs         stuck-PC + nametable scanner
+  bin/
+    test_runner.rs            $6000-protocol runner
+    blargg_2005_report.rs     pre-$6000-protocol runner
+    frame_dump.rs             framebuffer PNG dump
+    dma_4016_dump.rs          DMC/DMA ROM nametable dumper
 
 tests/
-├── blargg_apu_2005.rs                APU suite (11 ROMs)
-└── dmc_dma_during_read4.rs           DMC/DMA suite (5 ROMs)
+  blargg_apu_2005.rs          APU suite (11 ROMs)
+  dmc_dma_during_read4.rs     DMC/DMA suite (5 ROMs)
 
-tools/
-├── trace_mesen.sh                    Mesen2 headless trace wrapper
-└── mesen_trace.lua                   per-instruction trace script
-
-assets/fonts/                         VT323 pixel font (SIL OFL) for
-                                      the overlay menu
-
-notes/
-└── phase{9,10,11}/                   investigation notes + deferred
-                                      design questions
+assets/fonts/                 VT323 pixel font (SIL OFL) for
+                              the overlay menu
 ```
+
+## License
+
+Licensed under the GNU General Public License v3.0 or later. See
+[`LICENSE`](LICENSE) for the full text.
+
+This project uses small amounts of code ported from Mesen2
+(GPL-3.0-or-later) in the FDS audio synth, VRC6 audio, and FDS disk
+image rebuild. Those ports are attributed inline in the relevant
+source files and in the commit history. All other subsystems are
+re-implementations written against the public NES hardware
+documentation and behavioral observation of reference emulators.
+
+## Credits and references
+
+- [Mesen2](https://github.com/SourMesen/Mesen2) by Sour -
+  primary behavioral reference, and the source of the ported FDS and
+  VRC6 audio code noted above. GPL-3.0-or-later.
+- [puNES](https://github.com/punesemu/puNES) by FHorse -
+  secondary reference, especially for the DMC/DMA interleave.
+  GPL-2.0-or-later.
+- [Nestopia UE](https://github.com/rdanbrook/nestopia) by
+  R. Danbrook (fork of Martin Freij's Nestopia) - tertiary
+  reference for CPU/DMA edge cases. GPL-2.0-or-later.
+- [NESdev Wiki](https://www.nesdev.org/wiki/Nesdev_Wiki) and the
+  [blargg test ROMs](https://github.com/christopherpow/nes-test-roms)
+  underpin essentially every subsystem.

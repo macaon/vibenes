@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End-to-end battery-save persistence.
 //!
 //! Builds a synthetic battery-backed NROM in a tempdir, writes bytes

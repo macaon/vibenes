@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! APU frame counter / sequencer.
 //!
 //! Fires quarter-frame and half-frame clocks at specific CPU-cycle

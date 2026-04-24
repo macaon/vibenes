@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Integration tests for the pre-$6000 blargg APU suite. Drives each
 //! ROM through `Nes` in-process and uses `blargg_2005_scan` to pull
 //! the result code off the nametable — no subprocess, no

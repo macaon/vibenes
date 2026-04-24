@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! FDS audio — RP2C33 wavetable + FM modulator synth.
 //!
 //! Two DSP units, one sample output per CPU cycle:

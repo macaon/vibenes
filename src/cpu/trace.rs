@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Per-instruction trace gated by env vars.
 //!
 //! Diffable against Mesen2's [`tools/mesen_trace.lua`] output so the first

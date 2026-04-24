@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Diagnostic binary — run a ROM for N frames, dump the final
 //! framebuffer as a PPM image to stdout, and print PPU state
 //! (mask / ctrl / v / t / fine_x) + the first 16 pixels of a

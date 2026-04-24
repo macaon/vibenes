@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Bandai FCG-1 / FCG-2 / LZ93D50 (iNES mappers 16 and 159).
 //!
 //! Mappers 16 and 159 both cover Bandai FCG boards; 159 is a narrow

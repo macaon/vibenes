@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Runtime configuration.
 //!
 //! Today this is a plain `Default`-backed struct, constructed in one

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Cartridge game database, keyed by iNES PRG+CHR CRC32.
 //!
 //! The iNES 1.0 header often omits or mis-encodes things we need for

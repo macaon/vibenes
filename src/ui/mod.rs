@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! egui-based overlay menu. The menu is hidden during normal play and
 //! shown as a centered modal over a darkened freeze-frame when the
 //! user opens it (F1 by default — wired in [`crate::main`]).

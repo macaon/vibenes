@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Headless runner for blargg's pre-$6000 APU suite
 //! (`blargg_apu_2005.07.30/*.nes`). These ROMs report via on-screen
 //! text + APU beeps only, so the `test_runner` signature handshake

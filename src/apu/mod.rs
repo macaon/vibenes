@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! 2A03 APU — five channels plus a frame counter driving per-channel
 //! timing events. Ticked once per CPU cycle by the bus.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! UxROM (mapper 2).
 //!
 //! PRG is split into two 16KB windows:

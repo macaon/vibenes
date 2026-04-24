@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Ricoh 2C02 PPU. Implements the register window at $2000–$2007, per-dot
 //! background rendering, frame timing, and the NMI edge latch used by
 //! the CPU. Sprite evaluation / pixel mux and sprite-0 hit land in 6B;

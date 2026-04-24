@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! User-facing video settings: integer scale and pixel aspect ratio.
 //! The window is sized to exactly one integer multiple of the NES
 //! framebuffer scaled by PAR — drag-resize is disabled so the renderer

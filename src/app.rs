@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Application glue shared between the windowed `vibenes` binary and
 //! the headless `test_runner`. Keeps NES wiring in one place so the
 //! two don't drift apart.

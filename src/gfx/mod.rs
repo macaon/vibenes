@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! wgpu passthrough renderer. Owns the surface, device, and a single
 //! 256×240 offscreen texture that callers update each frame with the
 //! NES framebuffer. A fullscreen-triangle render pass samples the
