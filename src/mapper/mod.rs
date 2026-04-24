@@ -7,6 +7,7 @@ pub mod bandai_fcg;
 pub mod cnrom;
 pub mod eeprom_24c0x;
 pub mod fds;
+pub mod fds_audio;
 pub mod gxrom;
 pub mod jaleco_ss88006;
 pub mod mmc1;
@@ -149,6 +150,21 @@ pub trait Mapper: Send {
     /// / VRC IRQ mappers override.
     fn irq_line(&self) -> bool {
         false
+    }
+
+    /// Expansion audio contribution for the current CPU cycle,
+    /// pre-scaled so that the bus can linearly add it to the 2A03
+    /// sample. `None` (the default) keeps the hot path a branchless
+    /// no-op for carts without audio hardware.
+    ///
+    /// Mappers with expansion audio (FDS / VRC6 / VRC7 / MMC5 / N163 /
+    /// Sunsoft 5B) clock their internal DSPs in [`Mapper::on_cpu_cycle`]
+    /// and cache the resulting sample; this method just returns the
+    /// cache. Each chip scales its own output to match the nesdev-wiki
+    /// mixing ratio against the APU (FDS peak ≈ 2.4× APU-pulse peak,
+    /// VRC6 ≈ 0.565×, etc.), so the bus stays dumb.
+    fn audio_output(&self) -> Option<f32> {
+        None
     }
 
     // ---- Battery-backed RAM persistence ----

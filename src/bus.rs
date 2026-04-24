@@ -331,7 +331,14 @@ impl Bus {
         }
         self.prev_nmi_flag = nmi_flag;
         if let Some(sink) = self.audio_sink.as_mut() {
-            sink.on_cpu_cycle(self.apu.output_sample());
+            // Linear blend: APU 2A03 in 0.0..≈0.98, plus any cart-side
+            // expansion audio (FDS, VRC6, MMC5, N163, Sunsoft 5B) that
+            // the mapper has pre-scaled against the 2A03's level range.
+            // Non-audio mappers default-return `None` so the common
+            // path is a branchless `unwrap_or(0.0)`.
+            let apu_sample = self.apu.output_sample();
+            let exp_sample = self.mapper.audio_output().unwrap_or(0.0);
+            sink.on_cpu_cycle(apu_sample + exp_sample);
         }
     }
 

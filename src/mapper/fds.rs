@@ -40,6 +40,7 @@ use crate::fds::image::{
     build_raw_file_from_raw, gap_raw_sides, rebuild_raw_file, split_raw_sides, SIDE_SIZE,
 };
 use crate::fds::{ips, FdsData};
+use crate::mapper::fds_audio::FdsAudio;
 use crate::mapper::{FdsControl, Mapper};
 use crate::rom::{Cartridge, Mirroring};
 
@@ -55,10 +56,6 @@ const HEAD_RESET_DELAY: u32 = 50000;
 /// level-2→3 NMI/$2006-write interference." We match 149 exactly
 /// since that's the validated value.
 const INTER_BYTE_DELAY: u32 = 149;
-
-/// Size of the audio register window `$4040-$4097`. Storage-only for
-/// now; synthesis comes later.
-const AUDIO_REG_COUNT: usize = 0x4098 - 0x4040;
 
 /// CPU cycles to spend in the ejected state before auto-inserting a
 /// pending side on a swap. ~280 ms at 1.79 MHz — enough frames for
@@ -147,12 +144,12 @@ pub struct Fds {
     /// tick). Wire-ORed with `timer_irq_line`.
     disk_irq_line: bool,
 
-    // --- $4040-$4097 audio register window ---
-    /// Storage-only mirror of every write into the audio range, so
-    /// future audio-synthesis work can pick up state that games
-    /// configured before the synth was wired. Reads from this range
-    /// return 0 for now (see `cpu_read_ex`).
-    audio_regs: [u8; AUDIO_REG_COUNT],
+    // --- $4040-$4097 RP2C33 wavetable + FM synthesizer ---
+    /// Live audio unit. Receives register writes in the audio range
+    /// (gated by `$4023.1`), clocks once per CPU cycle via
+    /// `on_cpu_cycle`, and exposes its mix-ready sample through
+    /// `Mapper::audio_output`.
+    audio: FdsAudio,
 
     /// External-connector write register (`$4026` in, `$4033` out).
     /// Stored verbatim so reads from `$4033` round-trip.
@@ -233,7 +230,7 @@ impl Fds {
             disk_irq_enabled: false,
             timer_irq_line: false,
             disk_irq_line: false,
-            audio_regs: [0; AUDIO_REG_COUNT],
+            audio: FdsAudio::new(),
             ext_con_reg: 0,
             pending_insert_side: None,
             pending_insert_cycles: 0,
@@ -543,11 +540,12 @@ impl Mapper for Fds {
                 Some(self.ext_con_reg)
             }
             0x4040..=0x4097 => {
-                // Audio register read. Phase 1 returns 0 — games
-                // usually check for a specific volume value, which is
-                // safe enough. Once audio DSP lands, return the
-                // envelope / counter state.
-                Some(0)
+                // Sound-reg gate is bit 1 of $4023. When disabled
+                // reads return 0 (matches the disk-reg path above).
+                if !self.sound_reg_enabled {
+                    return Some(0);
+                }
+                Some(self.audio.read_register(addr))
             }
             _ => None,
         }
@@ -576,6 +574,13 @@ impl Mapper for Fds {
         self.tick_pending_insert();
         self.clock_timer_irq();
         self.clock_disk();
+        // The RP2C33 audio unit ticks every CPU cycle regardless of
+        // the $4023.1 enable gate — Mesen2 treats the gate as a
+        // register-write guard only. Reads and the CPU-visible
+        // wavetable port ARE gated, but the DSP itself keeps running
+        // so the wave accumulator's phase stays continuous across
+        // game-driver pauses.
+        self.audio.clock();
     }
 
     fn as_fds_mut(&mut self) -> Option<&mut dyn FdsControl> {
@@ -588,6 +593,10 @@ impl Mapper for Fds {
 
     fn irq_line(&self) -> bool {
         self.timer_irq_line || self.disk_irq_line
+    }
+
+    fn audio_output(&self) -> Option<f32> {
+        Some(self.audio.mix_sample())
     }
 
     fn disk_save_data(&self) -> Option<Vec<u8>> {
@@ -720,9 +729,9 @@ impl Fds {
                 self.ext_con_reg = value;
             }
             0x4040..=0x4097 => {
-                // Audio register — storage-only until the synth lands.
-                let idx = (addr - 0x4040) as usize;
-                self.audio_regs[idx] = value;
+                // Writes have already cleared the $4023.1 gate via
+                // the guard at the top of `write_register`.
+                self.audio.write_register(addr, value);
             }
             _ => {}
         }
@@ -875,12 +884,22 @@ mod tests {
     #[test]
     fn sound_regs_gated_by_4023_bit_1() {
         let mut m = Fds::new(make_cart());
-        m.cpu_write(0x4023, 0x01); // disk on, sound off
-        m.cpu_write(0x4040, 0x99);
-        assert_eq!(m.audio_regs[0], 0);
+        // Enable wave writes so $4040 lands in the wavetable.
         m.cpu_write(0x4023, 0x03);
-        m.cpu_write(0x4040, 0x99);
-        assert_eq!(m.audio_regs[0], 0x99);
+        m.cpu_write(0x4089, 0x80);
+        // With sound off, $4040 writes drop on the floor.
+        m.cpu_write(0x4023, 0x01); // disk on, sound off
+        m.cpu_write(0x4040, 0x15);
+        // Playback-mode read returns whatever `wave_position` points
+        // at — we haven't advanced the wave position, so it's
+        // whatever the pre-gate state was (zero).
+        // Switch back on and confirm a write lands.
+        m.cpu_write(0x4023, 0x03);
+        m.cpu_write(0x4089, 0x80); // re-enable wave writes
+        m.cpu_write(0x4040, 0x25);
+        // Read-through playback mode: current sample at position 0.
+        m.cpu_write(0x4089, 0x00);
+        assert_eq!(m.cpu_read_ex(0x4040), Some(0x25));
     }
 
     // ---- $4020-$4022 timer IRQ ----
@@ -1242,6 +1261,62 @@ mod tests {
         let m = Nrom::new(cart);
         assert!(Mapper::disk_save_data(&m).is_none());
         assert!(!Mapper::disk_save_dirty(&m));
+    }
+
+    // ---- FDS audio (RP2C33) integration ----
+
+    /// On reset the audio unit produces zero — no gain, all-zero
+    /// wavetable, mix-sink sees `Some(0.0)` (Some because FDS has
+    /// audio hardware).
+    #[test]
+    fn audio_output_is_zero_at_reset() {
+        let m = Fds::new(make_cart());
+        assert_eq!(Mapper::audio_output(&m), Some(0.0));
+    }
+
+    /// Full chain: enable the sound gate, load a constant-amplitude
+    /// wavetable, set manual gain and master volume, clock once, and
+    /// confirm the mapper surfaces a non-zero mix sample through the
+    /// bus-facing trait method.
+    #[test]
+    fn audio_output_reflects_wavetable_and_gain() {
+        let mut m = Fds::new(make_cart());
+        m.cpu_write(0x4023, 0x03); // disk + sound enabled
+        // Wave-write on, fill table with max amplitude 63.
+        m.cpu_write(0x4089, 0x80);
+        for i in 0..64u16 {
+            m.cpu_write(0x4040 + i, 0x3F);
+        }
+        // Wave-write off, master volume 0 (×1 → WAVE_VOL_TABLE[0]=36).
+        m.cpu_write(0x4089, 0x00);
+        // Manual gain 32 ($4080 bit7=1, bits0-5=32).
+        m.cpu_write(0x408A, 1); // master speed = 1 (doesn't matter in manual mode)
+        m.cpu_write(0x4080, 0x80 | 32);
+        // One clock updates `last_output` from the formula
+        // (63 * 32 * 36) / 1152 = 63.
+        m.on_cpu_cycle();
+        let sample = Mapper::audio_output(&m).unwrap();
+        // Peak FDS is tuned to match Mesen2's balance: ~0.2575 in our
+        // mixer space (same level as two-pulses-maxed APU peak).
+        // Raw output = 63 → sample = 63 × (0.2575/63) ≈ 0.2575.
+        assert!((sample - 0.2575).abs() < 1e-4, "got {sample}");
+    }
+
+    /// `$408A` is gated by the sound-enable bit (`$4023.1`); with
+    /// sound off, writing `$408A` must NOT alter the envelope-clock
+    /// divider. Sanity check that the gate plumbing is wired.
+    #[test]
+    fn sound_gate_blocks_408a_writes() {
+        let mut m = Fds::new(make_cart());
+        m.cpu_write(0x4023, 0x03); // disk + sound on
+        m.cpu_write(0x408A, 0x10); // divider = 16
+        m.cpu_write(0x4023, 0x01); // sound off
+        m.cpu_write(0x408A, 0x42); // ignored
+        assert_eq!(m.audio.volume_gain(), 0); // unchanged (still zero)
+        // Re-enable sound and confirm subsequent writes land.
+        m.cpu_write(0x4023, 0x03);
+        m.cpu_write(0x4080, 0x80 | 5);
+        assert_eq!(m.audio.volume_gain(), 5);
     }
 
     #[test]
