@@ -141,6 +141,12 @@ reaching the in-game save trigger.
 
 Non-battery cartridges produce no save files.
 
+FDS disks save as an IPS sidecar: writes performed by the game are
+captured as a delta against the original `.fds` image and written to
+`<rom-stem>.ips` next to the save path. On reload, the sidecar is
+applied over the pristine disk image, so the on-disk `.fds` stays
+untouched and the save is portable.
+
 Runtime settings live in [`src/config.rs`](src/config.rs) as plain
 Rust defaults. A future settings UI will load them from
 `~/.config/vibenes/config.toml` via `dirs` + `toml`.
