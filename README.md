@@ -17,10 +17,9 @@ from Mesen2 under GPL-3.0-or-later compatibility rather than
 reinventing well-understood math. Those ports are attributed in the
 commit history and in the source files.
 
-So this is not "clean-room" in the strict two-team sense. It is an
-AI-assisted re-implementation that used Mesen2, puNES, and Nestopia as
-behavioral references, with a handful of direct ports where GPL
-compatibility allowed it and reinvention offered no benefit.
+This is an AI-assisted re-implementation that used Mesen2, puNES, and
+Nestopia as behavioral references, with a handful of direct ports
+where GPL compatibility allowed it and reinvention offered no benefit.
 
 ## Status
 
