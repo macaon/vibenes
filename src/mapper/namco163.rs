@@ -652,6 +652,7 @@ mod tests {
             is_nes2: mapper_id == 210, // submappers only meaningful on NES 2.0
             prg_chr_crc32: 0,
             db_matched: false,
+            fds_data: None,
         }
     }
 

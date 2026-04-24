@@ -478,6 +478,7 @@ mod tests {
             is_nes2,
             prg_chr_crc32: 0,
             db_matched: false,
+            fds_data: None,
         }
     }
 

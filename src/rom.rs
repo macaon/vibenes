@@ -3,13 +3,30 @@ use std::fs;
 use std::path::Path;
 
 use crate::crc32::crc32;
+use crate::fds::bios::BiosSearch;
+use crate::fds::{FdsBios, FdsData, FdsImage};
 use crate::gamedb;
 
 const INES_MAGIC: [u8; 4] = *b"NES\x1A";
+const FDS_MAGIC: [u8; 4] = *b"FDS\x1A";
 const INES_HEADER_SIZE: usize = 16;
 const PRG_BANK_SIZE: usize = 16 * 1024;
 const CHR_BANK_SIZE: usize = 8 * 1024;
 const TRAINER_SIZE: usize = 512;
+
+/// True when the file looks like a Famicom Disk System image — by
+/// extension (`.fds` / `.qd`, case-insensitive) or by 4-byte fwNES
+/// magic. Extension-only matches let bare `.fds` files without a
+/// header still route to the FDS loader.
+fn is_fds_bytes_or_ext(path: &Path, bytes: &[u8]) -> bool {
+    if bytes.len() >= 4 && bytes[0..4] == FDS_MAGIC {
+        return true;
+    }
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("fds") || e.eq_ignore_ascii_case("qd"))
+        .unwrap_or(false)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mirroring {
@@ -59,14 +76,106 @@ pub struct Cartridge {
     /// database (Mesen2's `MesenNesDB.txt`). Useful for "where did
     /// this region / mapper variant come from" debugging.
     pub db_matched: bool,
+    /// Present only on mapper 20 (Famicom Disk System) carts. The
+    /// mapper constructor consumes this; every other mapper ignores
+    /// it. Held in `Option` rather than an enum split so the rest of
+    /// the pipeline (mapper dispatch, save path, etc.) doesn't need
+    /// a parallel universe for FDS.
+    pub fds_data: Option<FdsData>,
 }
 
 impl Cartridge {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::load_with_fds_bios(path, None)
+    }
+
+    /// Variant of [`Cartridge::load`] that threads a `--fds-bios` CLI
+    /// override through. For iNES carts the override is ignored;
+    /// only the FDS load path consults it.
+    pub fn load_with_fds_bios<P: AsRef<Path>>(
+        path: P,
+        fds_bios_override: Option<&Path>,
+    ) -> Result<Self> {
         let path = path.as_ref();
         let bytes = fs::read(path)
             .with_context(|| format!("failed to read ROM file: {}", path.display()))?;
+
+        // Dispatch to the FDS parser when the file clearly looks like
+        // one — either `.fds` / `.qd` extension or the 4-byte fwNES
+        // magic at offset 0. Otherwise fall through to iNES.
+        if is_fds_bytes_or_ext(path, &bytes) {
+            return Self::from_fds_bytes(path, &bytes, fds_bios_override);
+        }
         Self::from_bytes(&bytes)
+    }
+
+    fn from_fds_bytes(
+        path: &Path,
+        bytes: &[u8],
+        bios_override: Option<&Path>,
+    ) -> Result<Self> {
+        let image = FdsImage::from_bytes(bytes)
+            .with_context(|| format!("parsing FDS image {}", path.display()))?;
+
+        // Warn on any non-fatal image oddities at load time — matches
+        // how Phase 0's `load_fds_info` surfaced them.
+        for w in &image.warnings {
+            log::warn!("FDS: {w}");
+        }
+
+        let search = BiosSearch {
+            cli_override: bios_override.map(Path::to_path_buf),
+            config: None, // populated by settings UI once that exists
+            rom_dir: path.parent().map(Path::to_path_buf),
+        };
+        let bios = FdsBios::resolve(&search).with_context(|| {
+            format!(
+                "cannot load FDS ROM {} without the Nintendo BIOS",
+                path.display()
+            )
+        })?;
+
+        // CRC over the raw bytes (excluding the optional fwNES
+        // header) gives a stable key into the game DB for FDS
+        // titles. Not used today — FDS entries aren't in our DB yet —
+        // but Phase 2's disk-swap UI may want per-game labels.
+        let crc_bytes: &[u8] = if image.had_header {
+            &bytes[16..]
+        } else {
+            bytes
+        };
+        let crc = crc32(crc_bytes);
+
+        let fds_data = FdsData {
+            gapped_sides: image.gapped_sides(),
+            headers: image.headers(),
+            bios: bios.bytes,
+            bios_known_good: bios.is_known_good,
+            had_header: image.had_header,
+        };
+
+        Ok(Self {
+            // FDS-specific carts don't use the iNES prg_rom /
+            // chr_rom arrays — BIOS + RAM serve the address space.
+            // Leave these empty; the FDS mapper never consults them.
+            prg_rom: Vec::new(),
+            chr_rom: Vec::new(),
+            chr_ram: true,
+            mapper_id: 20,
+            submapper: 0,
+            // Runtime mirroring is written by the game via `$4025`
+            // bit 3; pick horizontal as the initial value (matches
+            // Mesen2 behavior before the BIOS configures the bus).
+            mirroring: Mirroring::Horizontal,
+            battery_backed: true, // .ips sidecar is the save file
+            prg_ram_size: 32 * 1024,
+            prg_nvram_size: 0,
+            tv_system: TvSystem::Ntsc,
+            is_nes2: false,
+            prg_chr_crc32: crc,
+            db_matched: false,
+            fds_data: Some(fds_data),
+        })
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
@@ -238,6 +347,7 @@ impl Cartridge {
             is_nes2,
             prg_chr_crc32: crc,
             db_matched: false,
+            fds_data: None,
         };
 
         // Supplement the header from the game database. iNES 1.0 Flags 9
@@ -262,6 +372,24 @@ impl Cartridge {
     }
 
     pub fn describe(&self) -> String {
+        // FDS carts skip the iNES summary line entirely — they're
+        // carried via `fds_data` and have very different stats
+        // (BIOS + disk sides rather than PRG-ROM / CHR-ROM sizes).
+        if let Some(fds) = &self.fds_data {
+            return format!(
+                "FDS {} side{} ({} KiB) BIOS={} header={} crc={:08X}",
+                fds.gapped_sides.len(),
+                if fds.gapped_sides.len() == 1 { "" } else { "s" },
+                fds.gapped_sides.iter().map(|s| s.len()).sum::<usize>() / 1024,
+                if fds.bios_known_good {
+                    "known-good"
+                } else {
+                    "unrecognized"
+                },
+                if fds.had_header { "fwNES" } else { "bare" },
+                self.prg_chr_crc32,
+            );
+        }
         let mut s = format!(
             "iNES{} mapper={} submapper={} prg={}KiB chr={}KiB({}) mirror={:?} battery={} prg_ram={}KiB prg_nvram={}KiB tv={:?} crc={:08X}",
             if self.is_nes2 { "2.0" } else { "1.0" },

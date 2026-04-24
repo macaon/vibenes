@@ -51,6 +51,34 @@ use std::fmt;
 /// stripped by the "fwNES" format we work with.
 pub const SIDE_SIZE: usize = 65500;
 
+/// Leading-gap length in bytes, prepended to each side before block
+/// data starts. 28300 bits / 8 ≈ 3537 bytes, matching Mesen2's
+/// `FdsLoader::AddGaps`. This is what the disk-transport scans
+/// through before the first `0x80` sync marker on each side.
+const LEADING_GAP_BYTES: usize = 28300 / 8;
+
+/// Inter-block gap length — 976 bits / 8 = 122 bytes, matching Mesen2.
+const BLOCK_GAP_BYTES: usize = 976 / 8;
+
+/// Sync byte written before each block to signal the transport that
+/// the gap has ended and real data follows.
+const BLOCK_SYNC_BYTE: u8 = 0x80;
+
+/// Fake 16-bit CRC appended after every block on real `.fds` dumps
+/// (the format strips real CRCs). Mesen2 uses `{0x4D, 0x62}`.
+const FAKE_CRC: [u8; 2] = [0x4D, 0x62];
+
+/// Disk-header block size on real FDS disks: 56 bytes after the
+/// block-type tag.
+const DISK_HEADER_BLOCK_LEN: usize = 56;
+
+/// File-count block size (after the tag).
+const FILE_COUNT_BLOCK_LEN: usize = 2;
+
+/// File-header block size (after the tag). The last 2 bytes (`offset+0x0D`,
+/// `offset+0x0E`) encode the following file-data-block size.
+const FILE_HEADER_BLOCK_LEN: usize = 16;
+
 /// Optional fwNES header prefix magic. When present, the header is 16
 /// bytes and the file is `16 + N*SIDE_SIZE` bytes; when absent, the
 /// file is `N*SIDE_SIZE` bytes and we derive N from file size.
@@ -206,6 +234,42 @@ impl FdsImage {
         })
     }
 
+    /// Produce the scan-ready form of each side: prepend the leading
+    /// gap, insert `0x80` sync bytes before each block, and append
+    /// fake CRCs + inter-block gap after each block. The disk
+    /// transport runs over these "gapped" bytes during emulation —
+    /// gap zeros keep `_gapEnded = false`, sync bytes flip it true so
+    /// the BIOS sees a real byte on the read-data register.
+    ///
+    /// Call once at load time; the result is the buffer the mapper
+    /// actually addresses via its `_diskPosition`.
+    ///
+    /// **Port note:** behavior mirrors Mesen2's `FdsLoader::AddGaps`
+    /// (`~/Git/Mesen2/Core/NES/Loaders/FdsLoader.cpp:26-91`). Both
+    /// projects are GPL-3.0-or-later and the byte counts are
+    /// protocol-exact, so re-deriving them here would just be a
+    /// transcription hazard.
+    pub fn gapped_sides(&self) -> Vec<Vec<u8>> {
+        self.sides.iter().map(|s| add_gaps(s)).collect()
+    }
+
+    /// Extract the 56-byte disk-header block content from each side
+    /// (the bytes right after the block-type `0x01` tag). Used by
+    /// the auto-insert matching heuristic in Phase 2+. Returns an
+    /// all-zeros buffer for any side that's missing the header tag.
+    pub fn headers(&self) -> Vec<Vec<u8>> {
+        self.sides
+            .iter()
+            .map(|s| {
+                if s.len() >= 1 + DISK_HEADER_BLOCK_LEN && s[0] == BLOCK_TAG_DISK_HEADER {
+                    s[1..1 + DISK_HEADER_BLOCK_LEN].to_vec()
+                } else {
+                    vec![0u8; DISK_HEADER_BLOCK_LEN]
+                }
+            })
+            .collect()
+    }
+
     /// Short human-readable summary for the `loaded:` log line.
     pub fn describe(&self) -> String {
         format!(
@@ -220,6 +284,85 @@ impl FdsImage {
             },
         )
     }
+}
+
+/// Walk the block structure of a raw 65500-byte side and emit the
+/// scan-ready form the disk transport expects. See [`FdsImage::gapped_sides`].
+///
+/// Port of Mesen2's `FdsLoader::AddGaps`. Block walking works like
+/// this:
+///
+/// - Leading 28300 bits of gap zeros.
+/// - For each well-formed block:
+///   - `0x80` sync byte (transport flips `_gapEnded` true here).
+///   - Block bytes (type + payload).
+///   - 2 fake CRC bytes.
+///   - 976 bits of inter-block gap zeros.
+///
+/// The blocks come in a fixed sequence: disk header (1) → file count
+/// (2) → (file header (3) → file data (4)) × N. Block 4's length
+/// depends on the size field from the preceding block-3, so we carry
+/// a `last_file_size` variable through the walk.
+///
+/// Any unexpected tag bytes stop the structured walk and copy the
+/// remaining raw side data as-is (wrapped in a sync-byte prefix) —
+/// homebrew dumps with non-standard trailer bytes still work.
+fn add_gaps(raw_side: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw_side.len() + 4096);
+    // Leading gap.
+    out.extend(std::iter::repeat(0u8).take(LEADING_GAP_BYTES));
+
+    let mut i: usize = 0;
+    while i < raw_side.len() {
+        let block_type = raw_side[i];
+        let block_len: usize = match block_type {
+            1 => DISK_HEADER_BLOCK_LEN,
+            2 => FILE_COUNT_BLOCK_LEN,
+            3 => FILE_HEADER_BLOCK_LEN,
+            4 => {
+                // File data. The preceding file-header block's bytes
+                // at offsets +0x0D and +0x0E (zero-indexed: 13 and 14)
+                // encode the file size. Mesen2 uses `i - 3` / `i - 2`
+                // — that's the position of those bytes RELATIVE to
+                // `i`, which points at the next block's type tag.
+                // Walking the layout: the file-header block type is
+                // at `i - 16`, the size bytes at `i - 16 + 13` =
+                // `i - 3` and `i - 16 + 14` = `i - 2`. Mesen2 is
+                // right; transcribe their offset.
+                if i < 3 {
+                    break;
+                }
+                let size_lo = raw_side[i - 3] as usize;
+                let size_hi = raw_side[i - 2] as usize;
+                1 + (size_lo | (size_hi << 8))
+            }
+            _ => {
+                // Unexpected byte — copy the rest of the side raw,
+                // prefixed with a sync marker. Matches Mesen2's
+                // fallback and accommodates non-standard dumps.
+                out.push(BLOCK_SYNC_BYTE);
+                out.extend_from_slice(&raw_side[i..]);
+                return out;
+            }
+        };
+
+        if i + block_len > raw_side.len() {
+            // Block would run past the end of the side — stop
+            // emitting, leave remaining side as gap bytes. The
+            // transport reads through them without asserting
+            // transfer-complete.
+            break;
+        }
+
+        out.push(BLOCK_SYNC_BYTE);
+        out.extend_from_slice(&raw_side[i..i + block_len]);
+        out.extend_from_slice(&FAKE_CRC);
+        out.extend(std::iter::repeat(0u8).take(BLOCK_GAP_BYTES));
+
+        i += block_len;
+    }
+
+    out
 }
 
 /// If the file starts with the fwNES magic, split off the 16-byte
@@ -366,6 +509,95 @@ mod tests {
         let desc = image.describe();
         assert!(desc.contains("2 sides"), "got: {desc}");
         assert!(desc.contains("KiB"), "got: {desc}");
+    }
+
+    #[test]
+    fn gapped_sides_prepends_leading_gap() {
+        let image = FdsImage::from_bytes(&synthetic_bare(1)).unwrap();
+        let gapped = image.gapped_sides();
+        assert_eq!(gapped.len(), 1);
+        // First LEADING_GAP_BYTES bytes must be zeros.
+        for b in &gapped[0][..LEADING_GAP_BYTES] {
+            assert_eq!(*b, 0);
+        }
+        // The leading-gap ends in a sync byte.
+        assert_eq!(gapped[0][LEADING_GAP_BYTES], BLOCK_SYNC_BYTE);
+    }
+
+    #[test]
+    fn gapped_sides_structures_blocks_with_syncs_and_crcs() {
+        // Build a side with disk header + file count + file header +
+        // file data. add_gaps walks those four blocks, then hits the
+        // trailing zero bytes — which are an "unexpected tag" per the
+        // block-type switch, so add_gaps falls back to raw-copy for
+        // the tail. That's intentional behavior ported from Mesen2.
+        let mut s = vec![0u8; SIDE_SIZE];
+        s[0] = BLOCK_TAG_DISK_HEADER;
+        s[1..1 + NINTENDO_HVC.len()].copy_from_slice(NINTENDO_HVC);
+        s[DISK_HEADER_BLOCK_LEN] = 2;
+        s[DISK_HEADER_BLOCK_LEN + 1] = 1;
+        let fh_off = DISK_HEADER_BLOCK_LEN + FILE_COUNT_BLOCK_LEN;
+        s[fh_off] = 3;
+        s[fh_off + 13] = 5; // file size low
+        s[fh_off + 14] = 0; // file size high
+        let fd_off = fh_off + FILE_HEADER_BLOCK_LEN;
+        s[fd_off] = 4;
+
+        let mut bytes = synthetic_bare(1);
+        bytes[..s.len()].copy_from_slice(&s);
+        let image = FdsImage::from_bytes(&bytes).unwrap();
+        let g = &image.gapped_sides()[0];
+
+        // First sync must land exactly after the leading gap.
+        assert_eq!(g[LEADING_GAP_BYTES], BLOCK_SYNC_BYTE);
+        // Byte right after first sync is the disk-header block tag.
+        assert_eq!(g[LEADING_GAP_BYTES + 1], BLOCK_TAG_DISK_HEADER);
+        // Fake CRC lands right after the 56-byte disk header.
+        let disk_header_crc_off = LEADING_GAP_BYTES + 1 + DISK_HEADER_BLOCK_LEN;
+        assert_eq!(g[disk_header_crc_off], FAKE_CRC[0]);
+        assert_eq!(g[disk_header_crc_off + 1], FAKE_CRC[1]);
+        // Inter-block gap bytes follow, then next sync.
+        let next_sync_off = disk_header_crc_off + 2 + BLOCK_GAP_BYTES;
+        assert_eq!(g[next_sync_off], BLOCK_SYNC_BYTE);
+        // Next block is file-count (type 2).
+        assert_eq!(g[next_sync_off + 1], 2);
+    }
+
+    #[test]
+    fn headers_extracts_56_bytes_after_tag() {
+        let image = FdsImage::from_bytes(&synthetic_bare(1)).unwrap();
+        let headers = image.headers();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].len(), DISK_HEADER_BLOCK_LEN);
+        // Starts with NINTENDO-HVC magic.
+        assert_eq!(&headers[0][..NINTENDO_HVC.len()], NINTENDO_HVC);
+    }
+
+    #[test]
+    fn headers_returns_zeros_when_side_is_malformed() {
+        let mut bytes = synthetic_bare(1);
+        bytes[0] = 0xFF; // missing disk-header tag
+        let image = FdsImage::from_bytes(&bytes).unwrap();
+        let headers = image.headers();
+        assert_eq!(headers[0], vec![0u8; DISK_HEADER_BLOCK_LEN]);
+    }
+
+    #[test]
+    fn add_gaps_unexpected_tag_falls_back_to_raw_copy() {
+        // Raw side starts with a tag the state machine doesn't know
+        // (5 isn't a valid block-type). add_gaps should emit sync +
+        // the remaining raw side as-is.
+        let mut raw = vec![0u8; 16];
+        raw[0] = 5; // bogus tag
+        raw[1] = 0xAA;
+        raw[2] = 0xBB;
+        let gapped = add_gaps(&raw);
+        // After the leading gap we expect the sync byte, then 16
+        // bytes of raw side (tag + 15 bytes), with NO additional
+        // gap appended since we fell out of the structured walk.
+        assert_eq!(gapped[..LEADING_GAP_BYTES], vec![0u8; LEADING_GAP_BYTES]);
+        assert_eq!(gapped[LEADING_GAP_BYTES], BLOCK_SYNC_BYTE);
+        assert_eq!(&gapped[LEADING_GAP_BYTES + 1..LEADING_GAP_BYTES + 17], &raw[..]);
     }
 
     #[test]

@@ -510,6 +510,7 @@ mod tests {
             is_nes2: false,
             prg_chr_crc32: 0,
             db_matched: false,
+            fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc)
     }

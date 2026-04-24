@@ -50,3 +50,31 @@ pub mod ips;
 
 pub use bios::{BiosError, FdsBios};
 pub use image::{FdsImage, ImageError};
+
+/// Runtime FDS bundle carried on `Cartridge::fds_data` when mapper
+/// 20 is loaded. The mapper's constructor consumes this; ordinary
+/// mappers leave it `None`.
+///
+/// Stays a plain data struct (no `Box<dyn ...>`) so mutating it from
+/// inside the mapper after construction is straightforward.
+#[derive(Debug, Clone)]
+pub struct FdsData {
+    /// Per-side data in the scan-ready form produced by
+    /// [`FdsImage::gapped_sides`]: leading gap, per-block sync
+    /// markers, fake CRCs, inter-block gaps. The disk transport's
+    /// `disk_position` indexes into this.
+    pub gapped_sides: Vec<Vec<u8>>,
+    /// 56-byte disk-header block for each side — used by the auto-
+    /// insert matching path (Phase 2+).
+    pub headers: Vec<Vec<u8>>,
+    /// The `disksys.rom` BIOS (exactly 8 KiB). Lives at `$E000-$FFFF`.
+    pub bios: Vec<u8>,
+    /// Whether the BIOS's CRC32 matched the known-good value — for
+    /// diagnostic logging only; runtime behavior is identical either
+    /// way.
+    pub bios_known_good: bool,
+    /// True when the source `.fds` file carried the 16-byte fwNES
+    /// header. Phase 3 re-emits the header when saving a rebuilt
+    /// image if the original had one.
+    pub had_header: bool,
+}
