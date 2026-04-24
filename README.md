@@ -34,6 +34,7 @@ for hardware specifics and describe the model in my own words.
 | 5 | MMC5 / ExROM | ✅ | PRG/CHR banking + scanline IRQ + ExRAM modes 0/2/3 + multiplier |
 | 7 | AxROM | ✅ | |
 | 9 | MMC2 / PxROM | ✅ | PPU-snooped CHR latch for Punch-Out!!'s giant-sprite animation |
+| 10 | MMC4 / FxROM | ✅ | MMC2 latch + 16 KB PRG banks + 8 KB battery PRG-RAM (Fire Emblem, Famicom Wars) |
 | 66 | GxROM / MHROM | ✅ | 32 KB PRG + 8 KB CHR bank select (e.g. SMB + Duck Hunt) |
 
 ### Test-ROM coverage

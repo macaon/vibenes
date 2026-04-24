@@ -8,6 +8,7 @@ pub mod gxrom;
 pub mod mmc1;
 pub mod mmc2;
 pub mod mmc3;
+pub mod mmc4;
 pub mod mmc5;
 pub mod nrom;
 pub mod uxrom;
@@ -198,6 +199,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         3 => Ok(Box::new(cnrom::Cnrom::new(cart))),
         4 => Ok(Box::new(mmc3::Mmc3::new(cart))),
         9 => Ok(Box::new(mmc2::Mmc2::new(cart))),
+        10 => Ok(Box::new(mmc4::Mmc4::new(cart))),
         5 => Ok(Box::new(mmc5::Mmc5::new(cart))),
         7 => Ok(Box::new(axrom::Axrom::new(cart))),
         66 => Ok(Box::new(gxrom::Gxrom::new(cart))),
