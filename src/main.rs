@@ -217,6 +217,20 @@ struct App {
     /// systems, missing permissions on evdev, etc.) — the
     /// keyboard path keeps working.
     gamepad: Option<gilrs::Gilrs>,
+    /// Most-recently-active gamepad id. Set whenever an input event
+    /// (button or axis) is drained from gilrs. This is how we avoid
+    /// polling a phantom HID device (e.g. a Keychron keyboard dock
+    /// that Linux classifies as a gamepad) that enumerates before
+    /// the real controller — the first device that actually reports
+    /// input wins.
+    active_pad: Option<gilrs::GamepadId>,
+    /// Edge-triggered overlay toggle request from the gamepad's
+    /// Mode button (Xbox "Guide" / PlayStation "PS" / 8BitDo
+    /// "Home"). Set inside `poll_gamepad` on press, consumed by
+    /// `advance_and_present` right before the overlay-open state is
+    /// re-sampled. Steam may still grab the same button at the OS
+    /// level — this just gives the emulator its own binding.
+    pending_menu_toggle: bool,
 }
 
 impl App {
@@ -314,6 +328,8 @@ impl App {
             keyboard_bits_p1: 0,
             gamepad_bits_p1: 0,
             gamepad,
+            active_pad: None,
+            pending_menu_toggle: false,
         }
     }
 
@@ -350,20 +366,26 @@ impl App {
         // Snapshot inputs before grabbing mutable borrows.
         let region = self.region_opt();
         let nes_loaded = self.nes.is_some();
+        // Drain gamepad events every frame, regardless of overlay
+        // state. The Mode button (Xbox Guide / 8BitDo Home) toggles
+        // the overlay via `pending_menu_toggle`, so it must work
+        // from inside the menu as well as from gameplay. Held-state
+        // bits are only committed to the NES when the overlay is
+        // closed — same discipline as the keyboard path.
+        self.poll_gamepad();
+        if self.pending_menu_toggle {
+            self.pending_menu_toggle = false;
+            if let Some(ui) = self.ui.as_mut() {
+                ui.toggle_overlay();
+            }
+        }
+
         let overlay_open = self
             .ui
             .as_ref()
             .is_some_and(|ui| ui.is_overlay_open());
 
-        // Sample inputs before we take the long-lived `&mut
-        // self.renderer` borrow below. Gamepad state is polled once
-        // per frame; keyboard bits update synchronously from winit
-        // events. Merge both into the NES latch so the controller
-        // shifter sees a consistent snapshot for any strobes this
-        // frame. Skip while the overlay owns input so controller bits
-        // stay latched at zero for the paused game underneath.
         if !overlay_open {
-            self.poll_gamepad();
             self.commit_controller_p1();
         }
 
@@ -958,39 +980,101 @@ impl App {
     /// Poll the first connected gamepad and project its state onto
     /// NES controller-1 bits. Fixed mapping, Xbox-first:
     ///
-    /// | Physical (gilrs)           | Xbox label | NES        |
+    /// | gilrs logical Button       | Xbox label | NES        |
     /// | -------------------------- | ---------- | ---------- |
-    /// | South (bottom face)        | A          | A (0x01)   |
-    /// | West  (left face)          | X          | B (0x02)   |
+    /// | South                      | A          | A (0x01)   |
+    /// | North                      | X          | B (0x02)   |
     /// | Select / Back              | Back/View  | Select     |
     /// | Start / Menu               | Menu       | Start      |
     /// | D-pad                      | D-pad      | D-pad      |
     /// | Left stick (± `DEADBAND`)  | LS         | D-pad      |
     ///
+    /// Note on North vs West: the user's 8BitDo Ultimate 2 emits
+    /// `Button::North` for the physical X (left) face button under
+    /// gilrs' default mapping — opposite to the usual evdev
+    /// convention where `West = X`. Binding NES B to `North`
+    /// matches this controller; a future remapping UI will handle
+    /// pads that follow the other convention.
+    ///
     /// Called every frame before `step_until_frame`. Draining
     /// `next_event()` is required for connect/disconnect state to
     /// propagate inside gilrs.
     fn poll_gamepad(&mut self) {
-        use gilrs::{Axis, Button};
+        use gilrs::{Axis, Button, EventType};
         const DEADBAND: f32 = 0.5;
         let Some(g) = self.gamepad.as_mut() else { return };
-        while g.next_event().is_some() {}
-        // Pick the first device that actually *looks* like a game
-        // controller. gilrs happily enumerates HID devices that
-        // Linux classifies as gamepads but that are really keyboards
-        // with consumer-control pages (e.g. Keychron keyboard dock)
-        // and puts them before the real pad — the "first connected"
-        // strategy lands on the wrong one. Require at least one
-        // standard face button *or* a left stick axis to be mapped.
+        // Drain events. Track the most recent id that emitted an
+        // actual input event — this is the reliable signal for
+        // "which of the enumerated HID devices is really the
+        // player's gamepad". Both naive "pick first" and "has South
+        // button mapped" fail here: Linux enumerates Keychron's
+        // keyboard dock as a gamepad ahead of the real 8BitDo, and
+        // gilrs' default mapping auto-binds the fallback device's
+        // HID axes too, so static inspection can't tell them apart.
+        // Whichever one the user physically moves is the real one.
+        let debug = std::env::var_os("VIBENES_GAMEPAD_DEBUG").is_some();
+        while let Some(ev) = g.next_event() {
+            match ev.event {
+                EventType::ButtonPressed(Button::Mode, _) => {
+                    self.active_pad = Some(ev.id);
+                    self.pending_menu_toggle = true;
+                    if debug {
+                        eprintln!("gamepad[{:?}] Mode pressed -> menu toggle", ev.id);
+                    }
+                }
+                EventType::ButtonPressed(..)
+                | EventType::ButtonReleased(..)
+                | EventType::AxisChanged(..)
+                | EventType::ButtonChanged(..) => {
+                    self.active_pad = Some(ev.id);
+                    if debug {
+                        eprintln!("gamepad[{:?}] {:?}", ev.id, ev.event);
+                    }
+                }
+                EventType::Connected => {
+                    if debug {
+                        eprintln!("gamepad[{:?}] connected", ev.id);
+                    }
+                }
+                EventType::Disconnected => {
+                    if self.active_pad == Some(ev.id) {
+                        self.active_pad = None;
+                    }
+                    if debug {
+                        eprintln!("gamepad[{:?}] disconnected", ev.id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Prefer the most-recently-active pad; if nothing has moved
+        // yet this session, fall back to a heuristic (non-keyboard
+        // name or a mapped face button) so the first-frame press
+        // still works.
         let mut bits = 0u8;
-        let pad = g.gamepads().find(|(_, p)| {
-            p.button_code(Button::South).is_some()
-                || p.button_code(Button::DPadUp).is_some()
-                || p.axis_code(Axis::LeftStickX).is_some()
-        });
-        if let Some((_, pad)) = pad {
+        let pad = self
+            .active_pad
+            .and_then(|id| g.connected_gamepad(id).map(|p| (id, p)))
+            .or_else(|| {
+                g.gamepads().find(|(_, p)| {
+                    let n = p.name().to_ascii_lowercase();
+                    !n.contains("keyboard") && !n.contains("keychron")
+                })
+            })
+            .or_else(|| {
+                g.gamepads().find(|(_, p)| {
+                    p.button_code(Button::South).is_some()
+                        || p.axis_code(Axis::LeftStickX).is_some()
+                })
+            });
+        if let Some((id, pad)) = pad {
+            if debug {
+                eprintln!(
+                    "gamepad: polling id={:?} name={:?}", id, pad.name(),
+                );
+            }
             if pad.is_pressed(Button::South)     { bits |= 0x01; }
-            if pad.is_pressed(Button::West)      { bits |= 0x02; }
+            if pad.is_pressed(Button::North)     { bits |= 0x02; }
             if pad.is_pressed(Button::Select)    { bits |= 0x04; }
             if pad.is_pressed(Button::Start)     { bits |= 0x08; }
             if pad.is_pressed(Button::DPadUp)    { bits |= 0x10; }
