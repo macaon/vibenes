@@ -99,7 +99,7 @@ and the built-in CRC32 game DB, and the host audio sample rate is
 matched to it.
 
 **Keys**: `Z`=B, `X`=A, `Enter`=Start, `RShift`=Select, arrows=D-pad,
-`R`=reset, `F1`=overlay menu, `Esc`=back/quit.
+`R`=reset, `F1`=overlay menu, `F4`=FDS disk swap, `Esc`=back/quit.
 
 The overlay menu (F1) pauses the emulator and shows a centered modal
 over a darkened freeze-frame: Scale (1x-6x), Aspect (Auto / 1:1 / 5:4
