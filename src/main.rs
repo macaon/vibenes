@@ -167,6 +167,15 @@ struct App {
     /// authoritative save triggers are quit + ROM swap; this
     /// counter only exists to narrow the SIGKILL-data-loss window.
     frames_since_autosave: u32,
+    /// Last deadline we handed to `ControlFlow::WaitUntil`. Used to
+    /// suppress redundant `set_control_flow` calls — winit's
+    /// calloop backend (Wayland) treats every call as a potential
+    /// timer-source re-registration, and a timer that fires during
+    /// the hand-over between "removed" and "added" logs
+    /// `Received an event for non-existence source` in calloop.
+    /// `None` means we haven't set `WaitUntil` yet this session
+    /// (startup default is `Poll`).
+    last_wait_deadline: Option<Instant>,
 }
 
 impl App {
@@ -233,6 +242,7 @@ impl App {
             pending_window_resize: false,
             config,
             frames_since_autosave: 0,
+            last_wait_deadline: None,
         }
     }
 
@@ -409,23 +419,40 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Drive the frame cadence here rather than calling
         // `request_redraw` immediately inside `RedrawRequested`
-        // (which would busy-loop on fast monitors). If the deadline
-        // has arrived, request a redraw now; otherwise tell winit to
-        // wake us up exactly when it arrives.
+        // (which would busy-loop on fast monitors).
+        //
+        // Two subtleties vs. the naive "flip between Poll and
+        // WaitUntil" pattern:
+        //
+        // 1. **Always WaitUntil, never Poll.** `Poll` means the
+        //    event loop busy-polls until we explicitly switch to
+        //    `WaitUntil` again — which we used to do for one frame
+        //    each time the deadline had already passed. That single-
+        //    frame mode flip is what churns calloop's timer source
+        //    on Wayland ("Received an event for non-existence
+        //    source: TokenInner { id: 3, version: N }"). A past
+        //    deadline passed to `WaitUntil` wakes immediately on
+        //    every backend, so `Poll` buys us nothing.
+        //
+        // 2. **Debounce redundant `set_control_flow` calls.** Even
+        //    sticking to `WaitUntil`, calling `set_control_flow`
+        //    with an unchanged deadline re-registers the timer on
+        //    calloop, which has the same race. `last_wait_deadline`
+        //    lets us skip the call when the deadline hasn't moved.
         let Some(deadline) = self.next_frame_deadline else {
             if let Some(w) = &self.window {
                 w.request_redraw();
             }
             return;
         };
-        let now = Instant::now();
-        if now >= deadline {
+        if Instant::now() >= deadline {
             if let Some(w) = &self.window {
                 w.request_redraw();
             }
-            event_loop.set_control_flow(ControlFlow::Poll);
-        } else {
+        }
+        if self.last_wait_deadline != Some(deadline) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            self.last_wait_deadline = Some(deadline);
         }
     }
 
