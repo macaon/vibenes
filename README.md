@@ -35,7 +35,9 @@ for hardware specifics and describe the model in my own words.
 | 7 | AxROM | ✅ | |
 | 9 | MMC2 / PxROM | ✅ | PPU-snooped CHR latch for Punch-Out!!'s giant-sprite animation |
 | 10 | MMC4 / FxROM | ✅ | MMC2 latch + 16 KB PRG banks + 8 KB battery PRG-RAM (Fire Emblem, Famicom Wars) |
+| 16 | Bandai FCG-1/2 / LZ93D50 | ✅ | All submappers (0/3/4/5); 24C01 / 24C02 serial EEPROM with battery save (Dragon Ball, Dragon Ball Z, SD Gundam Gaiden) |
 | 66 | GxROM / MHROM | ✅ | 32 KB PRG + 8 KB CHR bank select (e.g. SMB + Duck Hunt) |
+| 159 | Bandai LZ93D50 + 24C01 | ✅ | Shared impl with mapper 16 — always 128-byte 24C01 EEPROM (DBZ: Kyoushuu!, Magical Taruruuto-kun 1/2, SD Gundam Gaiden) |
 
 ### Test-ROM coverage
 
