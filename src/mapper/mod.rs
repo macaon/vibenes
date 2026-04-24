@@ -4,6 +4,7 @@ use crate::rom::{Cartridge, Mirroring};
 
 pub mod axrom;
 pub mod cnrom;
+pub mod gxrom;
 pub mod mmc1;
 pub mod mmc3;
 pub mod mmc5;
@@ -197,6 +198,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         4 => Ok(Box::new(mmc3::Mmc3::new(cart))),
         5 => Ok(Box::new(mmc5::Mmc5::new(cart))),
         7 => Ok(Box::new(axrom::Axrom::new(cart))),
+        66 => Ok(Box::new(gxrom::Gxrom::new(cart))),
         other => bail!("unsupported mapper {}", other),
     }
 }
