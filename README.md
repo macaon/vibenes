@@ -101,6 +101,12 @@ matched to it.
 **Keys**: `Z`=B, `X`=A, `Enter`=Start, `RShift`=Select, arrows=D-pad,
 `R`=reset, `F1`=overlay menu, `F4`=FDS disk swap, `Esc`=back/quit.
 
+**Gamepad** (P1, fixed mapping for now — remapping UI is future
+work): Xbox-style `A`=A, `X`=B, `Back`=Select, `Menu/Start`=Start,
+D-pad or left stick for the D-pad. Keyboard and gamepad state OR
+together, so either works at any time. Controller 2 is still future
+work.
+
 The overlay menu (F1) pauses the emulator and shows a centered modal
 over a darkened freeze-frame: Scale (1x-6x), Aspect (Auto / 1:1 / 5:4
 / 8:7 NTSC / 11:8 PAL), Recent ROMs, Load ROM, Reset, Quit. Navigate

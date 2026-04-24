@@ -39,6 +39,12 @@ egui-winit = "0.34"
 # the 300 ms audio ring pre-buffer (see src/audio.rs) absorbs without
 # clicks. An async variant is available if we ever need it.
 rfd = "0.15"
+# Gamepad input. `gilrs` is pure-Rust and cross-platform (Linux evdev,
+# Windows XInput + DInput, macOS IOKit) with no extra native deps. We
+# poll state once per frame and OR the result with keyboard bits into
+# controller 1; controller 2 is still future work. Fixed mapping for
+# now — the overlay's remapping UI is a later pass.
+gilrs = "0.11"
 
 [profile.dev]
 opt-level = 1

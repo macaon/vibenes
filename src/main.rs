@@ -206,6 +206,17 @@ struct App {
     /// `None` means we haven't set `WaitUntil` yet this session
     /// (startup default is `Poll`).
     last_wait_deadline: Option<Instant>,
+    /// Controller-1 bits sourced from the keyboard. Updated from
+    /// winit key events; merged with `gamepad_bits_p1` once per
+    /// frame and written to the NES controller shifter.
+    keyboard_bits_p1: u8,
+    /// Controller-1 bits sourced from the first connected gamepad
+    /// (see `poll_gamepad`). Re-sampled once per frame.
+    gamepad_bits_p1: u8,
+    /// gilrs runtime. `None` if initialization failed (headless
+    /// systems, missing permissions on evdev, etc.) — the
+    /// keyboard path keeps working.
+    gamepad: Option<gilrs::Gilrs>,
 }
 
 impl App {
@@ -271,6 +282,19 @@ impl App {
                 }
             }
         }
+        let gamepad = match gilrs::Gilrs::new() {
+            Ok(g) => {
+                let count = g.gamepads().count();
+                if count > 0 {
+                    eprintln!("gamepad: {count} connected (P1 uses the first)");
+                }
+                Some(g)
+            }
+            Err(e) => {
+                eprintln!("vibenes: gamepad init failed ({e}) — keyboard only");
+                None
+            }
+        };
         Self {
             nes,
             window: None,
@@ -287,6 +311,9 @@ impl App {
             config,
             frames_since_autosave: 0,
             last_wait_deadline: None,
+            keyboard_bits_p1: 0,
+            gamepad_bits_p1: 0,
+            gamepad,
         }
     }
 
@@ -327,6 +354,18 @@ impl App {
             .ui
             .as_ref()
             .is_some_and(|ui| ui.is_overlay_open());
+
+        // Sample inputs before we take the long-lived `&mut
+        // self.renderer` borrow below. Gamepad state is polled once
+        // per frame; keyboard bits update synchronously from winit
+        // events. Merge both into the NES latch so the controller
+        // shifter sees a consistent snapshot for any strobes this
+        // frame. Skip while the overlay owns input so controller bits
+        // stay latched at zero for the paused game underneath.
+        if !overlay_open {
+            self.poll_gamepad();
+            self.commit_controller_p1();
+        }
 
         let renderer = match self.renderer.as_mut() {
             Some(r) => r,
@@ -909,11 +948,59 @@ impl App {
             KeyCode::ArrowRight => 0x80,
             _ => return,
         };
-        let Some(nes) = self.nes.as_mut() else { return };
-        let c = &mut nes.bus.controllers[0];
         match state {
-            ElementState::Pressed => c.buttons |= bit,
-            ElementState::Released => c.buttons &= !bit,
+            ElementState::Pressed => self.keyboard_bits_p1 |= bit,
+            ElementState::Released => self.keyboard_bits_p1 &= !bit,
         }
+        self.commit_controller_p1();
+    }
+
+    /// Poll the first connected gamepad and project its state onto
+    /// NES controller-1 bits. Fixed mapping, Xbox-first:
+    ///
+    /// | Physical (gilrs)           | Xbox label | NES        |
+    /// | -------------------------- | ---------- | ---------- |
+    /// | South (bottom face)        | A          | A (0x01)   |
+    /// | West  (left face)          | X          | B (0x02)   |
+    /// | Select / Back              | Back/View  | Select     |
+    /// | Start / Menu               | Menu       | Start      |
+    /// | D-pad                      | D-pad      | D-pad      |
+    /// | Left stick (± `DEADBAND`)  | LS         | D-pad      |
+    ///
+    /// Called every frame before `step_until_frame`. Draining
+    /// `next_event()` is required for connect/disconnect state to
+    /// propagate inside gilrs.
+    fn poll_gamepad(&mut self) {
+        const DEADBAND: f32 = 0.5;
+        let Some(g) = self.gamepad.as_mut() else { return };
+        while g.next_event().is_some() {}
+        let mut bits = 0u8;
+        if let Some((_, pad)) = g.gamepads().next() {
+            use gilrs::{Axis, Button};
+            if pad.is_pressed(Button::South)     { bits |= 0x01; }
+            if pad.is_pressed(Button::West)      { bits |= 0x02; }
+            if pad.is_pressed(Button::Select)    { bits |= 0x04; }
+            if pad.is_pressed(Button::Start)     { bits |= 0x08; }
+            if pad.is_pressed(Button::DPadUp)    { bits |= 0x10; }
+            if pad.is_pressed(Button::DPadDown)  { bits |= 0x20; }
+            if pad.is_pressed(Button::DPadLeft)  { bits |= 0x40; }
+            if pad.is_pressed(Button::DPadRight) { bits |= 0x80; }
+            let x = pad.value(Axis::LeftStickX);
+            let y = pad.value(Axis::LeftStickY);
+            if y >  DEADBAND { bits |= 0x10; }
+            if y < -DEADBAND { bits |= 0x20; }
+            if x < -DEADBAND { bits |= 0x40; }
+            if x >  DEADBAND { bits |= 0x80; }
+        }
+        self.gamepad_bits_p1 = bits;
+    }
+
+    /// Write the OR of keyboard + gamepad bits into the NES
+    /// controller-1 latch. Safe to call while `self.nes` is `None`
+    /// (the CLI "no ROM yet" startup case); the merge simply
+    /// no-ops.
+    fn commit_controller_p1(&mut self) {
+        let Some(nes) = self.nes.as_mut() else { return };
+        nes.bus.controllers[0].buttons = self.keyboard_bits_p1 | self.gamepad_bits_p1;
     }
 }
