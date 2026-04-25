@@ -18,6 +18,7 @@ use vibenes::config::Config;
 use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
+use vibenes::settings;
 use vibenes::ui::{NavKey, RecentRoms, UiCommand, UiLayer};
 use vibenes::video::VideoSettings;
 use winit::application::ApplicationHandler;
@@ -327,7 +328,11 @@ impl App {
             pending_audio_sink,
             _audio_stream: audio_stream,
             recent_roms,
-            video: VideoSettings::default(),
+            // Persisted preferences: load before the window is created
+            // so the initial inner_size already matches the user's
+            // chosen scale rather than briefly opening at the default
+            // and resizing on the first frame.
+            video: VideoSettings::default().with_scale(settings::load().scale),
             pending_window_resize: false,
             config,
             frames_since_autosave: 0,
@@ -748,6 +753,12 @@ impl App {
             UiCommand::SetScale(n) => {
                 self.video = self.video.with_scale(n);
                 self.pending_window_resize = true;
+                // Persist the post-clamp value, not the raw `n` —
+                // `with_scale` already snapped it into MIN..=MAX.
+                let to_save = settings::Settings { scale: self.video.scale };
+                if let Err(e) = settings::save(&to_save) {
+                    eprintln!("vibenes: save settings failed: {e:#}");
+                }
             }
             UiCommand::SetAspectRatio(par_mode) => {
                 self.video = self.video.with_par_mode(par_mode);

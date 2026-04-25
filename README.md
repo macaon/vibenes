@@ -155,8 +155,13 @@ applied over the pristine disk image, so the on-disk `.fds` stays
 untouched and the save is portable.
 
 Runtime settings live in [`src/config.rs`](src/config.rs) as plain
-Rust defaults. A future settings UI will load them from
-`~/.config/vibenes/config.toml` via `dirs` + `toml`.
+Rust defaults. The user-tunable subset that the in-game overlay
+already exposes is persisted across launches in
+`~/.config/vibenes/settings.kv` (respects `$XDG_CONFIG_HOME`) — a
+tiny `key=value` file managed by [`src/settings.rs`](src/settings.rs).
+Today only the integer scale survives a restart; more fields move
+out of `config.rs` and into the persisted file as the settings UI
+grows.
 
 ## Testing
 

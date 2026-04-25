@@ -16,5 +16,6 @@ pub mod nes;
 pub mod ppu;
 pub mod rom;
 pub mod save;
+pub mod settings;
 pub mod ui;
 pub mod video;
