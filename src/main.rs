@@ -15,11 +15,12 @@ use vibenes::app;
 use vibenes::audio;
 use vibenes::clock::Region;
 use vibenes::config::Config;
+use vibenes::debug_overlay;
 use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
 use vibenes::rom::Cartridge;
 use vibenes::settings;
-use vibenes::ui::{NavKey, RecentRoms, UiCommand, UiLayer};
+use vibenes::ui::{DebugStatus, NavKey, RecentRoms, UiCommand, UiLayer};
 use vibenes::video::VideoSettings;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -239,6 +240,21 @@ struct App {
     /// is safe: the overlay's `consume_key` only fires when
     /// showing, and unused egui input is silently dropped.
     pending_nav: Vec<NavKey>,
+    /// When true, paint scanline + dot coordinate rulers directly
+    /// into the NES framebuffer before upload. Toggled from the F12
+    /// Debug submenu — used to read off the exact line a rendering
+    /// artifact lives on without counting pixels.
+    show_scanline_ruler: bool,
+    /// Scratch copy of the PPU framebuffer used to paint the debug
+    /// overlay without disturbing the PPU's own buffer. Empty
+    /// until the ruler is first toggled on; allocated once and
+    /// reused.
+    debug_fb_scratch: Vec<u8>,
+    /// Frames remaining in the OAM-dump burst armed from the Debug
+    /// submenu. The post-frame hook prints OAM and decrements;
+    /// covers the 30 Hz sprite-flicker cycle so a single probe
+    /// doesn't miss the "on" half.
+    oam_dump_frames: u8,
 }
 
 impl App {
@@ -343,6 +359,9 @@ impl App {
             active_pad: None,
             pending_menu_toggle: false,
             pending_nav: Vec::new(),
+            show_scanline_ruler: false,
+            debug_fb_scratch: Vec::new(),
+            oam_dump_frames: 0,
         }
     }
 
@@ -456,6 +475,30 @@ impl App {
                 // Hand the frame's audio to the ring so the cpal
                 // callback can drain it before the next wakeup.
                 nes.end_audio_frame();
+                // OAM dump burst, armed via the Debug submenu. Each
+                // frame in the burst dumps the full visible OAM to
+                // stderr — covers 30 Hz sprite flicker so a single
+                // probe doesn't miss the "on" cycle.
+                if self.oam_dump_frames > 0 {
+                    self.oam_dump_frames -= 1;
+                    let oam = nes.bus.ppu.debug_oam();
+                    eprintln!(
+                        "vibenes: OAM frame {} (slot: Y tile attr X)",
+                        nes.bus.ppu.frame()
+                    );
+                    for slot in 0..64 {
+                        let base = slot * 4;
+                        let y = oam[base];
+                        let t = oam[base + 1];
+                        let a = oam[base + 2];
+                        let x = oam[base + 3];
+                        if y < 240 {
+                            eprintln!(
+                                "  {slot:02}: Y={y:3} tile=${t:02X} attr=${a:02X} X={x:3}"
+                            );
+                        }
+                    }
+                }
                 // Periodic autosave. `save_battery` is a cheap
                 // no-op when the mapper's dirty flag is clear, so
                 // the typical game-at-idle case costs nothing. A
@@ -500,7 +543,20 @@ impl App {
             }
         }
         if let Some(nes) = self.nes.as_ref() {
-            renderer.upload_framebuffer(&nes.bus.ppu.frame_buffer);
+            let fb = &nes.bus.ppu.frame_buffer;
+            if self.show_scanline_ruler {
+                // Copy into a scratch buffer so we don't taint the
+                // PPU's own framebuffer (it'd persist for one frame
+                // when rendering pauses, e.g. with the menu open).
+                if self.debug_fb_scratch.len() != fb.len() {
+                    self.debug_fb_scratch.resize(fb.len(), 0);
+                }
+                self.debug_fb_scratch.copy_from_slice(fb);
+                debug_overlay::draw_scanline_ruler(&mut self.debug_fb_scratch);
+                renderer.upload_framebuffer(&self.debug_fb_scratch);
+            } else {
+                renderer.upload_framebuffer(fb);
+            }
         }
 
         let mut cmds: Vec<UiCommand> = Vec::new();
@@ -509,6 +565,9 @@ impl App {
         // UI needs an owned copy rather than a borrow into `nes` so
         // the egui render closure stays flexible about borrows.
         let fds_info = self.nes.as_ref().and_then(|n| n.fds_info());
+        let debug_status = DebugStatus {
+            scanline_ruler_on: self.show_scanline_ruler,
+        };
         if let (Some(ui), Some(window)) = (self.ui.as_mut(), self.window.as_ref()) {
             ui.run(
                 window,
@@ -518,6 +577,7 @@ impl App {
                 region,
                 nes_loaded,
                 fds_info,
+                debug_status,
                 &mut cmds,
             );
         }
@@ -678,6 +738,13 @@ impl ApplicationHandler for App {
                     if let Some(ui) = self.ui.as_mut() {
                         ui.toggle_overlay();
                     }
+                } else if code == KeyCode::F12 && state == ElementState::Pressed {
+                    // Open the Debug submenu directly (scanline
+                    // ruler, OAM dump, etc.). One hotkey beats
+                    // burning F2/F3/F5/F6 on individual diagnostics.
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.open_debug_menu();
+                    }
                 } else if code == KeyCode::F4 && state == ElementState::Pressed {
                     // Jump straight into the Disk submenu. Only useful
                     // on FDS carts — but harmless otherwise: the
@@ -774,6 +841,17 @@ impl App {
                 if let Some(nes) = self.nes.as_mut() {
                     nes.fds_insert(side);
                 }
+            }
+            UiCommand::ToggleScanlineRuler => {
+                self.show_scanline_ruler = !self.show_scanline_ruler;
+                eprintln!(
+                    "vibenes: scanline ruler {}",
+                    if self.show_scanline_ruler { "on" } else { "off" }
+                );
+            }
+            UiCommand::DumpOamBurst(frames) => {
+                self.oam_dump_frames = frames;
+                eprintln!("vibenes: OAM dump armed ({frames} frames)");
             }
         }
     }

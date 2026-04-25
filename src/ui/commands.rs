@@ -39,4 +39,11 @@ pub enum UiCommand {
     /// is already loaded the mapper handles the eject+pause+reinsert
     /// dance automatically so games detect the swap edge.
     FdsInsert(u8),
+    /// Debug: flip the scanline-ruler overlay (gridlines + numbered
+    /// labels painted into the framebuffer for pixel-coord readout).
+    ToggleScanlineRuler,
+    /// Debug: dump the next N frames of OAM to stderr. Useful when
+    /// chasing sprite issues; the burst covers 30 Hz sprite-flicker
+    /// rotation so a single probe doesn't miss the "on" frame.
+    DumpOamBurst(u8),
 }

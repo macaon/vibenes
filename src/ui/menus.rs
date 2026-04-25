@@ -27,6 +27,9 @@ pub enum Screen {
     /// cart is a Famicom Disk System image; greyed out otherwise.
     /// Also reachable via the F4 hotkey.
     Disk,
+    /// Developer-facing diagnostic toggles (scanline ruler, OAM
+    /// dump). Reachable from Root or via the F12 hotkey.
+    Debug,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +69,13 @@ impl OverlayState {
     pub fn open_disk(&mut self) {
         self.open = true;
         self.screen = Screen::Disk;
+        self.cursor = 0;
+    }
+
+    /// Jump straight to the Debug submenu. Wired to F12 in the host.
+    pub fn open_debug(&mut self) {
+        self.open = true;
+        self.screen = Screen::Debug;
         self.cursor = 0;
     }
 
@@ -138,6 +148,14 @@ impl Item {
     }
 }
 
+/// Snapshot of host-side debug toggles so the Debug submenu can show
+/// current ON/OFF state next to each item. Filled by the host before
+/// the egui pass and consumed by [`items_for`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DebugStatus {
+    pub scanline_ruler_on: bool,
+}
+
 /// Build the item list for the active screen.
 fn items_for(
     screen: Screen,
@@ -146,6 +164,7 @@ fn items_for(
     recent: &RecentRoms,
     nes_loaded: bool,
     fds: Option<FdsInfo>,
+    debug: DebugStatus,
 ) -> Vec<Item> {
     match screen {
         Screen::Root => {
@@ -175,6 +194,7 @@ fn items_for(
             items.push(disk_item);
             let reset_item = Item::new("Reset", Selected::Cmd(UiCommand::Reset));
             items.push(if nes_loaded { reset_item } else { reset_item.disabled() });
+            items.push(Item::new("Debug", Selected::Goto(Screen::Debug)));
             items.push(Item::new("Quit", Selected::Cmd(UiCommand::Quit)));
             items
         }
@@ -248,6 +268,23 @@ fn items_for(
             items.push(eject);
             items
         }
+        Screen::Debug => {
+            // Toggleable diagnostics. The badge shows current state
+            // so the user can confirm the click took without having
+            // to dismiss the overlay.
+            let mut ruler = Item::new(
+                "Scanline ruler",
+                Selected::Cmd(UiCommand::ToggleScanlineRuler),
+            );
+            ruler = ruler.with_badge(if debug.scanline_ruler_on { "ON" } else { "off" });
+            // OAM dump fires once and prints to stderr; nothing to
+            // badge — short cooldown handled host-side.
+            let oam = Item::new(
+                "OAM dump (8 frames)",
+                Selected::Cmd(UiCommand::DumpOamBurst(8)),
+            );
+            vec![ruler, oam, Item::new("Back", Selected::Back)]
+        }
     }
 }
 
@@ -293,6 +330,7 @@ fn screen_title(screen: Screen) -> &'static str {
         Screen::Aspect => "Aspect ratio",
         Screen::Recent => "Recent ROMs",
         Screen::Disk => "Disk",
+        Screen::Debug => "Debug",
     }
 }
 
@@ -646,6 +684,7 @@ pub fn run_overlay(
     recent: &RecentRoms,
     nes_loaded: bool,
     fds: Option<FdsInfo>,
+    debug: DebugStatus,
     cmds: &mut Vec<UiCommand>,
 ) -> bool {
     if !state.open {
@@ -657,7 +696,7 @@ pub fn run_overlay(
     // Build items, clamp cursor, capture pending selection, paint —
     // all in one pass. We resolve the pending selection by rebuilding
     // items just-in-time so the action carries the right `Selected`.
-    let mut items = items_for(state.screen, video, region, recent, nes_loaded, fds);
+    let mut items = items_for(state.screen, video, region, recent, nes_loaded, fds, debug);
     if items.is_empty() {
         items.push(Item::new("(empty)", Selected::Back).disabled());
     }
@@ -692,7 +731,10 @@ fn apply_resolved(state: &mut OverlayState, action: Selected, cmds: &mut Vec<UiC
             // overlay so the user sees the effect immediately.
             let stays_on_submenu = matches!(
                 cmd,
-                UiCommand::SetScale(_) | UiCommand::SetAspectRatio(_)
+                UiCommand::SetScale(_)
+                    | UiCommand::SetAspectRatio(_)
+                    | UiCommand::ToggleScanlineRuler
+                    | UiCommand::DumpOamBurst(_)
             );
             cmds.push(cmd);
             if !stays_on_submenu {

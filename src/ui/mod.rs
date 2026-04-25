@@ -29,7 +29,7 @@ mod menus;
 pub mod recent;
 
 pub use commands::UiCommand;
-pub use menus::OverlayState;
+pub use menus::{DebugStatus, OverlayState};
 pub use recent::RecentRoms;
 
 /// Logical navigation directions the overlay understands. Queued by
@@ -137,6 +137,13 @@ impl UiLayer {
         self.overlay.open_disk();
     }
 
+    /// Open the overlay directly on the Debug submenu. Wired to F12
+    /// in the host so dev diagnostics (scanline ruler, OAM dump)
+    /// are one keystroke away.
+    pub fn open_debug_menu(&mut self) {
+        self.overlay.open_debug();
+    }
+
     /// Forward a winit event to egui. Callers should check the returned
     /// `EventResponse::consumed` and skip their own handling when
     /// egui has taken ownership (e.g. while a text field is focused).
@@ -163,6 +170,7 @@ impl UiLayer {
         region: Option<Region>,
         nes_loaded: bool,
         fds: Option<crate::nes::FdsInfo>,
+        debug: DebugStatus,
         cmds: &mut Vec<UiCommand>,
     ) {
         // Keep ctx's pixels_per_point in sync with winit's current
@@ -208,6 +216,7 @@ impl UiLayer {
                 recent,
                 nes_loaded,
                 fds,
+                debug,
                 cmds,
             );
         });

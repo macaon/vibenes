@@ -8,6 +8,7 @@ pub mod clock;
 pub mod config;
 pub mod cpu;
 pub mod crc32;
+pub mod debug_overlay;
 pub mod fds;
 pub mod gamedb;
 pub mod gfx;
