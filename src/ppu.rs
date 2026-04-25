@@ -534,6 +534,20 @@ impl Ppu {
             self.render_pixel(rendering);
         }
 
+        // Sprite-eval finalize. Runs AFTER `render_pixel` so the
+        // rightmost pixel of the current scanline (dot 256 = column
+        // 255) still sees `sprite_count` from the previous
+        // scanline's eval_end. If we ran this inside eval_tick at
+        // dot 256 (the natural place), `sprite_count` would be
+        // updated for the NEXT scanline before the current
+        // scanline's last pixel rendered — dropping any sprite at
+        // X >= 248 that depended on a slot index >= the new count.
+        // Reproduced as a flickering pixel at the right edge in
+        // Goemon Gaiden 2's name-entry screen.
+        if rendering && (visible || is_pre) && self.dot == 256 {
+            self.sprite_eval_end();
+        }
+
         // --- (3) Shift. Per-dot shift-by-1 during rendering dots
         // 1..=256 and pre-fetch dots 322..=336. NOT at dot 337:
         // shifting there would run 9 bits between the dot-329 reload
@@ -952,9 +966,11 @@ impl Ppu {
 
         self.oam_addr = (self.sprite_addr_l & 3) | (self.sprite_addr_h << 2);
 
-        if dot == 256 {
-            self.sprite_eval_end();
-        }
+        // NOTE: sprite_eval_end is intentionally NOT called here.
+        // It must run AFTER render_pixel at dot 256, otherwise
+        // updating `sprite_count` for the next scanline clobbers
+        // the count the rightmost pixel still needs to consult.
+        // Caller `tick` invokes `sprite_eval_end` post-render.
     }
 
     /// Reset eval state at dot 65. Called once per scanline.
