@@ -19,6 +19,7 @@ pub mod mmc5;
 pub mod namco163;
 pub mod nrom;
 pub mod uxrom;
+pub mod vrc2_4;
 pub mod vrc6;
 pub mod vrc6_audio;
 
@@ -312,6 +313,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         18 => Ok(Box::new(jaleco_ss88006::JalecoSs88006::new(cart))),
         19 => Ok(Box::new(namco163::Namco163::new(cart))),
         20 => Ok(Box::new(fds::Fds::new(cart))),
+        21 | 22 | 23 | 25 => Ok(Box::new(vrc2_4::Vrc2_4::new(cart))),
         24 => Ok(Box::new(vrc6::Vrc6::new_a(cart))),
         26 => Ok(Box::new(vrc6::Vrc6::new_b(cart))),
         159 => Ok(Box::new(bandai_fcg::BandaiFcg::new(cart))),
