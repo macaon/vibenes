@@ -73,6 +73,12 @@ impl Snes {
         self.cart.region
     }
 
+    /// Borrow the rendered 256x224 RGBA framebuffer (refreshed on
+    /// every [`Core::step_until_frame`]).
+    pub fn framebuffer_for_host(&self) -> &[u8] {
+        &self.framebuffer
+    }
+
     /// Execute one 65C816 instruction. After each step we forward
     /// the latched NMI/IRQ levels from the bus into the CPU; the
     /// CPU then dispatches the interrupt at the next instruction

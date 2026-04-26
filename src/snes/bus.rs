@@ -180,11 +180,16 @@ pub struct MmioCounters {
 
 impl LoRomBus {
     pub fn from_cartridge(cart: &Cartridge) -> Self {
-        assert!(
-            cart.header.map_mode == MapMode::LoRom,
-            "LoRomBus: cart is {:?}, only LoRom supported in Phase 2d",
-            cart.header.map_mode
-        );
+        if cart.header.map_mode != MapMode::LoRom {
+            // HiROM/ExHiROM mapping is a 4c follow-up. Fall back to
+            // LoROM addressing so the host doesn't panic - the cart
+            // will boot to a confused state but the windowed app
+            // stays alive and the user can load a different ROM.
+            eprintln!(
+                "vibenes: SNES bus only supports LoROM in Phase 4b - {} will misaddress",
+                cart.header.map_mode.label()
+            );
+        }
         let mut bus = Self::from_rom(cart.rom.clone());
         bus.region = cart.region;
         bus

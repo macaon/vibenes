@@ -73,20 +73,23 @@ fn run() -> Result<()> {
         }
     };
 
-    // CLI-supplied path: identify the console first. SNES support is
-    // a Phase 1 stub - we parse the cart and log the header but do
-    // not yet boot it; the window opens with no ROM and the user
-    // can load an NES ROM via the File menu without restarting.
+    // CLI-supplied path: identify the console first so we route the
+    // load to the right core. SNES carts are loaded directly here so
+    // the windowed binary boots straight into the game; NES carts
+    // continue down the existing branch.
+    let mut initial_snes: Option<vibenes::snes::Snes> = None;
     if let Some(path) = rom_path.as_deref() {
         match vibenes::core::system::detect_system(path) {
             Ok(vibenes::core::system::System::Snes) => {
                 match vibenes::snes::rom::Cartridge::load(path) {
-                    Ok(cart) => eprintln!("vibenes: detected {}", cart.describe()),
+                    Ok(cart) => {
+                        eprintln!("vibenes: loaded {}", cart.describe());
+                        initial_snes = Some(vibenes::snes::Snes::from_cartridge(cart));
+                    }
                     Err(e) => {
                         eprintln!("vibenes: failed to parse SNES ROM {}: {e:#}", path.display())
                     }
                 }
-                eprintln!("vibenes: SNES core not yet executable (Phase 1 stub).");
             }
             Ok(vibenes::core::system::System::Nes) => {} // fall through
             Err(e) => eprintln!("vibenes: {e:#}"),
@@ -136,6 +139,9 @@ fn run() -> Result<()> {
     let event_loop = EventLoop::new().context("create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut handler = App::new(initial_nes, audio_sink, audio_stream, rom_path);
+    if let Some(snes) = initial_snes {
+        handler.attach_initial_snes(snes);
+    }
     event_loop.run_app(&mut handler).context("winit event loop")?;
     Ok(())
 }
@@ -144,6 +150,17 @@ fn frame_period_for(region: Region) -> Duration {
     match region {
         Region::Ntsc => NTSC_FRAME_PERIOD,
         Region::Pal => PAL_FRAME_PERIOD,
+    }
+}
+
+/// Translate a `core::Region` (NTSC/PAL only) into the NES
+/// timing-aware [`Region`] this crate uses for frame pacing. SNES
+/// region detection lives at the cross-core layer; the NES helpers
+/// then dispatch on the same NTSC/PAL distinction.
+fn map_region(r: vibenes::core::Region) -> Region {
+    match r {
+        vibenes::core::Region::Ntsc => Region::Ntsc,
+        vibenes::core::Region::Pal => Region::Pal,
     }
 }
 
@@ -184,6 +201,11 @@ fn parse_args() -> CliArgs {
 /// buffer, or a black surface when no ROM has been loaded yet.
 struct App {
     nes: Option<Nes>,
+    /// SNES core slot, populated when a `.smc`/`.sfc`/`.fig`/`.swc` cart
+    /// loads. NES and SNES are mutually exclusive: loading a SNES cart
+    /// drops any current `Nes` and vice versa. The render/step path
+    /// branches on which slot is filled.
+    snes: Option<vibenes::snes::Snes>,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     ui: Option<UiLayer>,
@@ -377,6 +399,7 @@ impl App {
         };
         Self {
             nes,
+            snes: None,
             window: None,
             renderer: None,
             ui: None,
@@ -502,6 +525,14 @@ impl App {
         // framebuffer freezes on the last presented frame, which the
         // overlay then dims via a translucent pass.
         if !overlay_open {
+            if let Some(snes) = self.snes.as_mut() {
+                if let Err(e) = vibenes::core::Core::step_until_frame(snes) {
+                    if !self.halted_notice_shown {
+                        eprintln!("vibenes: SNES error: {e}");
+                        self.halted_notice_shown = true;
+                    }
+                }
+            }
             if let Some(nes) = self.nes.as_mut() {
                 if !nes.cpu.halted {
                     if let Err(msg) = nes.step_until_frame() {
@@ -604,6 +635,27 @@ impl App {
             } else {
                 renderer.upload_framebuffer(fb);
             }
+        } else if let Some(snes) = self.snes.as_ref() {
+            // SNES output is 256x224; the renderer's texture is sized
+            // for the NES at 256x240. Pad the SNES content with 8 black
+            // rows on top + 8 on bottom so the existing pipeline
+            // displays it at the right vertical aspect. A
+            // configurable-dim upload lands when the windowed app
+            // supports more than two cores.
+            let snes_fb = snes.framebuffer_for_host();
+            let nes_bytes = 256 * 240 * 4;
+            if self.debug_fb_scratch.len() != nes_bytes {
+                self.debug_fb_scratch.resize(nes_bytes, 0);
+            }
+            // Clear so the borders are black even after a previous
+            // NES frame.
+            for px in self.debug_fb_scratch.chunks_exact_mut(4) {
+                px.copy_from_slice(&[0, 0, 0, 0xFF]);
+            }
+            let dst_start = 8 * 256 * 4;
+            self.debug_fb_scratch[dst_start..dst_start + snes_fb.len()]
+                .copy_from_slice(snes_fb);
+            renderer.upload_framebuffer(&self.debug_fb_scratch);
         }
 
         let mut cmds: Vec<UiCommand> = Vec::new();
@@ -1014,26 +1066,52 @@ impl App {
         self.window = None;
     }
 
+    /// Hand a SNES core to a freshly-built `App`. Mirrors how `Nes`
+    /// is plumbed through `App::new`, but kept off the constructor
+    /// so existing call sites don't need to thread an `Option<Snes>`
+    /// they never use.
+    fn attach_initial_snes(&mut self, snes: vibenes::snes::Snes) {
+        self.frame_period = frame_period_for(map_region(snes.region()));
+        self.snes = Some(snes);
+        self.pending_window_resize = true;
+    }
+
     fn load_rom(&mut self, path: &Path) {
-        // Console identification first. SNES support is Phase 1 stub
-        // only - we parse the header and log it but don't yet swap
-        // the running NES out for an SNES core. Future phases will
-        // turn this branch into a real `Box<dyn Core>` dispatch.
+        // Console identification first. SNES carts route through the
+        // SNES core; NES carts continue down the existing flow.
         match vibenes::core::system::detect_system(path) {
             Ok(vibenes::core::system::System::Snes) => {
                 match vibenes::snes::rom::Cartridge::load(path) {
-                    Ok(cart) => eprintln!("vibenes: detected {}", cart.describe()),
-                    Err(e) => {
-                        eprintln!("vibenes: failed to parse SNES ROM {}: {e:#}", path.display())
+                    Ok(cart) => {
+                        eprintln!("vibenes: loaded {}", cart.describe());
+                        // Drop any active NES (saving its battery
+                        // first) so the SNES has the framebuffer
+                        // pipeline to itself.
+                        if let Some(mut nes) = self.nes.take() {
+                            if let Err(e) = nes.save_battery(&self.config.save) {
+                                eprintln!("vibenes: save before SNES swap failed: {e:#}");
+                            }
+                        }
+                        let snes = vibenes::snes::Snes::from_cartridge(cart);
+                        self.frame_period =
+                            frame_period_for(map_region(snes.region()));
+                        self.snes = Some(snes);
+                        self.recent_roms.push(path.to_path_buf());
+                        self.halted_notice_shown = false;
+                        self.pending_window_resize = true;
                     }
+                    Err(e) => eprintln!(
+                        "vibenes: failed to parse SNES ROM {}: {e:#}",
+                        path.display()
+                    ),
                 }
-                eprintln!(
-                    "vibenes: SNES core not yet executable (Phase 1 stub). \
-                     Keeping current NES state."
-                );
                 return;
             }
-            Ok(vibenes::core::system::System::Nes) => {} // fall through to NES load
+            Ok(vibenes::core::system::System::Nes) => {
+                // Fall through to NES load. If a SNES was running,
+                // drop it so the NES owns the pipeline.
+                self.snes = None;
+            }
             Err(e) => {
                 eprintln!("vibenes: {e:#}");
                 return;
