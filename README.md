@@ -10,6 +10,20 @@ directly porting code from existing emulators. Every subsystem had to
 land with a passing suite of hardware test ROMs before the next one
 started.
 
+Initially the assistant was allowed to work only with a skill trained
+on hardware specs and material available on https://www.nesdev.org.
+Getting a working emulator going was done quickly, but the assistant
+had no grasp of how accuracy should be achieved, and while it ran roms
+mostly fine, There were noticable timing issues (with the APU in
+particular).
+With a tighter direction on the 3rd rewrite from scratch, the master
+clock variant came to be and the emulator was mostly accurate, and
+started passing Blargg tests. NMI was a bigger challenge though,
+and I started allowing the assistant access to the source code from
+Mesen2, puNES and Nestopia to use as reference material, with a "no
+copy or port" rule. The material was used for the agent to understand
+the math.
+
 The strict "no copying" rule held for the CPU, PPU, APU, bus, DMA, and
 the first batch of mappers. Later, some well-trodden corners (FDS
 audio synth, VRC6 audio, FDS disk-image rebuild) were ported directly
@@ -20,6 +34,19 @@ commit history and in the source files.
 This is an AI-assisted re-implementation that used Mesen2, puNES, and
 Nestopia as behavioral references, with a handful of direct ports
 where GPL compatibility allowed it and reinvention offered no benefit.
+
+### So what's next?
+
+I will continue developing this emulator using AI as a personal project.
+Usability and accuracy will continue to be the most important goals,
+and if you'd like to test a Rust based NES emulator, feel free to
+clone this and give it a whirl.
+
+To be clear, vibenes would NOT be accurate to the level it is today
+without the hard work that went into Mesen2, Nestopia and puNES,
+along with all the research material from NesDev. This AI assisted
+project does not aim to or claim to be surpassing these products or
+developers in any way.
 
 ## Status
 
