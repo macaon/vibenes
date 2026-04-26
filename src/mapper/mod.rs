@@ -19,6 +19,7 @@ pub mod mmc4;
 pub mod mmc5;
 pub mod namco163;
 pub mod nrom;
+pub mod taito_tc0190;
 pub mod uxrom;
 pub mod vrc2_4;
 pub mod vrc6;
@@ -316,6 +317,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         20 => Ok(Box::new(fds::Fds::new(cart))),
         21 | 22 | 23 | 25 => Ok(Box::new(vrc2_4::Vrc2_4::new(cart))),
         32 => Ok(Box::new(irem_g101::IremG101::new(cart))),
+        33 => Ok(Box::new(taito_tc0190::TaitoTc0190::new(cart))),
         24 => Ok(Box::new(vrc6::Vrc6::new_a(cart))),
         26 => Ok(Box::new(vrc6::Vrc6::new_b(cart))),
         159 => Ok(Box::new(bandai_fcg::BandaiFcg::new(cart))),

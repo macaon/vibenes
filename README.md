@@ -87,6 +87,7 @@ developers in any way.
 | 24 | Konami VRC6a | done |
 | 26 | Konami VRC6b | done |
 | 32 | Irem G-101 (incl. Major League submapper) | done |
+| 33 | Taito TC0190 / TC0350 (no-IRQ subset) | done |
 | 66 | GxROM / MHROM | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 
