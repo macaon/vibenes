@@ -86,6 +86,7 @@ developers in any way.
 | 21 / 22 / 23 / 25 | Konami VRC2a / VRC2b / VRC2c / VRC4a–f | done |
 | 24 | Konami VRC6a | done |
 | 26 | Konami VRC6b | done |
+| 32 | Irem G-101 (incl. Major League submapper) | done |
 | 66 | GxROM / MHROM | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 
