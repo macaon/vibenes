@@ -136,7 +136,7 @@ matched to it.
 **Keys**: `Z`=B, `X`=A, `Enter`=Start, `RShift`=Select, arrows=D-pad,
 `R`=reset, `F1`=overlay menu, `F4`=FDS disk swap, `Esc`=back/quit.
 
-**Gamepad** (P1, fixed mapping for now — remapping UI is future
+**Gamepad** (P1, fixed mapping for now - remapping UI is future
 work): Xbox-style `A`=A, `X`=B, `Back`=Select, `Menu/Start`=Start,
 D-pad or left stick for the D-pad. `Home`/`Guide` toggles the overlay
 menu; while the menu is open, D-pad up/down moves the cursor, `A`
@@ -192,7 +192,7 @@ untouched and the save is portable.
 Runtime settings live in [`src/config.rs`](src/config.rs) as plain
 Rust defaults. The user-tunable subset that the in-game overlay
 already exposes is persisted across launches in
-`~/.config/vibenes/settings.kv` (respects `$XDG_CONFIG_HOME`) — a
+`~/.config/vibenes/settings.kv` (respects `$XDG_CONFIG_HOME`) - a
 tiny `key=value` file managed by [`src/settings.rs`](src/settings.rs).
 Today only the integer scale survives a restart; more fields move
 out of `config.rs` and into the persisted file as the settings UI
@@ -240,7 +240,7 @@ documentation and behavioral observation of reference emulators.
 The VRC7 (mapper 85) FM audio backend bundles
 [emu2413](https://github.com/digital-sound-antiques/emu2413) v1.5.9 by
 Mitsutaka Okazaki under [`vendor/emu2413/`](vendor/emu2413/), used
-unmodified under its MIT license — see the file there for the full
+unmodified under its MIT license - see the file there for the full
 notice.
 
 ## Credits and references
