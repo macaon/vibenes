@@ -255,6 +255,21 @@ struct App {
     /// covers the 30 Hz sprite-flicker cycle so a single probe
     /// doesn't miss the "on" half.
     oam_dump_frames: u8,
+    /// Simple FPS counter: number of presented frames since
+    /// `fps_window_start`. Reported to stderr once per wall-clock
+    /// second when `fps_print_enabled` is on (set via the
+    /// `VIBENES_FPS` env var). Used to diagnose frame-rate drift —
+    /// e.g. PAL ROMs running at the host monitor's refresh rather
+    /// than the 50 Hz target.
+    fps_window_start: Option<Instant>,
+    fps_frames: u32,
+    /// CPU cycle count snapshot at `fps_window_start`. Diff'd with the
+    /// current value once per second to compute emulated cycles/sec —
+    /// should converge on the region's CPU clock (~1.79 MHz NTSC,
+    /// ~1.66 MHz PAL).
+    fps_cpu_cycles_at_window_start: u64,
+    fps_ppu_frames_at_window_start: u64,
+    fps_print_enabled: bool,
 }
 
 impl App {
@@ -362,6 +377,11 @@ impl App {
             show_scanline_ruler: false,
             debug_fb_scratch: Vec::new(),
             oam_dump_frames: 0,
+            fps_window_start: None,
+            fps_frames: 0,
+            fps_cpu_cycles_at_window_start: 0,
+            fps_ppu_frames_at_window_start: 0,
+            fps_print_enabled: std::env::var("VIBENES_FPS").is_ok(),
         }
     }
 
@@ -615,6 +635,45 @@ impl App {
         } else {
             next
         });
+        if self.fps_print_enabled {
+            self.fps_frames = self.fps_frames.saturating_add(1);
+            if self.fps_window_start.is_none() {
+                self.fps_window_start = Some(now);
+                if let Some(nes) = self.nes.as_ref() {
+                    self.fps_cpu_cycles_at_window_start = nes.bus.clock.cpu_cycles();
+                    self.fps_ppu_frames_at_window_start = nes.bus.ppu.frame();
+                }
+            }
+            let start = self.fps_window_start.unwrap();
+            if now.duration_since(start) >= Duration::from_secs(1) {
+                let elapsed = now.duration_since(start).as_secs_f64();
+                let target_hz = 1.0 / self.frame_period.as_secs_f64();
+                let (cpu_hz, ppu_fps) = self
+                    .nes
+                    .as_ref()
+                    .map(|nes| {
+                        let cyc = nes.bus.clock.cpu_cycles()
+                            - self.fps_cpu_cycles_at_window_start;
+                        let frames = nes.bus.ppu.frame()
+                            - self.fps_ppu_frames_at_window_start;
+                        (cyc as f64 / elapsed, frames as f64 / elapsed)
+                    })
+                    .unwrap_or((0.0, 0.0));
+                eprintln!(
+                    "vibenes: host_fps={:.2} target={:.2} ppu_fps={:.2} cpu_hz={:.0}",
+                    self.fps_frames as f64 / elapsed,
+                    target_hz,
+                    ppu_fps,
+                    cpu_hz,
+                );
+                self.fps_frames = 0;
+                self.fps_window_start = Some(now);
+                if let Some(nes) = self.nes.as_ref() {
+                    self.fps_cpu_cycles_at_window_start = nes.bus.clock.cpu_cycles();
+                    self.fps_ppu_frames_at_window_start = nes.bus.ppu.frame();
+                }
+            }
+        }
     }
 }
 
