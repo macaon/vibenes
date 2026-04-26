@@ -90,7 +90,7 @@ developers in any way.
 | 33 | Taito TC0190 / TC0350 (no-IRQ subset) | done |
 | 37 | Nintendo SMB + Tetris + World Cup multicart | done |
 | 66 | GxROM / MHROM | done |
-| 69 | Sunsoft FME-7 / 5A / 5B (incl. 5B audio: tone only) | done |
+| 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
 | 73 | Konami VRC3 (Salamander) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 
@@ -110,10 +110,7 @@ All ROMs in these suites pass:
 - **Additional mappers.** VRC7 (mapper 85, *Lagrange Point* +
   *Tiny Toon JP*) is the remaining major audio chip; Tengen RAMBO-1
   (mapper 64, *Rolling Thunder* and a few others) is the largest
-  banking-only gap. Mapper 69's audio currently models tone only —
-  the YM2149F noise + envelope generators are unused by *Gimmick!*
-  and follow Mesen2's omission, but are the obvious extension if
-  ever needed.
+  banking-only gap.
 - **Second controller + rebinding.** Player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.
