@@ -92,6 +92,7 @@ developers in any way.
 | 66 | GxROM / MHROM | done |
 | 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
 | 73 | Konami VRC3 (Salamander) | done |
+| 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 
 ### Test-ROM coverage
@@ -107,10 +108,11 @@ All ROMs in these suites pass:
 
 ### Known gaps
 
-- **Additional mappers.** VRC7 (mapper 85, *Lagrange Point* +
-  *Tiny Toon JP*) is the remaining major audio chip; Tengen RAMBO-1
-  (mapper 64, *Rolling Thunder* and a few others) is the largest
-  banking-only gap.
+- **Additional mappers.** Tengen RAMBO-1 (mapper 64, *Rolling Thunder*,
+  *Klax*, *Skull & Crossbones*, *Xybots*) is the largest banking-only
+  gap. Codemasters/Camerica (mapper 71) covers the unlicensed
+  Codemasters catalog. VRC1 (mapper 75) and Sunsoft-3/4 (67/68) round
+  out the smaller remaining commercial ASICs.
 - **Second controller + rebinding.** Player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.
@@ -235,6 +237,12 @@ source files and in the commit history. All other subsystems are
 re-implementations written against the public NES hardware
 documentation and behavioral observation of reference emulators.
 
+The VRC7 (mapper 85) FM audio backend bundles
+[emu2413](https://github.com/digital-sound-antiques/emu2413) v1.5.9 by
+Mitsutaka Okazaki under [`vendor/emu2413/`](vendor/emu2413/), used
+unmodified under its MIT license — see the file there for the full
+notice.
+
 ## Credits and references
 
 - [Mesen2](https://github.com/SourMesen/Mesen2) by Sour -
@@ -246,6 +254,9 @@ documentation and behavioral observation of reference emulators.
 - [Nestopia UE](https://github.com/rdanbrook/nestopia) by
   R. Danbrook (fork of Martin Freij's Nestopia) - tertiary
   reference for CPU/DMA edge cases. GPL-2.0-or-later.
+- [emu2413](https://github.com/digital-sound-antiques/emu2413) by
+  Mitsutaka Okazaki - YM2413/VRC7 OPLL FM core, vendored verbatim
+  under [`vendor/emu2413/`](vendor/emu2413/). MIT.
 - [NESdev Wiki](https://www.nesdev.org/wiki/Nesdev_Wiki) and the
   [blargg test ROMs](https://github.com/christopherpow/nes-test-roms)
   underpin essentially every subsystem.
