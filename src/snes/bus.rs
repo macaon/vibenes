@@ -93,6 +93,21 @@ pub struct LoRomBus {
     /// Latched dividend low/high; only consumed on $4206 write.
     dividend: u16,
 
+    // ---- $2115-$2119 VRAM access (slim model for grading) ----------
+    /// 64 KiB VRAM. Word-addressed in CPU space - word `w` lives at
+    /// bytes `[w*2, w*2+1]`. Even with no PPU rendering yet, the
+    /// test runner needs the VRAM contents so it can scan for
+    /// "FAIL"/"PASS" tile codes to grade peter_lemon CPU tests.
+    pub vram: Vec<u8>,
+    /// $2116/$2117 word address. Only the low 15 bits matter (the
+    /// real VRAM is 32K words). Writes auto-increment per VMAIN.
+    vmaddr: u16,
+    /// $2115 VMAIN. Bit 7 = increment-on-VMDATAH; bits 1-0 =
+    /// increment amount (00:+1, 01:+32, 10:+128, 11:+128). Bits 3-2
+    /// are address-translation modes; we don't model those yet
+    /// (peter_lemon doesn't use them).
+    vmain: u8,
+
     /// Diagnostic counters - a write to a stubbed MMIO region bumps
     /// the matching tally so the headless test runner can see how
     /// far the boot sequence got even before we model the PPU.
@@ -147,7 +162,28 @@ impl LoRomBus {
             rdmpy: 0,
             rddiv: 0,
             dividend: 0,
+            vram: vec![0; 64 * 1024],
+            vmaddr: 0,
+            vmain: 0,
             mmio_writes: MmioCounters::default(),
+        }
+    }
+
+    fn vmain_increment(&self) -> u16 {
+        match self.vmain & 0x03 {
+            0 => 1,
+            1 => 32,
+            _ => 128,
+        }
+    }
+
+    /// Apply VRAM auto-increment after a VMDATAL or VMDATAH write,
+    /// gated by VMAIN bit 7. Per snes-cpu.md: bit 7 = "increment on
+    /// VMDATAH (1) vs VMDATAL (0)".
+    fn vram_advance(&mut self, on_high: bool) {
+        let increment_on_high = self.vmain & 0x80 != 0;
+        if increment_on_high == on_high {
+            self.vmaddr = self.vmaddr.wrapping_add(self.vmain_increment());
         }
     }
 
@@ -405,6 +441,31 @@ impl LoRomBus {
             return;
         }
         match (bank, off) {
+            // === Slim VRAM model for headless grading ===
+            (0x00..=0x3F | 0x80..=0xBF, 0x2115) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                self.vmain = value;
+            }
+            (0x00..=0x3F | 0x80..=0xBF, 0x2116) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                self.vmaddr = (self.vmaddr & 0xFF00) | value as u16;
+            }
+            (0x00..=0x3F | 0x80..=0xBF, 0x2117) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                self.vmaddr = (self.vmaddr & 0x00FF) | ((value as u16) << 8);
+            }
+            (0x00..=0x3F | 0x80..=0xBF, 0x2118) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                let off = ((self.vmaddr as usize) << 1) & (self.vram.len() - 1);
+                self.vram[off] = value;
+                self.vram_advance(false);
+            }
+            (0x00..=0x3F | 0x80..=0xBF, 0x2119) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                let off = (((self.vmaddr as usize) << 1) | 1) & (self.vram.len() - 1);
+                self.vram[off] = value;
+                self.vram_advance(true);
+            }
             (0x00..=0x3F | 0x80..=0xBF, 0x2100..=0x213F) => {
                 self.mmio_writes.ppu_b_bus += 1;
             }

@@ -127,18 +127,71 @@ fn main() -> ExitCode {
         "mmio writes: ppu_b={} apu={} cpu_ctrl={} dma={} joypad={} unmapped={}",
         m.ppu_b_bus, m.apu_ports, m.cpu_ctrl, m.dma_regs, m.joypad_io, m.stz_to_unmapped
     );
+    // Scan VRAM for "FAIL" / "PASS" tile-code patterns. Peter_lemon
+    // tests upload result text via $2118 (VMDATAL) byte-by-byte at
+    // sequential VRAM word addresses, with VMAIN auto-increment.
+    // The bytes land at the LOW byte of each word (offsets 0, 2, 4,
+    // ... in the linear 64 KiB VRAM array). To find "FAIL" we walk
+    // the low-byte slots looking for the four-character sequence;
+    // same for "PASS". Returning the count of each lets the caller
+    // distinguish "all sub-tests passed" from "some failed".
+    let (pass_count, fail_count) = scan_vram_for_results(&snes.bus.vram);
+    println!(
+        "vram scan: {} PASS marker(s), {} FAIL marker(s)",
+        pass_count, fail_count
+    );
+
     if snes.cpu.stopped {
         println!("verdict: CPU stopped (STP)");
     } else if steady_state {
         let bank = (steady_pc >> 16) & 0xFF;
         let off = steady_pc & 0xFFFF;
+        let label = if fail_count > 0 {
+            "FAIL"
+        } else if pass_count > 0 {
+            "PASS"
+        } else {
+            "indeterminate"
+        };
         println!(
-            "verdict: steady-state loop near {:02X}:{:04X} (likely end-of-test poll)",
-            bank, off
+            "verdict: {} (steady at {:02X}:{:04X}, {} pass / {} fail)",
+            label, bank, off, pass_count, fail_count
         );
+        if fail_count > 0 {
+            return ExitCode::from(1);
+        }
     } else {
         println!("verdict: budget exhausted, no steady-state observed");
     }
 
     ExitCode::SUCCESS
+}
+
+/// Walk every low-byte slot of `vram` looking for "PASS" and "FAIL"
+/// tile-code sequences. Peter_lemon writes ASCII characters as the
+/// low byte of consecutive 16-bit VRAM words via VMDATAL with
+/// auto-increment, so a contiguous pass/fail label appears as four
+/// consecutive low-byte slots holding the ASCII characters.
+fn scan_vram_for_results(vram: &[u8]) -> (usize, usize) {
+    let pass = b"PASS";
+    let fail = b"FAIL";
+    let mut p = 0;
+    let mut f = 0;
+    let mut i = 0;
+    while i + 6 < vram.len() {
+        let stride = 2;
+        let chars = [
+            vram[i],
+            vram[i + stride],
+            vram[i + 2 * stride],
+            vram[i + 3 * stride],
+        ];
+        if chars == *pass {
+            p += 1;
+        } else if chars == *fail {
+            f += 1;
+        }
+        i += stride;
+    }
+    (p, f)
 }
