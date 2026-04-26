@@ -9,6 +9,7 @@ pub mod cnrom;
 pub mod eeprom_24c0x;
 pub mod fds;
 pub mod fds_audio;
+pub mod fme7;
 pub mod gxrom;
 pub mod irem_g101;
 pub mod jaleco_ss88006;
@@ -20,6 +21,7 @@ pub mod mmc4;
 pub mod mmc5;
 pub mod namco163;
 pub mod nrom;
+pub mod sunsoft5b_audio;
 pub mod taito_tc0190;
 pub mod uxrom;
 pub mod vrc2_4;
@@ -321,6 +323,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         32 => Ok(Box::new(irem_g101::IremG101::new(cart))),
         33 => Ok(Box::new(taito_tc0190::TaitoTc0190::new(cart))),
         37 => Ok(Box::new(mapper037::Mapper037::new(cart))),
+        69 => Ok(Box::new(fme7::Fme7::new(cart))),
         73 => Ok(Box::new(vrc3::Vrc3::new(cart))),
         24 => Ok(Box::new(vrc6::Vrc6::new_a(cart))),
         26 => Ok(Box::new(vrc6::Vrc6::new_b(cart))),
