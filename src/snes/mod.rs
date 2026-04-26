@@ -73,10 +73,23 @@ impl Snes {
         self.cart.region
     }
 
-    /// Execute one 65C816 instruction. Phase 2d-only entry point;
-    /// the [`Core`] surface still no-ops `step_until_frame` because
-    /// without a PPU we have nothing to gate frames on.
+    /// Execute one 65C816 instruction. After each step we forward
+    /// the latched NMI/IRQ levels from the bus into the CPU; the
+    /// CPU then dispatches the interrupt at the next instruction
+    /// boundary.
     pub fn step_instruction(&mut self) -> u8 {
+        if self.bus.take_nmi() {
+            self.cpu.nmi_pending = true;
+        }
+        if self.bus.take_irq() {
+            self.cpu.irq_pending = true;
+        } else {
+            // IRQ is level-triggered; the bus owns the line state.
+            // Until a real timer source is wired in 3b, leave the
+            // CPU's irq_pending where the bus put it so a clear
+            // signal cancels a pending entry.
+            self.cpu.irq_pending = false;
+        }
         self.cpu.step(&mut self.bus)
     }
 

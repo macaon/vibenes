@@ -70,13 +70,15 @@ fn main() -> ExitCode {
     );
 
     // Steady-state detector. Many SNES test ROMs end with a small
-    // poll loop (e.g., LDA $4212 / AND #$80 / BEQ self) waiting on
-    // vblank. Without a PPU yet, that polling loop runs forever.
+    // poll loop (LDA $4212 / AND #$80 / BEQ self) waiting on vblank.
     // We declare "steady" once the last `WINDOW` instructions only
-    // touched <= `LOOP_PCS` distinct PCs - that catches both the
-    // BRA-self degenerate case and the multi-instruction polls.
+    // touched <= `LOOP_PCS` distinct PCs AND at least
+    // `MIN_FRAMES_BEFORE_LOOP` vblanks have fired since boot - so
+    // the test body has had time to actually run rather than us
+    // catching the pre-vblank wait loop and exiting early.
     const WINDOW: usize = 256;
     const LOOP_PCS: usize = 8;
+    const MIN_FRAMES_BEFORE_LOOP: u64 = 3;
     let mut window = std::collections::VecDeque::with_capacity(WINDOW);
     let mut instructions: u64 = 0;
     let mut steady_state = false;
@@ -88,7 +90,7 @@ fn main() -> ExitCode {
         if window.len() > WINDOW {
             window.pop_front();
         }
-        if window.len() == WINDOW {
+        if window.len() == WINDOW && snes.bus.frame_count() >= MIN_FRAMES_BEFORE_LOOP {
             let mut uniq = window.iter().copied().collect::<Vec<_>>();
             uniq.sort_unstable();
             uniq.dedup();
@@ -103,8 +105,9 @@ fn main() -> ExitCode {
     }
 
     println!(
-        "halted after {instructions} instructions, {} master cycles",
-        snes.bus.master_cycles()
+        "halted after {instructions} instructions, {} master cycles, {} frames",
+        snes.bus.master_cycles(),
+        snes.bus.frame_count(),
     );
     println!(
         "final: PBR={:02X} PC={:04X} A={:04X} X={:04X} Y={:04X} S={:04X} D={:04X} DBR={:02X} P={:02X} mode={:?}",
