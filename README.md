@@ -90,6 +90,7 @@ developers in any way.
 | 33 | Taito TC0190 / TC0350 (no-IRQ subset) | done |
 | 37 | Nintendo SMB + Tetris + World Cup multicart | done |
 | 66 | GxROM / MHROM | done |
+| 73 | Konami VRC3 (Salamander) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 
 ### Test-ROM coverage
