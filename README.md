@@ -83,6 +83,7 @@ developers in any way.
 | 18 | Jaleco SS88006 | done |
 | 19 / 210 | Namco 163 / 175 / 340 | done (audio DSP deferred) |
 | 20 | Famicom Disk System | done |
+| 21 / 22 / 23 / 25 | Konami VRC2a / VRC2b / VRC2c / VRC4a–f | done |
 | 24 | Konami VRC6a | done |
 | 26 | Konami VRC6b | done |
 | 66 | GxROM / MHROM | done |
@@ -101,10 +102,9 @@ All ROMs in these suites pass:
 
 ### Known gaps
 
-- **Additional mappers.** VRC2 / VRC4 / VRC7 are the remaining Konami
-  gaps; Sunsoft 5B (mapper 69, used by Gimmick!) is another high-value
-  unlock. All of them plug into the existing `Mapper::audio_output`
-  expansion-audio mixer.
+- **Additional mappers.** VRC7 is the remaining Konami gap; Sunsoft 5B
+  (mapper 69, used by Gimmick!) is another high-value unlock. Both
+  plug into the existing `Mapper::audio_output` expansion-audio mixer.
 - **Second controller + rebinding.** Player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.
@@ -216,46 +216,6 @@ Integration test suites gate against curated ROM sets:
 - `tests/battery_save.rs` for a synthetic NROM battery cart; writes
   PRG-RAM via the bus, saves, drops the Nes, reloads, verifies
   persistence; asserts non-battery carts never create a `.sav`.
-
-## Layout
-
-```
-src/
-  main.rs, app.rs             windowed binary + shared glue
-  bus.rs, clock.rs            CPU bus + master clock
-  cpu/{mod,flags,ops}.rs      6502 core, status, all opcodes
-  ppu.rs                      2C02 render pipeline
-  apu/                        pulse x 2, triangle, noise, DMC,
-                              frame counter, envelope, sweep,
-                              length counter
-  mapper/                     NROM, MMC1-5, UxROM, CNROM, AxROM,
-                              MMC2/4, Bandai FCG + 24C0x EEPROM,
-                              Jaleco SS88006, Namco 163/175/340,
-                              FDS (mapper 20), VRC6 (24/26), GxROM.
-                              Expansion audio: fds_audio,
-                              vrc6_audio. Shared FDS-side transport
-                              in src/fds/ (image, ips, bios).
-  gfx/                        wgpu renderer + wgsl passthrough
-  ui/                         egui overlay (menus, commands,
-                              recent ROMs)
-  audio.rs                    cpal + blip_buf
-  video.rs                    scale + pixel-aspect settings
-  gamedb.rs, crc32.rs         CRC32-keyed region/chip DB
-  nes.rs, rom.rs              system glue + iNES parser
-  blargg_2005_scan.rs         stuck-PC + nametable scanner
-  bin/
-    test_runner.rs            $6000-protocol runner
-    blargg_2005_report.rs     pre-$6000-protocol runner
-    frame_dump.rs             framebuffer PNG dump
-    dma_4016_dump.rs          DMC/DMA ROM nametable dumper
-
-tests/
-  blargg_apu_2005.rs          APU suite (11 ROMs)
-  dmc_dma_during_read4.rs     DMC/DMA suite (5 ROMs)
-
-assets/fonts/                 VT323 pixel font (SIL OFL) for
-                              the overlay menu
-```
 
 ## License
 
