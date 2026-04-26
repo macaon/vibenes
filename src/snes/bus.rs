@@ -108,10 +108,60 @@ pub struct LoRomBus {
     /// (peter_lemon doesn't use them).
     vmain: u8,
 
+    // ---- Slim BG / CGRAM registers for Mode-1 BG1 rendering --------
+    /// $2105 BGMODE. Low 3 bits = BG mode; bit 3 = mode-1 BG3 high
+    /// priority; bits 7-4 = per-BG character size (1 = 16x16). Phase
+    /// 4a only consumes bits 2-0.
+    bgmode: u8,
+    /// $2107 BG1SC: bits 7-2 base in 1 KiB units; bits 1-0 size.
+    bg1sc: u8,
+    /// $210B BG12NBA: low nibble = BG1 char base in 4 KiB units.
+    bg12nba: u8,
+    /// $2100 INIDISP: bit 7 force-blank, bits 3-0 brightness (0-15).
+    inidisp: u8,
+    /// 256 15-bit CGRAM colors (BGR, bit 15 ignored).
+    cgram: [u16; 256],
+    cgadd: u8,
+    /// CGDATA double-write phase: false = next byte is low (buffered),
+    /// true = next byte is high (commits + increments CGADD).
+    cgadd_phase: bool,
+    cgdata_low: u8,
+
+    /// Eight DMA channels. $4300-$437F is laid out as 8 channels x
+    /// 16 bytes; we collapse it into per-channel state so the
+    /// transfer engine doesn't have to keep parsing addresses.
+    dma: [DmaChannel; 8],
+
     /// Diagnostic counters - a write to a stubbed MMIO region bumps
     /// the matching tally so the headless test runner can see how
     /// far the boot sequence got even before we model the PPU.
     pub mmio_writes: MmioCounters,
+}
+
+/// One DMA channel's register file. $43n0-$43nA are the GP-DMA
+/// fields; $43nB-$43nF are open bus / unused on real hardware.
+/// Phase 4b only services general-purpose MDMA (writes to $420B);
+/// HDMA per-scanline servicing is a Phase 4c follow-up.
+#[derive(Debug, Default, Clone, Copy)]
+struct DmaChannel {
+    /// $43n0 DMAP. Bit 7 = direction (0 CPU->B, 1 B->CPU); bit 6 =
+    /// HDMA-indirect; bit 5 = unused; bits 4-3 = step (00 +1, 01
+    /// fixed, 10 -1, 11 fixed); bits 2-0 = mode.
+    dmap: u8,
+    /// $43n1 BBAD. Destination low-byte; high byte is always $21.
+    bbad: u8,
+    /// $43n2/3 A1T - source low/mid bytes (16-bit offset).
+    a1t: u16,
+    /// $43n4 A1B - source bank.
+    a1b: u8,
+    /// $43n5/6 DAS - transfer size / HDMA indirect address.
+    das: u16,
+    /// $43n7 DASB - HDMA indirect-bank scratch (unused for MDMA).
+    dasb: u8,
+    /// $43n8/9 A2A - HDMA table-address scratch.
+    a2a: u16,
+    /// $43nA NTRL - HDMA line counter / repeat scratch.
+    ntrl: u8,
 }
 
 /// Per-register write counters. Stubbed MMIO regions always swallow
@@ -165,6 +215,15 @@ impl LoRomBus {
             vram: vec![0; 64 * 1024],
             vmaddr: 0,
             vmain: 0,
+            bgmode: 0,
+            bg1sc: 0,
+            bg12nba: 0,
+            inidisp: 0x80, // reset: force-blank set
+            cgram: [0; 256],
+            cgadd: 0,
+            cgadd_phase: false,
+            cgdata_low: 0,
+            dma: [DmaChannel::default(); 8],
             mmio_writes: MmioCounters::default(),
         }
     }
@@ -441,6 +500,40 @@ impl LoRomBus {
             return;
         }
         match (bank, off) {
+            // === Slim BG / CGRAM model for Mode-1 BG1 rendering ===
+            (0x00..=0x3F | 0x80..=0xBF, 0x2100) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                self.inidisp = value;
+            }
+            (0x00..=0x3F | 0x80..=0xBF, 0x2105) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                self.bgmode = value;
+            }
+            (0x00..=0x3F | 0x80..=0xBF, 0x2107) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                self.bg1sc = value;
+            }
+            (0x00..=0x3F | 0x80..=0xBF, 0x210B) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                self.bg12nba = value;
+            }
+            (0x00..=0x3F | 0x80..=0xBF, 0x2121) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                self.cgadd = value;
+                self.cgadd_phase = false;
+            }
+            (0x00..=0x3F | 0x80..=0xBF, 0x2122) => {
+                self.mmio_writes.ppu_b_bus += 1;
+                if !self.cgadd_phase {
+                    self.cgdata_low = value;
+                    self.cgadd_phase = true;
+                } else {
+                    let word = (self.cgdata_low as u16) | ((value as u16) << 8);
+                    self.cgram[self.cgadd as usize] = word & 0x7FFF;
+                    self.cgadd = self.cgadd.wrapping_add(1);
+                    self.cgadd_phase = false;
+                }
+            }
             // === Slim VRAM model for headless grading ===
             (0x00..=0x3F | 0x80..=0xBF, 0x2115) => {
                 self.mmio_writes.ppu_b_bus += 1;
@@ -534,9 +627,11 @@ impl LoRomBus {
             // === $420B MDMAEN / $420C HDMAEN / $420D MEMSEL ===
             (0x00..=0x3F | 0x80..=0xBF, 0x420B) => {
                 self.mmio_writes.cpu_ctrl += 1;
+                self.run_mdma(value);
             }
             (0x00..=0x3F | 0x80..=0xBF, 0x420C) => {
                 self.mmio_writes.cpu_ctrl += 1;
+                // HDMA enable - latched but not serviced in 4b.
             }
             (0x00..=0x3F | 0x80..=0xBF, 0x420D) => {
                 self.mmio_writes.cpu_ctrl += 1;
@@ -547,6 +642,23 @@ impl LoRomBus {
             }
             (0x00..=0x3F | 0x80..=0xBF, 0x4300..=0x437F) => {
                 self.mmio_writes.dma_regs += 1;
+                let chan = ((off - 0x4300) >> 4) as usize;
+                let reg = (off - 0x4300) & 0x0F;
+                let c = &mut self.dma[chan];
+                match reg {
+                    0x0 => c.dmap = value,
+                    0x1 => c.bbad = value,
+                    0x2 => c.a1t = (c.a1t & 0xFF00) | value as u16,
+                    0x3 => c.a1t = (c.a1t & 0x00FF) | ((value as u16) << 8),
+                    0x4 => c.a1b = value,
+                    0x5 => c.das = (c.das & 0xFF00) | value as u16,
+                    0x6 => c.das = (c.das & 0x00FF) | ((value as u16) << 8),
+                    0x7 => c.dasb = value,
+                    0x8 => c.a2a = (c.a2a & 0xFF00) | value as u16,
+                    0x9 => c.a2a = (c.a2a & 0x00FF) | ((value as u16) << 8),
+                    0xA => c.ntrl = value,
+                    _ => {} // $43nB-$43nF unused
+                }
             }
             (0x00..=0x3F | 0x80..=0xBF, 0x4016..=0x4017) => {
                 self.mmio_writes.joypad_io += 1;
@@ -563,6 +675,172 @@ impl LoRomBus {
 
     pub fn open_bus(&self) -> u8 {
         self.open_bus
+    }
+
+    /// Run general-purpose DMA on every channel selected by the
+    /// MDMAEN bitmask. Per channel: copy DAS bytes from
+    /// (a1b:a1t) to ($2100 + bbad)+pattern, applying the source-
+    /// step rule (DMAP bits 4-3) and the per-mode write-pattern
+    /// (DMAP bits 2-0). DAS = 0 means transfer 65536 bytes.
+    /// Algorithm shape paraphrased from Mesen2 SnesDmaController -
+    /// per-mode write patterns from the snes-cpu nes-expert
+    /// reference and snes.nesdev.org.
+    fn run_mdma(&mut self, mask: u8) {
+        for chan in 0..8 {
+            if mask & (1 << chan) == 0 {
+                continue;
+            }
+            let direction = self.dma[chan].dmap & 0x80 != 0;
+            let step: i32 = match (self.dma[chan].dmap >> 3) & 0x03 {
+                0 => 1,
+                2 => -1,
+                _ => 0, // 1 or 3 = fixed
+            };
+            let mode = self.dma[chan].dmap & 0x07;
+            let pattern: &[u8] = match mode {
+                0 => &[0],
+                1 => &[0, 1],
+                2 | 6 => &[0, 0],
+                3 | 7 => &[0, 0, 1, 1],
+                4 => &[0, 1, 2, 3],
+                5 => &[0, 1, 0, 1],
+                _ => &[0],
+            };
+            let mut bytes_remaining = if self.dma[chan].das == 0 {
+                0x10000usize
+            } else {
+                self.dma[chan].das as usize
+            };
+            let mut pi = 0usize;
+            while bytes_remaining > 0 {
+                let bbad = self.dma[chan].bbad;
+                let bus_dest = 0x002100 + (bbad as u32 + pattern[pi] as u32);
+                let src = ((self.dma[chan].a1b as u32) << 16)
+                    | self.dma[chan].a1t as u32;
+                if !direction {
+                    let v = self.read_internal(src);
+                    self.write_internal(bus_dest, v);
+                } else {
+                    let v = self.read_internal(bus_dest);
+                    self.write_internal(src, v);
+                }
+                self.dma[chan].a1t = (self.dma[chan].a1t as i32).wrapping_add(step) as u16;
+                self.dma[chan].das = self.dma[chan].das.wrapping_sub(1);
+                bytes_remaining -= 1;
+                pi = (pi + 1) % pattern.len();
+                // Cycle-cost approximation: 8 master cycles per
+                // byte plus 8 cycles channel-init overhead. Real
+                // hardware bills exact per-region speeds; this is
+                // close enough for now to keep the frame counter
+                // honest.
+                self.advance_master(8);
+            }
+            self.advance_master(8); // channel-init overhead
+        }
+    }
+
+    pub fn ppu_state_summary(&self) -> String {
+        format!(
+            "INIDISP={:02X} BGMODE={:02X} BG1SC={:02X} BG12NBA={:02X} cgram[0..4]={:04X} {:04X} {:04X} {:04X}",
+            self.inidisp, self.bgmode, self.bg1sc, self.bg12nba,
+            self.cgram[0], self.cgram[1], self.cgram[2], self.cgram[3]
+        )
+    }
+
+    /// Render a 256x224 RGBA frame from the current PPU register
+    /// state, VRAM, and CGRAM. Phase 4a only handles Mode 1 BG1
+    /// (4bpp tiles, 32x32 tilemap, no scroll, no flip, no priority,
+    /// no sprites). When INIDISP force-blank is set the frame is
+    /// black. Anything outside the supported subset is fall-through
+    /// black so we don't generate garbage.
+    pub fn render_frame(&self, out: &mut [u8]) {
+        debug_assert_eq!(out.len(), 256 * 224 * 4);
+        // INIDISP force-blank ($2100 b7) -> black frame.
+        if self.inidisp & 0x80 != 0 {
+            for px in out.chunks_exact_mut(4) {
+                px.copy_from_slice(&[0, 0, 0, 0xFF]);
+            }
+            return;
+        }
+
+        let bgmode = self.bgmode & 0x07;
+        // Phase 4a only renders Mode 0 / Mode 1 BG1 as 4bpp (we
+        // promote Mode 0's 2bpp to 4bpp by zero-extending high
+        // planes). Anything else: black.
+        let bg1_bpp = match bgmode {
+            0 => 2,
+            1 => 4,
+            _ => {
+                for px in out.chunks_exact_mut(4) {
+                    px.copy_from_slice(&[0, 0, 0, 0xFF]);
+                }
+                return;
+            }
+        };
+
+        let tilemap_word_base = ((self.bg1sc >> 2) as usize) * 0x400;
+        let tilemap_byte_base = (tilemap_word_base & 0x7FFF) << 1;
+        let char_word_base = ((self.bg12nba & 0x0F) as usize) * 0x1000;
+        let char_byte_base = (char_word_base & 0x7FFF) << 1;
+        let bytes_per_tile = if bg1_bpp == 4 { 32 } else { 16 };
+        let brightness = (self.inidisp & 0x0F) as u32;
+
+        for y in 0..224 {
+            for x in 0..256 {
+                let tx = x / 8;
+                let ty = y / 8;
+                let entry_off = (tilemap_byte_base + (ty * 32 + tx) * 2) & 0xFFFE;
+                let entry =
+                    (self.vram[entry_off] as u16) | ((self.vram[entry_off + 1] as u16) << 8);
+                let tile_idx = entry & 0x3FF;
+                let palette = ((entry >> 10) & 0x07) as usize;
+                let h_flip = entry & 0x4000 != 0;
+                let v_flip = entry & 0x8000 != 0;
+
+                let row_in_tile = if v_flip { 7 - (y % 8) } else { y % 8 };
+                let col_in_tile = if h_flip { 7 - (x % 8) } else { x % 8 };
+                let tile_off =
+                    (char_byte_base + (tile_idx as usize) * bytes_per_tile) & (self.vram.len() - 1);
+                let bit = 7 - col_in_tile;
+
+                let p0 = (self.vram[(tile_off + row_in_tile * 2) & (self.vram.len() - 1)] >> bit)
+                    & 1;
+                let p1 = (self.vram[(tile_off + row_in_tile * 2 + 1) & (self.vram.len() - 1)]
+                    >> bit)
+                    & 1;
+                let mut pixel_index = (p0 | (p1 << 1)) as u8;
+                if bg1_bpp == 4 {
+                    let p2 = (self.vram[(tile_off + 16 + row_in_tile * 2) & (self.vram.len() - 1)]
+                        >> bit)
+                        & 1;
+                    let p3 = (self.vram
+                        [(tile_off + 16 + row_in_tile * 2 + 1) & (self.vram.len() - 1)]
+                        >> bit)
+                        & 1;
+                    pixel_index |= (p2 << 2) | (p3 << 3);
+                }
+
+                let cg = if pixel_index == 0 {
+                    self.cgram[0] // backdrop
+                } else {
+                    let palette_size = if bg1_bpp == 4 { 16 } else { 4 };
+                    self.cgram[(palette * palette_size + pixel_index as usize) & 0xFF]
+                };
+                let r5 = (cg & 0x1F) as u32;
+                let g5 = ((cg >> 5) & 0x1F) as u32;
+                let b5 = ((cg >> 10) & 0x1F) as u32;
+                // Apply INIDISP brightness scaling.
+                let r = ((r5 << 3) | (r5 >> 2)) * (brightness + 1) / 16;
+                let g = ((g5 << 3) | (g5 >> 2)) * (brightness + 1) / 16;
+                let b = ((b5 << 3) | (b5 >> 2)) * (brightness + 1) / 16;
+
+                let off = (y * 256 + x) * 4;
+                out[off] = r as u8;
+                out[off + 1] = g as u8;
+                out[off + 2] = b as u8;
+                out[off + 3] = 0xFF;
+            }
+        }
     }
 }
 

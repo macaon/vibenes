@@ -104,10 +104,27 @@ impl Snes {
 
 impl Core for Snes {
     fn step_until_frame(&mut self) -> Result<(), String> {
-        // Phase 1: no execution yet. The framebuffer stays at its
-        // initial all-zero state, which the host renders as a black
-        // window. The frame "completes" immediately so the host loop
-        // keeps frame pacing without spinning.
+        // Run until the bus's frame counter advances by one. The
+        // bus increments frame_count on every vblank entry, which
+        // happens once per ~357k master cycles on NTSC. After the
+        // frame completes, render the current PPU state into the
+        // framebuffer so the host can present it.
+        let start = self.bus.frame_count();
+        let mut steps = 0u64;
+        while self.bus.frame_count() == start {
+            self.step_instruction();
+            steps += 1;
+            if steps > 5_000_000 {
+                // Safety net: if a misbehaving ROM never enables
+                // NMI / never reaches vblank, surface that to the
+                // host instead of looping forever.
+                return Err(format!(
+                    "step_until_frame: 5M instructions without a frame edge (PC={:02X}:{:04X})",
+                    self.cpu.pbr, self.cpu.pc
+                ));
+            }
+        }
+        self.bus.render_frame(&mut self.framebuffer);
         Ok(())
     }
 

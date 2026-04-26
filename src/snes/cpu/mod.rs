@@ -1887,19 +1887,24 @@ impl Cpu {
 
     /// BRK ($00). Two-byte instruction (opcode + signature byte).
     /// Advances PC past the signature, pushes PBR (native only),
-    /// PC, P (with B = 1), then loads the BRK vector.
+    /// PC, then P. The B flag is **emulation-only** - native mode
+    /// pushes the real P byte where bit 4 is the x flag, so we must
+    /// not OR `| 0x10` there. In emulation, hardware sets bit 4 of
+    /// the pushed P to distinguish a software break from a hardware
+    /// IRQ. Mirrors Mesen2 ProcessInterrupt
+    /// (Core/SNES/SnesCpu.Instructions.h `PushByte(_state.PS)` for
+    /// native vs `PushByte(_state.PS | 0x10)` for emulation).
     fn do_brk(&mut self, bus: &mut impl SnesBus) {
         let _sig = self.fetch_u8(bus);
-        let p_pushed = self.p.pack(self.mode) | 0x10; // software push sets B
         match self.mode {
             Mode::Native => {
                 self.push8(bus, self.pbr);
                 self.push16(bus, self.pc);
-                self.push8(bus, p_pushed);
+                self.push8(bus, self.p.pack(self.mode));
             }
             Mode::Emulation => {
                 self.push16(bus, self.pc);
-                self.push8(bus, p_pushed);
+                self.push8(bus, self.p.pack(self.mode) | 0x10);
             }
         }
         self.p.d = false;
@@ -1917,16 +1922,15 @@ impl Cpu {
     /// COP ($02). Same shape as BRK but its own vector pair.
     fn do_cop(&mut self, bus: &mut impl SnesBus) {
         let _sig = self.fetch_u8(bus);
-        let p_pushed = self.p.pack(self.mode) | 0x10;
         match self.mode {
             Mode::Native => {
                 self.push8(bus, self.pbr);
                 self.push16(bus, self.pc);
-                self.push8(bus, p_pushed);
+                self.push8(bus, self.p.pack(self.mode));
             }
             Mode::Emulation => {
                 self.push16(bus, self.pc);
-                self.push8(bus, p_pushed);
+                self.push8(bus, self.p.pack(self.mode) | 0x10);
             }
         }
         self.p.d = false;
