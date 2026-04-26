@@ -89,6 +89,7 @@ developers in any way.
 | 32 | Irem G-101 (incl. Major League submapper) | done |
 | 33 | Taito TC0190 / TC0350 (no-IRQ subset) | done |
 | 37 | Nintendo SMB + Tetris + World Cup multicart | done |
+| 64 | Tengen RAMBO-1 (Klax JP, Skull & Crossbones, Rolling Thunder, Hard Drivin') | done |
 | 66 | GxROM / MHROM | done |
 | 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
 | 73 | Konami VRC3 (Salamander) | done |
@@ -108,11 +109,11 @@ All ROMs in these suites pass:
 
 ### Known gaps
 
-- **Additional mappers.** Tengen RAMBO-1 (mapper 64, *Rolling Thunder*,
-  *Klax*, *Skull & Crossbones*, *Xybots*) is the largest banking-only
-  gap. Codemasters/Camerica (mapper 71) covers the unlicensed
-  Codemasters catalog. VRC1 (mapper 75) and Sunsoft-3/4 (67/68) round
-  out the smaller remaining commercial ASICs.
+- **Additional mappers.** VRC1 (mapper 75, *Tetsuwan Atom*,
+  *Ganbare Goemon!*) finishes off the Konami VRC family. Sunsoft-3/4
+  (mappers 67/68, *Fantasy Zone II*, *After Burner*) and the Namco 118
+  family (mappers 88/95/154/206 + the TxSROM/TQROM Nintendo variants
+  118/119) are the next licensed batches.
 - **Second controller + rebinding.** Player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.
