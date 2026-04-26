@@ -26,6 +26,7 @@ pub mod rambo1;
 pub mod sunsoft5b_audio;
 pub mod taito_tc0190;
 pub mod uxrom;
+pub mod vrc1;
 pub mod vrc2_4;
 pub mod vrc3;
 pub mod vrc6;
@@ -330,6 +331,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         64 => Ok(Box::new(rambo1::Rambo1::new(cart))),
         69 => Ok(Box::new(fme7::Fme7::new(cart))),
         73 => Ok(Box::new(vrc3::Vrc3::new(cart))),
+        75 => Ok(Box::new(vrc1::Vrc1::new(cart))),
         24 => Ok(Box::new(vrc6::Vrc6::new_a(cart))),
         26 => Ok(Box::new(vrc6::Vrc6::new_b(cart))),
         85 => Ok(Box::new(vrc7::Vrc7::new(cart))),

@@ -83,7 +83,7 @@ developers in any way.
 | 18 | Jaleco SS88006 | done |
 | 19 / 210 | Namco 163 / 175 / 340 (incl. N163 8-channel wavetable audio) | done |
 | 20 | Famicom Disk System | done |
-| 21 / 22 / 23 / 25 | Konami VRC2a / VRC2b / VRC2c / VRC4a–f | done |
+| 21 / 22 / 23 / 25 | Konami VRC2a / VRC2b / VRC2c / VRC4a-f | done |
 | 24 | Konami VRC6a | done |
 | 26 | Konami VRC6b | done |
 | 32 | Irem G-101 (incl. Major League submapper) | done |
@@ -93,6 +93,7 @@ developers in any way.
 | 66 | GxROM / MHROM | done |
 | 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
 | 73 | Konami VRC3 (Salamander) | done |
+| 75 | Konami VRC1 (Tetsuwan Atom, Ganbare Goemon!) | done |
 | 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 
@@ -109,11 +110,10 @@ All ROMs in these suites pass:
 
 ### Known gaps
 
-- **Additional mappers.** VRC1 (mapper 75, *Tetsuwan Atom*,
-  *Ganbare Goemon!*) finishes off the Konami VRC family. Sunsoft-3/4
-  (mappers 67/68, *Fantasy Zone II*, *After Burner*) and the Namco 118
-  family (mappers 88/95/154/206 + the TxSROM/TQROM Nintendo variants
-  118/119) are the next licensed batches.
+- **Additional mappers.** Sunsoft-3/4 (mappers 67/68,
+  *Fantasy Zone II*, *After Burner*) and the Namco 118 family
+  (mappers 88/95/154/206 + the TxSROM/TQROM Nintendo variants 118/119)
+  are the next licensed batches.
 - **Second controller + rebinding.** Player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.
