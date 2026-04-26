@@ -21,7 +21,7 @@ clock variant came to be and the emulator was mostly accurate, and
 started passing Blargg tests. NMI was a bigger challenge though,
 and I started allowing the assistant access to the source code from
 Mesen2, puNES and Nestopia to use as reference material, with a "no
-copy or port" rule. The material was used for the agent to understand
+copy or port" rule. The material was used by the agent to understand
 the math.
 
 The strict "no copying" rule held for the CPU, PPU, APU, bus, DMA, and
