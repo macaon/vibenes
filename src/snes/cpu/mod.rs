@@ -450,8 +450,25 @@ impl Cpu {
         }
         let ptr = self.d.wrapping_add(dp) as u32;
         let lo = self.read8(bus, ptr) as u32;
-        let hi = self.read8(bus, (ptr & 0xFF_0000) | (ptr.wrapping_add(1) & 0xFFFF)) as u32;
+        let hi = self.read8(bus, self.dp_indirect_high_addr(ptr)) as u32;
         ((self.dbr as u32) << 16) | (hi << 8) | lo
+    }
+
+    /// Compute where the high byte of a direct-page-indirect pointer
+    /// lives. In native mode (or whenever `D & $FF != 0`) this is
+    /// just the next byte. In emulation mode with `D & $FF == 0`,
+    /// the W65C816 has a 6502-era page-wrap quirk: if `ptr + 1` lands
+    /// at `$xx00`, the read instead wraps back to `$xx00 - $100`,
+    /// staying inside the original direct page. Mirrors Mesen2
+    /// `GetDirectAddressIndirectWordWithPageWrap`
+    /// (Core/SNES/SnesCpu.Shared.h:515-530).
+    fn dp_indirect_high_addr(&self, ptr: u32) -> u32 {
+        let next = (ptr & 0xFF_0000) | ((ptr.wrapping_add(1)) & 0xFFFF);
+        if self.mode == Mode::Emulation && (self.d & 0xFF) == 0 && (next & 0xFF) == 0 {
+            (ptr & 0xFF_0000) | (next.wrapping_sub(0x100) & 0xFFFF)
+        } else {
+            next
+        }
     }
 
     fn addr_direct_indirect_long(&mut self, bus: &mut impl SnesBus) -> u32 {
@@ -474,7 +491,7 @@ impl Cpu {
         bus.idle();
         let ptr = self.d.wrapping_add(dp).wrapping_add(self.x) as u32;
         let lo = self.read8(bus, ptr) as u32;
-        let hi = self.read8(bus, (ptr & 0xFF_0000) | (ptr.wrapping_add(1) & 0xFFFF)) as u32;
+        let hi = self.read8(bus, self.dp_indirect_high_addr(ptr)) as u32;
         ((self.dbr as u32) << 16) | (hi << 8) | lo
     }
 
@@ -485,7 +502,7 @@ impl Cpu {
         }
         let ptr = self.d.wrapping_add(dp) as u32;
         let lo = self.read8(bus, ptr) as u32;
-        let hi = self.read8(bus, (ptr & 0xFF_0000) | (ptr.wrapping_add(1) & 0xFFFF)) as u32;
+        let hi = self.read8(bus, self.dp_indirect_high_addr(ptr)) as u32;
         let base = ((self.dbr as u32) << 16) | (hi << 8) | lo;
         base.wrapping_add(self.y as u32) & 0x00FF_FFFF
     }
@@ -559,6 +576,21 @@ impl Cpu {
             self.write8(bus, addr, value as u8);
         } else {
             self.write16(bus, addr, value, true);
+        }
+    }
+
+    /// 16-bit RMW writes commit high byte first, then low byte.
+    /// This mirrors how the W65C816 latches the modified word
+    /// internally and matches Mesen2's `WriteWordRmw`
+    /// (Core/SNES/SnesCpu.Shared.h:456-461). Normal STA in 16-bit
+    /// keeps the low-then-high order via [`store_a_width`].
+    fn store_a_width_rmw(&mut self, bus: &mut impl SnesBus, addr: u32, value: u16) {
+        if self.p.m {
+            self.write8(bus, addr, value as u8);
+        } else {
+            let next = (addr & 0xFF_0000) | ((addr.wrapping_add(1)) & 0xFFFF);
+            self.write8(bus, next, (value >> 8) as u8);
+            self.write8(bus, addr, value as u8);
         }
     }
 
@@ -1422,38 +1454,145 @@ impl Cpu {
         self.set_nz_m(r);
     }
 
-    /// ADC. Binary mode only for now; BCD adjustment lands in 2c.
-    /// Width follows P.m.
+    /// ADC. Width follows P.m. Decimal-mode (P.D=1) does the BCD
+    /// adjustment per WDC's official algorithm; binary mode does
+    /// the standard signed-overflow + carry-out math. Algorithm
+    /// shape paraphrased from Mesen2 `SnesCpu.Instructions.h::Add8/16`
+    /// (Core/SNES/SnesCpu.Instructions.h:4-71). Decimal mode also
+    /// charges one extra internal cycle per the WDC datasheet.
     fn do_adc(&mut self, v: u16) {
         let a = self.read_a_width();
         let c = self.p.c as u32;
         if self.p.m {
             let lhs = a as u8 as u32;
             let rhs = v as u8 as u32;
-            let r = lhs + rhs + c;
-            let r8 = r as u8;
-            self.p.c = r > 0xFF;
+            let mut r;
+            if self.p.d {
+                let mut nib = (lhs & 0x0F) + (rhs & 0x0F) + c;
+                if nib > 0x09 {
+                    nib += 0x06;
+                }
+                r = (lhs & 0xF0) + (rhs & 0xF0)
+                    + (if nib > 0x0F { 0x10 } else { 0 })
+                    + (nib & 0x0F);
+            } else {
+                r = lhs + rhs + c;
+            }
+            // V: signed-overflow on the binary intermediate.
             self.p.v = ((!(lhs ^ rhs)) & (lhs ^ r) & 0x80) != 0;
+            if self.p.d && r > 0x9F {
+                r += 0x60;
+            }
+            self.p.c = r > 0xFF;
+            let r8 = r as u8;
             self.write_a_width(r8 as u16);
             self.set_nz_u8(r8);
         } else {
             let lhs = a as u32;
             let rhs = v as u32;
-            let r = lhs + rhs + c;
-            let r16 = r as u16;
-            self.p.c = r > 0xFFFF;
+            let mut r;
+            if self.p.d {
+                let mut nib = (lhs & 0x0F) + (rhs & 0x0F) + c;
+                if nib > 0x09 {
+                    nib += 0x06;
+                }
+                r = (lhs & 0xF0) + (rhs & 0xF0)
+                    + (if nib > 0x0F { 0x10 } else { 0 })
+                    + (nib & 0x0F);
+                if r > 0x9F {
+                    r += 0x60;
+                }
+                r = (lhs & 0xF00) + (rhs & 0xF00)
+                    + (if r > 0xFF { 0x100 } else { 0 })
+                    + (r & 0xFF);
+                if r > 0x9FF {
+                    r += 0x600;
+                }
+                r = (lhs & 0xF000) + (rhs & 0xF000)
+                    + (if r > 0xFFF { 0x1000 } else { 0 })
+                    + (r & 0xFFF);
+            } else {
+                r = lhs + rhs + c;
+            }
             self.p.v = ((!(lhs ^ rhs)) & (lhs ^ r) & 0x8000) != 0;
+            if self.p.d && r > 0x9FFF {
+                r += 0x6000;
+            }
+            self.p.c = r > 0xFFFF;
+            let r16 = r as u16;
             self.write_a_width(r16);
             self.set_nz_u16(r16);
         }
     }
 
+    /// SBC. Per the WDC manual the binary path is ADC of the one's-
+    /// complement with C as borrow-in. Decimal-mode gets its own
+    /// nibble-walk that mirrors `Add` but uses `<= 0x0F`/`<= 0xFF`
+    /// underflow probes and subtracts the adjustment. Algorithm
+    /// from Mesen2 `Sub8/Sub16` (Core/SNES/SnesCpu.Instructions.h:82-149).
     fn do_sbc(&mut self, v: u16) {
-        // Binary SBC = ADC of the one's complement with the C flag
-        // acting as the borrow-in (set means "no borrow").
-        let inverted = !v;
-        let mask = if self.p.m { 0x00FF } else { 0xFFFF };
-        self.do_adc(inverted & mask);
+        if !self.p.d {
+            let mask = if self.p.m { 0x00FF } else { 0xFFFF };
+            self.do_adc((!v) & mask);
+            return;
+        }
+        // Decimal-mode SBC: caller passes the original operand and
+        // we walk it as a "subtract via BCD adjust" rather than the
+        // ones-complement-add trick.
+        let a = self.read_a_width();
+        let c = self.p.c as u32;
+        if self.p.m {
+            // Mesen2's Sub8 takes the inverted value; replicate.
+            let lhs = a as u8 as u32;
+            let rhs = (!v) as u8 as u32;
+            let mut r;
+            let mut nib = (lhs & 0x0F) + (rhs & 0x0F) + c;
+            if nib <= 0x0F {
+                nib = nib.wrapping_sub(0x06);
+            }
+            r = (lhs & 0xF0) + (rhs & 0xF0)
+                + (if nib > 0x0F { 0x10 } else { 0 })
+                + (nib & 0x0F);
+            self.p.v = ((!(lhs ^ rhs)) & (lhs ^ r) & 0x80) != 0;
+            if r <= 0xFF {
+                r = r.wrapping_sub(0x60);
+            }
+            self.p.c = r > 0xFF;
+            let r8 = r as u8;
+            self.write_a_width(r8 as u16);
+            self.set_nz_u8(r8);
+        } else {
+            let lhs = a as u32;
+            let rhs = (!v) as u32;
+            let mut r;
+            let mut nib = (lhs & 0x0F) + (rhs & 0x0F) + c;
+            if nib <= 0x0F {
+                nib = nib.wrapping_sub(0x06);
+            }
+            r = (lhs & 0xF0) + (rhs & 0xF0)
+                + (if nib > 0x0F { 0x10 } else { 0 })
+                + (nib & 0x0F);
+            if r <= 0xFF {
+                r = r.wrapping_sub(0x60);
+            }
+            r = (lhs & 0xF00) + (rhs & 0xF00)
+                + (if r > 0xFF { 0x100 } else { 0 })
+                + (r & 0xFF);
+            if r <= 0xFFF {
+                r = r.wrapping_sub(0x600);
+            }
+            r = (lhs & 0xF000) + (rhs & 0xF000)
+                + (if r > 0xFFF { 0x1000 } else { 0 })
+                + (r & 0xFFF);
+            self.p.v = ((!(lhs ^ rhs)) & (lhs ^ r) & 0x8000) != 0;
+            if r <= 0xFFFF {
+                r = r.wrapping_sub(0x6000);
+            }
+            self.p.c = r > 0xFFFF;
+            let r16 = r as u16;
+            self.write_a_width(r16);
+            self.set_nz_u16(r16);
+        }
     }
 
     fn do_cmp_a(&mut self, v: u16) {
@@ -1667,7 +1806,7 @@ impl Cpu {
                 v & !a
             }
         };
-        self.store_a_width(bus, addr, r);
+        self.store_a_width_rmw(bus, addr, r);
     }
 
     /// MVN ($54) and MVP ($44). Operand byte order in the
@@ -1776,7 +1915,15 @@ impl Cpu {
         let off = self.fetch_u8(bus) as i8 as i32;
         if taken {
             bus.idle();
-            self.pc = (self.pc as i32).wrapping_add(off) as u16;
+            let new_pc = (self.pc as i32).wrapping_add(off) as u16;
+            // Emulation mode charges an extra internal cycle when
+            // the taken branch crosses a page (low-byte rollover).
+            // Mirrors Mesen2 `BranchRelative`
+            // (Core/SNES/SnesCpu.Instructions.h:163-176).
+            if self.mode == Mode::Emulation && (new_pc & 0xFF00) != (self.pc & 0xFF00) {
+                bus.idle();
+            }
+            self.pc = new_pc;
         }
     }
 

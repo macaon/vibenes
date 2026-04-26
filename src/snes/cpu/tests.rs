@@ -4,7 +4,7 @@
 //! test can poke a tiny program at $00:8000 and assert post-state
 //! without dragging the SNES bus / mappers / MMIO in.
 
-use super::bus::FlatBus;
+use super::bus::{FlatBus, SnesBus};
 use super::{Cpu, Mode};
 
 /// Helper: build a CPU + bus with the reset vector at $00:FFFC
@@ -523,6 +523,136 @@ fn mvn_copies_block_forward() {
     assert_eq!(cpu.y, 0x2004);
     assert_eq!(cpu.c, 0xFFFF);
     assert_eq!(cpu.dbr, 0x7E);
+}
+
+#[test]
+fn adc_decimal_mode_8bit_carries_per_nibble() {
+    // SED; CLC; LDA #$25; ADC #$48 -> $73 (BCD), C=0
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xF8, 0x18, 0xA9, 0x25, 0x69, 0x48]);
+    cpu.step(&mut bus); // SED
+    cpu.step(&mut bus); // CLC
+    cpu.step(&mut bus); // LDA #$25
+    cpu.step(&mut bus); // ADC #$48
+    assert_eq!(cpu.a(), 0x73);
+    assert!(!cpu.p.c);
+    // SED; CLC; LDA #$58; ADC #$46 -> $04, C=1 (BCD overflow past 99)
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xF8, 0x18, 0xA9, 0x58, 0x69, 0x46]);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert_eq!(cpu.a(), 0x04);
+    assert!(cpu.p.c);
+}
+
+#[test]
+fn sbc_decimal_mode_8bit_with_borrow() {
+    // SED; SEC; LDA #$50; SBC #$25 -> $25, C=1 (no borrow)
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xF8, 0x38, 0xA9, 0x50, 0xE9, 0x25]);
+    for _ in 0..4 {
+        cpu.step(&mut bus);
+    }
+    assert_eq!(cpu.a(), 0x25);
+    assert!(cpu.p.c);
+    // SED; SEC; LDA #$25; SBC #$50 -> $75, C=0 (borrow)
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xF8, 0x38, 0xA9, 0x25, 0xE9, 0x50]);
+    for _ in 0..4 {
+        cpu.step(&mut bus);
+    }
+    assert_eq!(cpu.a(), 0x75);
+    assert!(!cpu.p.c);
+}
+
+#[test]
+fn adc_decimal_mode_16bit_propagates() {
+    // Native, 16-bit A; SED; CLC; LDA #$1234; ADC #$5678 -> $6912 BCD
+    let (mut cpu, mut bus) = boot_with(
+        0x8000,
+        &[
+            0x18, 0xFB, 0xC2, 0x30, // CLC, XCE, REP #$30
+            0xF8, 0x18, // SED, CLC
+            0xA9, 0x34, 0x12, // LDA #$1234
+            0x69, 0x78, 0x56, // ADC #$5678
+        ],
+    );
+    for _ in 0..7 {
+        cpu.step(&mut bus);
+    }
+    assert_eq!(cpu.c, 0x6912);
+    assert!(!cpu.p.c);
+}
+
+#[test]
+fn branch_taken_crossing_page_in_emulation_charges_extra_cycle() {
+    // BEQ at $80FC takes a +5 forward branch -> $8103 (page cross).
+    // Same branch in native mode does not charge the extra idle.
+    let mut bus = FlatBus::new();
+    bus.poke(0x00FFFC, 0xFC);
+    bus.poke(0x00FFFD, 0x80);
+    bus.poke_slice(0x0080FC, &[0xF0, 0x05]);
+    let mut cpu = Cpu::new();
+    cpu.reset(&mut bus);
+    cpu.p.z = true;
+    let before = bus.master_cycles();
+    cpu.step(&mut bus); // BEQ +5 (taken, page-crosses)
+    let emu_cost = bus.master_cycles() - before;
+    assert_eq!(cpu.pc, 0x8103);
+
+    // Native-mode rerun: same setup but in native, no extra idle.
+    let mut bus = FlatBus::new();
+    bus.poke(0x00FFFC, 0xFA);
+    bus.poke(0x00FFFD, 0x80);
+    // CLC, XCE, BEQ +5 from $80FC (so layout: CLC@$80FA, XCE@$80FB, BEQ@$80FC)
+    bus.poke_slice(0x0080FA, &[0x18, 0xFB, 0xF0, 0x05]);
+    let mut cpu = Cpu::new();
+    cpu.reset(&mut bus);
+    cpu.step(&mut bus); // CLC
+    cpu.step(&mut bus); // XCE -> native
+    cpu.p.z = true;
+    let before = bus.master_cycles();
+    cpu.step(&mut bus); // BEQ +5 (taken, page-crosses, but native)
+    let nat_cost = bus.master_cycles() - before;
+    assert_eq!(cpu.pc, 0x8103);
+    assert!(emu_cost > nat_cost, "emulation should cost more than native on page cross: emu={emu_cost} nat={nat_cost}");
+}
+
+#[test]
+fn dp_indirect_emulation_page_wrap_quirk() {
+    // Emulation, D=$0000; STA via (dp) where dp=$FF.
+    // The pointer's low byte is at $00:00FF, high byte at $00:0000
+    // (wrapped, NOT $00:0100). Place the pointer there and check
+    // that the load lands at the right address.
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xB2, 0xFF]); // LDA ($FF)
+    bus.poke(0x0000FF, 0x34); // pointer low
+    bus.poke(0x000000, 0x12); // pointer high (wrapped)
+    bus.poke(0x000100, 0xAA); // would-be high if NOT wrapping
+    bus.poke(0x001234, 0x77); // target
+    cpu.step(&mut bus);
+    assert_eq!(cpu.a(), 0x77, "DP indirect should wrap inside DP page in emulation");
+}
+
+#[test]
+fn rmw_16bit_writes_high_byte_first() {
+    // Native, 16-bit; LDA #$1234; STA $7E00; ASL $7E00
+    // After ASL, mem should be $2468; verify we wrote both bytes.
+    // The high-then-low write order is internal but the final value
+    // is identical. We assert correct final state here; cycle-order
+    // matters for MMIO and lands with the bus tests in Phase 2d.
+    let (mut cpu, mut bus) = boot_with(
+        0x8000,
+        &[
+            0x18, 0xFB, 0xC2, 0x30, // CLC; XCE; REP #$30
+            0xA9, 0x34, 0x12, // LDA #$1234
+            0x8D, 0x00, 0x7E, // STA $7E00
+            0x0E, 0x00, 0x7E, // ASL $7E00
+        ],
+    );
+    for _ in 0..6 {
+        cpu.step(&mut bus);
+    }
+    let lo = bus.peek(0x7E00) as u16;
+    let hi = bus.peek(0x7E01) as u16;
+    assert_eq!((hi << 8) | lo, 0x2468);
 }
 
 #[test]
