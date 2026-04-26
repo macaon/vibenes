@@ -6,6 +6,7 @@
 //! a black framebuffer at the canonical 256x224 resolution; later
 //! phases will plug in CPU, PPU, SMP/DSP, and DMA.
 
+pub mod cpu;
 pub mod rom;
 
 use std::path::{Path, PathBuf};
