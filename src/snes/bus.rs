@@ -597,23 +597,16 @@ impl LoRomBus {
             (0x00..=0x3F | 0x80..=0xBF, 0x2140..=0x217F) => {
                 self.mmio_writes.apu_ports += 1;
                 let port = (off as usize) & 3;
+                // CPU writes go to the CPU->SMP latch only. The
+                // SMP->CPU latch keeps the IPL boot signature
+                // ($AA/$BB) so commercial games that poll for it
+                // see the magic - but CPU writes do NOT echo back.
+                // Faking SMP responses gets us deeper into game
+                // boots but lies in ways that break game state
+                // later. Real SMP/DSP lands in Phase 5; commercial
+                // games hang at the block-transfer protocol until
+                // then, which is the honest behavior.
                 self.apu_cpu_to_smp[port] = value;
-                // "Fake SMP that always echoes non-zero writes."
-                // Real hardware: SMP IPL persistently writes
-                // $AA/$BB to ports 0/1 until the CPU writes $CC to
-                // port 1, then transitions into block-transfer mode
-                // where the SMP echoes each successive counter
-                // byte. We approximate by leaving the SMP-side
-                // latch at $AA/$BB through the boot's STZ-clears
-                // (CPU writes of 0 don't echo) and only adopting
-                // non-zero CPU writes - which is what the transfer
-                // protocol actually waits to see come back. Lets
-                // commercial games clear the protocol without a
-                // real SPC700. Phase 5 swaps this for a proper
-                // SMP/DSP simulation.
-                if value != 0 {
-                    self.apu_smp_to_cpu[port] = value;
-                }
             }
             (0x00..=0x3F | 0x80..=0xBF, 0x2180..=0x21FF) => {
                 self.mmio_writes.ppu_b_bus += 1;
