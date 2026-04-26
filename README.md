@@ -81,7 +81,7 @@ developers in any way.
 | 10 | MMC4 / FxROM | done |
 | 16 | Bandai FCG-1/2 / LZ93D50 | done |
 | 18 | Jaleco SS88006 | done |
-| 19 / 210 | Namco 163 / 175 / 340 | done (audio DSP deferred) |
+| 19 / 210 | Namco 163 / 175 / 340 (incl. N163 8-channel wavetable audio) | done |
 | 20 | Famicom Disk System | done |
 | 21 / 22 / 23 / 25 | Konami VRC2a / VRC2b / VRC2c / VRC4a–f | done |
 | 24 | Konami VRC6a | done |

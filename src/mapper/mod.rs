@@ -19,6 +19,7 @@ pub mod mmc2;
 pub mod mmc3;
 pub mod mmc4;
 pub mod mmc5;
+pub mod n163_audio;
 pub mod namco163;
 pub mod nrom;
 pub mod rambo1;

@@ -93,13 +93,13 @@
 //! - `~/Git/nestopia/source/core/board/NstBoardNamcot163.cpp`
 //! - nesdev.org/wiki/INES_Mapper_019, .../INES_Mapper_210
 
+use crate::mapper::n163_audio::{N163Audio, AUDIO_RAM_SIZE};
 use crate::mapper::{Mapper, NametableSource, NametableWriteTarget};
 use crate::rom::{Cartridge, Mirroring};
 
 const PRG_BANK_8K: usize = 8 * 1024;
 const CHR_BANK_1K: usize = 1024;
 const PRG_RAM_SIZE: usize = 8 * 1024;
-const AUDIO_RAM_SIZE: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Variant {
@@ -120,7 +120,10 @@ pub struct Namco163 {
     chr: Vec<u8>,
     chr_ram: bool,
     prg_ram: Vec<u8>,
-    audio_ram: [u8; AUDIO_RAM_SIZE],
+    /// 128-byte audio RAM + wavetable synth engine. Owns the address
+    /// cursor and auto-increment latch (set via `$F800`); the engine
+    /// itself runs once per CPU cycle from [`Mapper::on_cpu_cycle`].
+    audio: N163Audio,
 
     prg_bank_count_8k: usize,
     chr_bank_count_1k: usize,
@@ -149,10 +152,6 @@ pub struct Namco163 {
     /// WE bit 6. N175 uses bit 0 only.
     write_protect: u8,
 
-    /// `$F800` low 7 bits = audio RAM address; bit 7 = auto-increment.
-    audio_addr: u8,
-    audio_auto_inc: bool,
-
     /// 15-bit counter + bit 15 enable flag, packed into a u16.
     irq_counter: u16,
     irq_line: bool,
@@ -160,6 +159,11 @@ pub struct Namco163 {
     mirroring: Mirroring,
     battery: bool,
     save_dirty: bool,
+    /// Packed PRG-RAM + audio-RAM mirror used by [`Mapper::save_data`].
+    /// Refreshed on every CPU-side write that mutates either backing
+    /// store; we don't refresh on synth-engine phase writes since the
+    /// host save pipeline doesn't care about transient internal state.
+    save_buffer: Vec<u8>,
 }
 
 impl Namco163 {
@@ -179,13 +183,14 @@ impl Namco163 {
         let chr_bank_count_1k = (chr.len() / CHR_BANK_1K).max(1);
 
         let prg_ram = vec![0u8; (cart.prg_ram_size + cart.prg_nvram_size).max(PRG_RAM_SIZE)];
+        let save_buffer = vec![0u8; prg_ram.len() + AUDIO_RAM_SIZE];
 
         Self {
             prg_rom: cart.prg_rom,
             chr,
             chr_ram: is_chr_ram,
             prg_ram,
-            audio_ram: [0; AUDIO_RAM_SIZE],
+            audio: N163Audio::new(),
             prg_bank_count_8k,
             chr_bank_count_1k,
             variant,
@@ -196,14 +201,28 @@ impl Namco163 {
             low_chr_nt_mode: false,
             high_chr_nt_mode: false,
             write_protect: 0,
-            audio_addr: 0,
-            audio_auto_inc: false,
             irq_counter: 0,
             irq_line: false,
             mirroring: cart.mirroring,
             battery: cart.battery_backed,
             save_dirty: false,
+            save_buffer,
         }
+    }
+
+    /// Refresh the audio-RAM tail of the packed save buffer. Called
+    /// after every CPU write through `$4800` and after a save load.
+    fn refresh_save_buffer_audio(&mut self) {
+        let prg_len = self.prg_ram.len();
+        self.save_buffer[prg_len..].copy_from_slice(self.audio.internal_ram());
+    }
+
+    /// Refresh the entire packed save buffer. Used after `load_save_data`
+    /// so the next `save_data` call sees a coherent snapshot.
+    fn refresh_save_buffer(&mut self) {
+        let prg_len = self.prg_ram.len();
+        self.save_buffer[..prg_len].copy_from_slice(&self.prg_ram);
+        self.save_buffer[prg_len..].copy_from_slice(self.audio.internal_ram());
     }
 
     /// Pick initial variant + whether runtime auto-detect stays on.
@@ -304,26 +323,33 @@ impl Namco163 {
 
     /// Side-effect-free read of the audio RAM at the current cursor.
     fn peek_audio(&self) -> u8 {
-        self.audio_ram[(self.audio_addr & 0x7F) as usize]
+        self.audio.peek_4800()
     }
 
     /// Read audio RAM + apply auto-increment side effect.
     fn read_audio(&mut self) -> u8 {
-        let byte = self.peek_audio();
-        if self.audio_auto_inc {
-            self.audio_addr = (self.audio_addr.wrapping_add(1)) & 0x7F;
-        }
-        byte
+        self.audio.read_4800()
     }
 
     fn write_audio(&mut self, data: u8) {
-        self.audio_ram[(self.audio_addr & 0x7F) as usize] = data;
+        self.audio.write_4800(data);
         if self.battery {
             self.save_dirty = true;
+            self.refresh_save_buffer_audio();
         }
-        if self.audio_auto_inc {
-            self.audio_addr = (self.audio_addr.wrapping_add(1)) & 0x7F;
-        }
+    }
+
+    /// Cursor address - test-visible accessor for the moved field.
+    #[cfg(test)]
+    fn audio_addr(&self) -> u8 {
+        self.audio.current_address()
+    }
+
+    /// Read a byte directly out of the audio RAM. Used by the battery-
+    /// save round-trip tests.
+    #[cfg(test)]
+    fn audio_ram_byte(&self, idx: usize) -> u8 {
+        self.audio.ram_byte(idx)
     }
 
     fn write_register(&mut self, addr: u16, data: u8) {
@@ -397,9 +423,12 @@ impl Namco163 {
                         2 => Mirroring::Horizontal,
                         _ => Mirroring::SingleScreenUpper,
                     };
+                } else if self.variant == Variant::Namco163 {
+                    // N163 bit 6 mutes the synth without zeroing
+                    // its state. Bit 7 is the bank-mode high bit
+                    // already consumed above.
+                    self.audio.set_disable((data & 0x40) != 0);
                 }
-                // N163: bit 7 is "disable audio" - tracked at audio
-                // layer (deferred). We just store the bank bits.
             }
 
             0xE800 => {
@@ -419,8 +448,7 @@ impl Namco163 {
                 self.set_variant(Variant::Namco163);
                 if self.variant == Variant::Namco163 {
                     self.write_protect = data;
-                    self.audio_addr = data & 0x7F;
-                    self.audio_auto_inc = (data & 0x80) != 0;
+                    self.audio.set_address_latch(data);
                 }
             }
 
@@ -469,13 +497,16 @@ impl Mapper for Namco163 {
                 }
                 if self.prg_ram_writable(addr) {
                     let i = (addr - 0x6000) as usize;
+                    let mut changed = false;
                     if let Some(slot) = self.prg_ram.get_mut(i) {
                         if *slot != data {
                             *slot = data;
-                            if self.battery {
-                                self.save_dirty = true;
-                            }
+                            changed = true;
                         }
+                    }
+                    if changed && self.battery {
+                        self.save_dirty = true;
+                        self.save_buffer[i] = data;
                     }
                 }
             }
@@ -575,16 +606,17 @@ impl Mapper for Namco163 {
     fn on_cpu_cycle(&mut self) {
         // Counter enabled via bit 15; increments while the low 15
         // bits are < 0x7FFF. On hitting 0x7FFF, fire and halt.
-        if (self.irq_counter & 0x8000) == 0 {
-            return;
+        if (self.irq_counter & 0x8000) != 0 {
+            let low = self.irq_counter & 0x7FFF;
+            if low != 0x7FFF {
+                self.irq_counter = self.irq_counter.wrapping_add(1);
+                if (self.irq_counter & 0x7FFF) == 0x7FFF {
+                    self.irq_line = true;
+                }
+            }
         }
-        let low = self.irq_counter & 0x7FFF;
-        if low == 0x7FFF {
-            return; // already halted
-        }
-        self.irq_counter = self.irq_counter.wrapping_add(1);
-        if (self.irq_counter & 0x7FFF) == 0x7FFF {
-            self.irq_line = true;
+        if self.variant == Variant::Namco163 {
+            self.audio.clock();
         }
     }
 
@@ -592,28 +624,46 @@ impl Mapper for Namco163 {
         self.irq_line
     }
 
+    fn audio_output(&self) -> Option<f32> {
+        if self.variant == Variant::Namco163 {
+            Some(self.audio.mix_sample())
+        } else {
+            None
+        }
+    }
+
     fn save_data(&self) -> Option<&[u8]> {
-        // We'd ideally expose `prg_ram ++ audio_ram` as one slice,
-        // but those are separate buffers. Expose just the PRG-RAM
-        // for now; when audio synthesis lands we'll promote to a
-        // packed buffer per Mesen2's 8320-byte format. Games that
-        // save to audio RAM will lose that portion across reboot -
-        // acceptable until audio lands.
-        self.battery.then(|| self.prg_ram.as_slice())
+        // Mesen2's `.sav` layout: PRG-RAM concatenated with the 128
+        // bytes of audio RAM. We hold a packed cache so the slice
+        // reference stays valid for the caller; rebuild it lazily
+        // here on every read - cheap (8320 bytes copy at most).
+        if !self.battery {
+            return None;
+        }
+        // Stash the packed buffer behind `OnceCell` would be ideal
+        // but the trait returns a borrow with the same lifetime as
+        // `&self`, so we'd need `Cell<Vec<u8>>` for interior
+        // mutability. Simpler: maintain it as a regular field that
+        // we refresh whenever the save pipeline polls. See
+        // `refresh_save_buffer`.
+        Some(&self.save_buffer)
     }
 
     fn load_save_data(&mut self, data: &[u8]) {
         if !self.battery {
             return;
         }
-        if data.len() == self.prg_ram.len() {
+        let prg_len = self.prg_ram.len();
+        if data.len() == prg_len {
+            // Legacy single-block PRG-RAM-only save.
             self.prg_ram.copy_from_slice(data);
-        } else if data.len() == self.prg_ram.len() + AUDIO_RAM_SIZE {
-            // Forward-compat with the eventual Mesen2 `.sav` layout.
-            let (ram, audio) = data.split_at(self.prg_ram.len());
+        } else if data.len() == prg_len + AUDIO_RAM_SIZE {
+            // Mesen2 layout: PRG-RAM first, audio RAM after.
+            let (ram, audio) = data.split_at(prg_len);
             self.prg_ram.copy_from_slice(ram);
-            self.audio_ram.copy_from_slice(audio);
+            self.audio.load_internal_ram(audio);
         }
+        self.refresh_save_buffer();
     }
 
     fn save_dirty(&self) -> bool {
@@ -883,7 +933,7 @@ mod tests {
         assert_eq!(m.peek_audio(), 0x77);
         assert_eq!(m.read_audio(), 0x77);
         // Address unchanged.
-        assert_eq!(m.audio_addr, 0x10);
+        assert_eq!(m.audio_addr(), 0x10);
     }
 
     #[test]
@@ -891,15 +941,15 @@ mod tests {
         let mut m = n163();
         m.cpu_write(0xF800, 0x7E | 0x80); // addr = 0x7E, auto_inc = 1
         m.cpu_write(0x4800, 0xAA);
-        assert_eq!(m.audio_addr, 0x7F);
+        assert_eq!(m.audio_addr(), 0x7F);
         m.cpu_write(0x4800, 0xBB);
-        assert_eq!(m.audio_addr, 0x00, "wraps at 7 bits");
+        assert_eq!(m.audio_addr(), 0x00, "wraps at 7 bits");
         m.cpu_write(0x4800, 0xCC);
-        assert_eq!(m.audio_addr, 0x01);
+        assert_eq!(m.audio_addr(), 0x01);
         // Bytes landed where we expected.
-        assert_eq!(m.audio_ram[0x7E], 0xAA);
-        assert_eq!(m.audio_ram[0x7F], 0xBB);
-        assert_eq!(m.audio_ram[0x00], 0xCC);
+        assert_eq!(m.audio_ram_byte(0x7E), 0xAA);
+        assert_eq!(m.audio_ram_byte(0x7F), 0xBB);
+        assert_eq!(m.audio_ram_byte(0x00), 0xCC);
     }
 
     #[test]
@@ -971,9 +1021,13 @@ mod tests {
     // ---- Battery save ----
 
     #[test]
-    fn battery_save_data_reports_prg_ram() {
+    fn battery_save_data_reports_combined_prg_ram_plus_audio_ram() {
         let m = n163();
-        assert_eq!(m.save_data().map(|b| b.len()), Some(PRG_RAM_SIZE));
+        // Mesen2-compatible 8 KiB PRG-RAM + 128 B audio RAM = 8320 bytes.
+        assert_eq!(
+            m.save_data().map(|b| b.len()),
+            Some(PRG_RAM_SIZE + AUDIO_RAM_SIZE)
+        );
     }
 
     #[test]
