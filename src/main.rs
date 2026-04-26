@@ -73,8 +73,31 @@ fn run() -> Result<()> {
         }
     };
 
+    // CLI-supplied path: identify the console first. SNES support is
+    // a Phase 1 stub - we parse the cart and log the header but do
+    // not yet boot it; the window opens with no ROM and the user
+    // can load an NES ROM via the File menu without restarting.
+    if let Some(path) = rom_path.as_deref() {
+        match vibenes::core::system::detect_system(path) {
+            Ok(vibenes::core::system::System::Snes) => {
+                match vibenes::snes::rom::Cartridge::load(path) {
+                    Ok(cart) => eprintln!("vibenes: detected {}", cart.describe()),
+                    Err(e) => {
+                        eprintln!("vibenes: failed to parse SNES ROM {}: {e:#}", path.display())
+                    }
+                }
+                eprintln!("vibenes: SNES core not yet executable (Phase 1 stub).");
+            }
+            Ok(vibenes::core::system::System::Nes) => {} // fall through
+            Err(e) => eprintln!("vibenes: {e:#}"),
+        }
+    }
+
     let initial_nes = match rom_path.as_deref() {
-        Some(path) => match Cartridge::load_with_fds_bios(path, cli.fds_bios.as_deref())
+        Some(path) if matches!(
+            vibenes::core::system::detect_system(path),
+            Ok(vibenes::core::system::System::Nes)
+        ) => match Cartridge::load_with_fds_bios(path, cli.fds_bios.as_deref())
             .with_context(|| format!("loading ROM {}", path.display()))
         {
             Ok(cart) => {
@@ -104,6 +127,10 @@ fn run() -> Result<()> {
             eprintln!("vibenes: no ROM specified - use File → Open ROM…");
             None
         }
+        // Non-NES path (SNES or unknown): handled in the
+        // detect_system branch above; here we just leave the
+        // window opening with no NES loaded.
+        Some(_) => None,
     };
 
     let event_loop = EventLoop::new().context("create winit event loop")?;
@@ -988,6 +1015,30 @@ impl App {
     }
 
     fn load_rom(&mut self, path: &Path) {
+        // Console identification first. SNES support is Phase 1 stub
+        // only - we parse the header and log it but don't yet swap
+        // the running NES out for an SNES core. Future phases will
+        // turn this branch into a real `Box<dyn Core>` dispatch.
+        match vibenes::core::system::detect_system(path) {
+            Ok(vibenes::core::system::System::Snes) => {
+                match vibenes::snes::rom::Cartridge::load(path) {
+                    Ok(cart) => eprintln!("vibenes: detected {}", cart.describe()),
+                    Err(e) => {
+                        eprintln!("vibenes: failed to parse SNES ROM {}: {e:#}", path.display())
+                    }
+                }
+                eprintln!(
+                    "vibenes: SNES core not yet executable (Phase 1 stub). \
+                     Keeping current NES state."
+                );
+                return;
+            }
+            Ok(vibenes::core::system::System::Nes) => {} // fall through to NES load
+            Err(e) => {
+                eprintln!("vibenes: {e:#}");
+                return;
+            }
+        }
         let cart = match Cartridge::load(path) {
             Ok(c) => c,
             Err(e) => {

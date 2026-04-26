@@ -8,6 +8,8 @@
 //! implemented by [`crate::nes::Nes`] but the binaries still hold a
 //! concrete `Nes` so the NES test sweep stays untouched.
 
+pub mod system;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
