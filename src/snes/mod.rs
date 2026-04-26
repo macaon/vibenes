@@ -6,6 +6,7 @@
 //! a black framebuffer at the canonical 256x224 resolution; later
 //! phases will plug in CPU, PPU, SMP/DSP, and DMA.
 
+pub mod bus;
 pub mod cpu;
 pub mod rom;
 
@@ -35,13 +36,14 @@ struct SaveMeta {
     rom_crc32: u32,
 }
 
-/// Minimal SNES emulator. Phase 1 holds the cartridge and a black
-/// framebuffer; subsequent phases will add CPU/bus/PPU/SMP/DSP.
-/// The stub still implements [`Core`] so app dispatch can route a
-/// freshly loaded SNES ROM through the same window/audio plumbing
-/// as the NES today.
+/// Minimal SNES emulator. Phase 2d wires the 65C816 to a stub
+/// LoROM bus so reset + boot prelude actually execute. PPU/APU/DMA
+/// lands in Phases 3-5; until then [`Core::step_until_frame`]
+/// only services CPU steps and the framebuffer stays black.
 pub struct Snes {
     cart: rom::Cartridge,
+    pub cpu: cpu::Cpu,
+    pub bus: bus::LoRomBus,
     framebuffer: Vec<u8>,
     save_meta: Option<SaveMeta>,
     audio_sink: Option<AudioSink>,
@@ -50,8 +52,13 @@ pub struct Snes {
 impl Snes {
     pub fn from_cartridge(cart: rom::Cartridge) -> Self {
         let framebuffer = vec![0; (FRAME_WIDTH * FRAME_HEIGHT * 4) as usize];
+        let mut bus = bus::LoRomBus::from_cartridge(&cart);
+        let mut cpu = cpu::Cpu::new();
+        cpu.reset(&mut bus);
         Self {
             cart,
+            cpu,
+            bus,
             framebuffer,
             save_meta: None,
             audio_sink: None,
@@ -64,6 +71,13 @@ impl Snes {
 
     pub fn region(&self) -> Region {
         self.cart.region
+    }
+
+    /// Execute one 65C816 instruction. Phase 2d-only entry point;
+    /// the [`Core`] surface still no-ops `step_until_frame` because
+    /// without a PPU we have nothing to gate frames on.
+    pub fn step_instruction(&mut self) -> u8 {
+        self.cpu.step(&mut self.bus)
     }
 
     pub fn attach_save_metadata(&mut self, rom_path: PathBuf, rom_crc32: u32) {

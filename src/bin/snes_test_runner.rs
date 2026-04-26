@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Headless harness for SNES CPU test ROMs. Loads a cart, builds
+//! the LoROM bus + CPU, and steps until the program reaches a
+//! steady-state PC (typical end-of-test pattern: `Loop: bra Loop`)
+//! or hits a configurable instruction budget.
+//!
+//! No PPU yet, so the peter_lemon ROMs that report PASS/FAIL via
+//! VRAM tile rendering can only be observed indirectly:
+//! - we count MMIO writes by region (PPU / APU / CPU / DMA / I/O),
+//! - we report the final PC and whether it landed in a tight loop,
+//! - we surface CPU register state at exit.
+//!
+//! Once Phase 4 brings up a tile-fetch decoder we'll extend this
+//! to grade the actual rendered output.
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use vibenes::snes::cpu::bus::SnesBus;
+use vibenes::snes::rom::Cartridge;
+use vibenes::snes::Snes;
+
+const DEFAULT_BUDGET: u64 = 5_000_000;
+
+fn main() -> ExitCode {
+    let mut args = std::env::args().skip(1);
+    let mut path: Option<PathBuf> = None;
+    let mut budget = DEFAULT_BUDGET;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--budget" => {
+                let n = args.next().and_then(|v| v.parse().ok());
+                match n {
+                    Some(b) => budget = b,
+                    None => {
+                        eprintln!("--budget needs a numeric argument");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            "-h" | "--help" => {
+                eprintln!("usage: snes_test_runner [--budget N] <rom>");
+                return ExitCode::SUCCESS;
+            }
+            other if path.is_none() => path = Some(PathBuf::from(other)),
+            other => {
+                eprintln!("unexpected argument: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("usage: snes_test_runner [--budget N] <rom>");
+        return ExitCode::from(2);
+    };
+
+    let cart = match Cartridge::load(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("load: {e:#}");
+            return ExitCode::from(1);
+        }
+    };
+    println!("loaded: {}", cart.describe());
+
+    let mut snes = Snes::from_cartridge(cart);
+    println!(
+        "reset: PBR={:02X} PC={:04X} S={:04X}",
+        snes.cpu.pbr, snes.cpu.pc, snes.cpu.s
+    );
+
+    // Steady-state detector. Many SNES test ROMs end with a small
+    // poll loop (e.g., LDA $4212 / AND #$80 / BEQ self) waiting on
+    // vblank. Without a PPU yet, that polling loop runs forever.
+    // We declare "steady" once the last `WINDOW` instructions only
+    // touched <= `LOOP_PCS` distinct PCs - that catches both the
+    // BRA-self degenerate case and the multi-instruction polls.
+    const WINDOW: usize = 256;
+    const LOOP_PCS: usize = 8;
+    let mut window = std::collections::VecDeque::with_capacity(WINDOW);
+    let mut instructions: u64 = 0;
+    let mut steady_state = false;
+    let mut steady_pc: u32 = 0;
+
+    while instructions < budget && !snes.cpu.stopped {
+        let pbr_pc = ((snes.cpu.pbr as u32) << 16) | snes.cpu.pc as u32;
+        window.push_back(pbr_pc);
+        if window.len() > WINDOW {
+            window.pop_front();
+        }
+        if window.len() == WINDOW {
+            let mut uniq = window.iter().copied().collect::<Vec<_>>();
+            uniq.sort_unstable();
+            uniq.dedup();
+            if uniq.len() <= LOOP_PCS {
+                steady_state = true;
+                steady_pc = *uniq.first().unwrap_or(&pbr_pc);
+                break;
+            }
+        }
+        let _op = snes.step_instruction();
+        instructions += 1;
+    }
+
+    println!(
+        "halted after {instructions} instructions, {} master cycles",
+        snes.bus.master_cycles()
+    );
+    println!(
+        "final: PBR={:02X} PC={:04X} A={:04X} X={:04X} Y={:04X} S={:04X} D={:04X} DBR={:02X} P={:02X} mode={:?}",
+        snes.cpu.pbr,
+        snes.cpu.pc,
+        snes.cpu.c,
+        snes.cpu.x,
+        snes.cpu.y,
+        snes.cpu.s,
+        snes.cpu.d,
+        snes.cpu.dbr,
+        snes.cpu.p.pack(snes.cpu.mode),
+        snes.cpu.mode,
+    );
+    let m = &snes.bus.mmio_writes;
+    println!(
+        "mmio writes: ppu_b={} apu={} cpu_ctrl={} dma={} joypad={} unmapped={}",
+        m.ppu_b_bus, m.apu_ports, m.cpu_ctrl, m.dma_regs, m.joypad_io, m.stz_to_unmapped
+    );
+    if snes.cpu.stopped {
+        println!("verdict: CPU stopped (STP)");
+    } else if steady_state {
+        let bank = (steady_pc >> 16) & 0xFF;
+        let off = steady_pc & 0xFFFF;
+        println!(
+            "verdict: steady-state loop near {:02X}:{:04X} (likely end-of-test poll)",
+            bank, off
+        );
+    } else {
+        println!("verdict: budget exhausted, no steady-state observed");
+    }
+
+    ExitCode::SUCCESS
+}
