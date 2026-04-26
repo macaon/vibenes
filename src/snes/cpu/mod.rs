@@ -698,49 +698,79 @@ impl Cpu {
             }
 
             // === Transfers ===
+            //
+            // Per WDC: register-to-register transfers ALWAYS read the
+            // full 16-bit source. The width of the write (and the NZ
+            // flag basis) is taken from the **destination** register's
+            // flag - x for TAX/TAY/TXY/TYX, m for TXA/TYA. Caught by
+            // CPUTRN test C: m=1 / x=0 / C=$FFFF / TAX should give
+            // X=$FFFF, not X=$00FF. Mirrors Mesen2 SetRegister
+            // (Core/SNES/SnesCpu.Shared.h `SetRegister(uint16_t&, ...)`).
             0xAA => {
-                // TAX
-                let v = self.read_a_width();
+                // TAX - source = full C, dest width = x
                 if self.p.x {
-                    self.x = (self.x & 0xFF00) | (v & 0xFF);
+                    let lo = self.c as u8;
+                    self.x = (self.x & 0xFF00) | lo as u16;
+                    self.set_nz_u8(lo);
                 } else {
-                    self.x = v;
+                    self.x = self.c;
+                    self.set_nz_u16(self.x);
                 }
-                self.set_nz_x(self.read_x_width());
-            }
-            0x8A => {
-                // TXA
-                let v = self.read_x_width();
-                self.write_a_width(v);
-                self.set_nz_m(self.read_a_width());
             }
             0xA8 => {
-                // TAY
-                let v = self.read_a_width();
+                // TAY - same shape, dest = Y
                 if self.p.x {
-                    self.y = (self.y & 0xFF00) | (v & 0xFF);
+                    let lo = self.c as u8;
+                    self.y = (self.y & 0xFF00) | lo as u16;
+                    self.set_nz_u8(lo);
                 } else {
-                    self.y = v;
+                    self.y = self.c;
+                    self.set_nz_u16(self.y);
                 }
-                self.set_nz_x(self.read_y_width());
+            }
+            0x8A => {
+                // TXA - source = full X, dest width = m
+                if self.p.m {
+                    let lo = self.x as u8;
+                    self.c = (self.c & 0xFF00) | lo as u16;
+                    self.set_nz_u8(lo);
+                } else {
+                    self.c = self.x;
+                    self.set_nz_u16(self.c);
+                }
             }
             0x98 => {
-                // TYA
-                let v = self.read_y_width();
-                self.write_a_width(v);
-                self.set_nz_m(self.read_a_width());
+                // TYA - source = full Y, dest width = m
+                if self.p.m {
+                    let lo = self.y as u8;
+                    self.c = (self.c & 0xFF00) | lo as u16;
+                    self.set_nz_u8(lo);
+                } else {
+                    self.c = self.y;
+                    self.set_nz_u16(self.c);
+                }
             }
             0x9B => {
-                // TXY
-                self.y = self.x;
-                self.enforce_index_width();
-                self.set_nz_x(self.read_y_width());
+                // TXY - source = full X, dest width = x
+                if self.p.x {
+                    let lo = self.x as u8;
+                    self.y = (self.y & 0xFF00) | lo as u16;
+                    self.set_nz_u8(lo);
+                } else {
+                    self.y = self.x;
+                    self.set_nz_u16(self.y);
+                }
             }
             0xBB => {
-                // TYX
-                self.x = self.y;
-                self.enforce_index_width();
-                self.set_nz_x(self.read_x_width());
+                // TYX - source = full Y, dest width = x
+                if self.p.x {
+                    let lo = self.y as u8;
+                    self.x = (self.x & 0xFF00) | lo as u16;
+                    self.set_nz_u8(lo);
+                } else {
+                    self.x = self.y;
+                    self.set_nz_u16(self.x);
+                }
             }
             0xBA => {
                 // TSX - 8 or 16 depending on x

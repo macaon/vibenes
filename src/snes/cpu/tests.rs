@@ -148,6 +148,63 @@ fn sta_then_lda_round_trips_through_dbr_absolute() {
 }
 
 #[test]
+fn tax_uses_full_c_when_x_is_16bit_regardless_of_m() {
+    // CPUTRN test C regression: m=1 (8-bit A), x=0 (16-bit X),
+    // C = $FFFF. TAX should give X = $FFFF, NOT X = $00FF. The
+    // transfer reads the full 16-bit C and the destination width
+    // is governed by the **destination** flag (x), not the source
+    // flag (m). Mirrors Mesen2 SetRegister(X, A, IndexMode8).
+    let (mut cpu, mut bus) = boot_with(
+        0x8000,
+        &[
+            0x18, 0xFB, // CLC; XCE -> native
+            0xC2, 0x30, // REP #$30   ; m=0, x=0
+            0xA9, 0xFF, 0xFF, // LDA #$FFFF
+            0xE2, 0x20, // SEP #$20   ; m=1 (A 8-bit), x stays 0
+            0xAA, // TAX
+        ],
+    );
+    for _ in 0..6 {
+        cpu.step(&mut bus);
+    }
+    assert_eq!(cpu.c, 0xFFFF, "C must keep its full 16-bit value");
+    assert_eq!(cpu.x, 0xFFFF, "TAX with x=0 must copy full 16-bit C");
+    assert!(cpu.p.n, "NZ should reflect the 16-bit destination");
+    assert!(!cpu.p.z);
+}
+
+#[test]
+fn txa_uses_full_x_when_m_is_16bit() {
+    // Symmetric: x=1, m=0, X = $00FF (high byte forced zero by x=1).
+    // TXA in m=0 transfers full X (16-bit) to A. So A.high = 0,
+    // A.low = X.low. C ends up at $00FF.
+    //
+    // We have to set x BEFORE m so the LDX immediate is fetched at
+    // the right width. Sequence: enter native, REP #$30, SEP #$10
+    // (x=1), load X, REP #$20 (m=0), TXA.
+    let (mut cpu, mut bus) = boot_with(
+        0x8000,
+        &[
+            0x18, 0xFB, // CLC; XCE -> native
+            0xC2, 0x30, // REP #$30
+            0xE2, 0x10, // SEP #$10        ; x=1
+            0xA2, 0xFF, // LDX #$FF (1-byte imm)
+            0xC2, 0x20, // REP #$20        ; m=0
+            0x8A, // TXA
+        ],
+    );
+    for _ in 0..5 {
+        cpu.step(&mut bus); // CLC, XCE, REP, SEP, LDX
+    }
+    assert_eq!(cpu.x, 0x00FF);
+    cpu.step(&mut bus); // REP #$20 -> m=0
+    cpu.step(&mut bus); // TXA
+    assert_eq!(cpu.c, 0x00FF);
+    assert!(!cpu.p.n);
+    assert!(!cpu.p.z);
+}
+
+#[test]
 fn tax_in_native_16bit_copies_full_c() {
     let (mut cpu, mut bus) = boot_with(0x8000, &[0x18, 0xFB, 0xC2, 0x30, 0xA9, 0xCD, 0xAB, 0xAA]);
     cpu.step(&mut bus); // CLC
