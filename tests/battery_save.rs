@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use vibenes::config::{SaveConfig, SaveStyle};
 use vibenes::nes::Nes;
-use vibenes::rom::Cartridge;
+use vibenes::nes::rom::Cartridge;
 
 fn tempdir(label: &str) -> PathBuf {
     let base = std::env::temp_dir();

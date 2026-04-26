@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-pub mod apu;
+//! vibenes - cycle-accurate retro emulator cores in Rust.
+//!
+//! Layout: each console core lives under its own top-level module
+//! (`nes`, eventually `snes`). Cross-core infrastructure (`audio`,
+//! `gfx`, `ui`, `save`, `settings`, `gamedb`, `crc32`, `core`) sits
+//! at the crate root and is shared. The `core` module defines the
+//! abstract trait every console implements; `app` wires a concrete
+//! core instance to the host (window, audio sink, input).
 pub mod app;
 pub mod audio;
 pub mod blargg_2005_scan;
-pub mod bus;
-pub mod clock;
 pub mod config;
-pub mod cpu;
+pub mod core;
 pub mod crc32;
 pub mod debug_overlay;
-pub mod fds;
 pub mod gamedb;
 pub mod gfx;
-pub mod mapper;
 pub mod nes;
-pub mod ppu;
-pub mod rom;
 pub mod save;
 pub mod settings;
 pub mod ui;

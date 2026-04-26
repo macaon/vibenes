@@ -6,7 +6,7 @@
 use anyhow::Result;
 
 use crate::nes::Nes;
-use crate::rom::Cartridge;
+use crate::nes::rom::Cartridge;
 
 /// Where completed PPU frames are delivered for presentation.
 ///

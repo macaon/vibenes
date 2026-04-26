@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use vibenes::nes::Nes;
-use vibenes::rom::Cartridge;
+use vibenes::nes::rom::Cartridge;
 
 const SIGNATURE: [u8; 3] = [0xDE, 0xB0, 0x61];
 const POLL_INTERVAL_CYCLES: u64 = 10_000;

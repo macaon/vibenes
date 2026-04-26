@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use vibenes::blargg_2005_scan::{nametable_has_text, read_nametable_ascii, StuckPcDetector};
 use vibenes::nes::Nes;
-use vibenes::rom::Cartridge;
+use vibenes::nes::rom::Cartridge;
 
 fn main() {
     let rom = std::env::args()

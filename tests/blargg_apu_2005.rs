@@ -16,7 +16,7 @@ use vibenes::blargg_2005_scan::{
     extract_result_code, nametable_has_text, read_nametable_ascii, StuckPcDetector,
 };
 use vibenes::nes::Nes;
-use vibenes::rom::Cartridge;
+use vibenes::nes::rom::Cartridge;
 
 const POLL_INTERVAL_CYCLES: u64 = 10_000;
 const CYCLE_LIMIT: u64 = 200_000_000;

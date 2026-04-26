@@ -13,12 +13,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use vibenes::app;
 use vibenes::audio;
-use vibenes::clock::Region;
+use vibenes::nes::clock::Region;
 use vibenes::config::Config;
 use vibenes::debug_overlay;
 use vibenes::gfx::{PresentOutcome, Renderer};
 use vibenes::nes::Nes;
-use vibenes::rom::Cartridge;
+use vibenes::nes::rom::Cartridge;
 use vibenes::settings;
 use vibenes::ui::{DebugStatus, NavKey, RecentRoms, UiCommand, UiLayer};
 use vibenes::video::VideoSettings;
@@ -128,7 +128,7 @@ struct CliArgs {
     /// `--fds-bios <path>`. Overrides the XDG / ROM-dir BIOS search
     /// for this session only. Also accepted via the
     /// `VIBENES_FDS_BIOS` environment variable (see
-    /// [`vibenes::fds::bios`]).
+    /// [`vibenes::nes::fds::bios`]).
     fds_bios: Option<PathBuf>,
 }
 

@@ -21,7 +21,7 @@ use egui_winit::{EventResponse, State as EguiWinit};
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-use crate::clock::Region;
+use crate::nes::clock::Region;
 use crate::video::VideoSettings;
 
 pub mod commands;

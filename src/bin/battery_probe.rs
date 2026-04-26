@@ -18,7 +18,7 @@ use std::process::ExitCode;
 
 use vibenes::config::SaveConfig;
 use vibenes::nes::Nes;
-use vibenes::rom::Cartridge;
+use vibenes::nes::rom::Cartridge;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();

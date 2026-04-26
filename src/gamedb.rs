@@ -36,7 +36,7 @@ const DB_CSV: &str = include_str!("../data/nes_db.csv");
 static DB: OnceLock<HashMap<u32, DbEntry>> = OnceLock::new();
 
 /// High-level game system / region marker from the DB. More specific
-/// than our [`crate::clock::Region`] because the DB distinguishes
+/// than our [`crate::nes::clock::Region`] because the DB distinguishes
 /// Famicom (Japanese NTSC), Dendy (Russian NES clone, PAL-like clock
 /// but NTSC-like scanline count), and VS-System / Playchoice (arcade).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

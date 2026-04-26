@@ -4,7 +4,7 @@
 //! framebuffer scaled by PAR - drag-resize is disabled so the renderer
 //! never has to deal with fractional scales.
 
-use crate::clock::Region;
+use crate::nes::clock::Region;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelAspectRatio {

@@ -11,7 +11,7 @@
 
 use egui::{Align2, Color32, Context, FontId, Key, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 
-use crate::clock::Region;
+use crate::nes::clock::Region;
 use crate::nes::FdsInfo;
 use crate::ui::{RecentRoms, UiCommand};
 use crate::video::{ParMode, PixelAspectRatio, VideoSettings};

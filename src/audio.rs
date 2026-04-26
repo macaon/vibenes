@@ -80,7 +80,7 @@ const FLUSH_MILLIS: u32 = 5;
 
 /// Produces samples on the emulator thread. Holds the `BlipBuf`
 /// resampler and the ring-buffer producer side. `on_cpu_cycle` is
-/// called from [`crate::bus::Bus::tick_post_access`] every CPU cycle.
+/// called from [`crate::nes::bus::Bus::tick_post_access`] every CPU cycle.
 pub struct AudioSink {
     blip: blip_buf::BlipBuf,
     /// Cycles accumulated since the last `blip.end_frame()` call. Reset

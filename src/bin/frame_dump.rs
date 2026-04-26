@@ -16,8 +16,8 @@
 use std::io::Write;
 
 use vibenes::app;
-use vibenes::ppu::{FRAME_HEIGHT, FRAME_WIDTH};
-use vibenes::rom::Cartridge;
+use vibenes::nes::ppu::{FRAME_HEIGHT, FRAME_WIDTH};
+use vibenes::nes::rom::Cartridge;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

@@ -101,7 +101,7 @@ impl Default for SaveConfig {
 /// Famicom Disk System configuration. All fields are `None` by
 /// default; vibenes falls through to the `VIBENES_FDS_BIOS` env var
 /// + XDG + ROM-directory search order defined in
-/// [`crate::fds::bios`].
+/// [`crate::nes::fds::bios`].
 #[derive(Debug, Clone)]
 pub struct FdsConfig {
     /// Absolute path to `disksys.rom`. Set here by a future settings
