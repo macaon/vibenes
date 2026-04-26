@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! 2A03 APU — five channels plus a frame counter driving per-channel
+//! 2A03 APU - five channels plus a frame counter driving per-channel
 //! timing events. Ticked once per CPU cycle by the bus.
 //!
 //! References: NES dev wiki APU pages, Mesen2 `Core/NES/APU/*`, puNES
@@ -69,10 +69,10 @@ impl Apu {
         }
     }
 
-    /// Warm reset — user pressing the Reset button (/RES low).
+    /// Warm reset - user pressing the Reset button (/RES low).
     ///
     /// Per nesdev "APU Power up and reset":
-    /// - `$4015` enable latches clear — but unlike an actual `$4015=0`
+    /// - `$4015` enable latches clear - but unlike an actual `$4015=0`
     ///   write, the length counters are NOT forced to 0. Their values
     ///   persist (blargg `apu_reset/len_ctrs_enabled` relies on this).
     /// - DMC bytes_remaining = 0 and any pending DMA is dropped, but
@@ -101,7 +101,7 @@ impl Apu {
         self.frame_irq || self.dmc_irq
     }
 
-    /// Test hook — force the frame IRQ flag so a unit test can drive
+    /// Test hook - force the frame IRQ flag so a unit test can drive
     /// the interrupt line without arranging ~29830 cycles of frame
     /// counter timing. Not exposed outside cfg(test).
     #[cfg(test)]
@@ -174,7 +174,7 @@ impl Apu {
     /// access, so by the time `read_status` runs, any frame IRQ
     /// event for the current cycle has already set `frame_irq` and
     /// is observable here. `blargg_apu_2005.07.30/08.irq_timing`
-    /// relies on this ordering — the older post-access model
+    /// relies on this ordering - the older post-access model
     /// dispatched IRQ one cycle early because the CPU's
     /// `prev_irq_line` snapshot saw the flag a cycle before the
     /// `$4015` read could see it.
@@ -277,11 +277,11 @@ impl Apu {
 
     /// Sampled analog output in 0.0..≈0.98 using the 2A03 non-linear
     /// mixer. Computed via Blargg's precomputed lookup tables (nesdev
-    /// "APU Mixer", "Lookup tables" form) — ~100× faster than the
+    /// "APU Mixer", "Lookup tables" form) - ~100× faster than the
     /// per-sample division-based formula and tiny-fraction accurate
     /// across the full input domain. Called from the bus every CPU
     /// cycle (~1.79 MHz NTSC), so the speed matters.
-    /// Trace helper — exposes the DMC channel's internal state for the
+    /// Trace helper - exposes the DMC channel's internal state for the
     /// instruction-level tracer. Zero-cost unless the tracer is on.
     pub fn dmc_trace(&self) -> crate::apu::dmc::DmcTraceSnapshot {
         self.dmc.trace_snapshot()
@@ -405,7 +405,7 @@ mod tests {
     fn dmc_disable_via_4015_mid_sample_discards_pending_dma() {
         let mut apu = ntsc();
         apu.write_reg(0x4013, 0x01); // 17 bytes
-        apu.write_reg(0x4015, 0x10); // enable — arms DMA
+        apu.write_reg(0x4015, 0x10); // enable - arms DMA
 
         apu.write_reg(0x4015, 0x00); // disable before bus services the DMA
 

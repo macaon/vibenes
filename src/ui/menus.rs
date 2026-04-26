@@ -63,7 +63,7 @@ impl OverlayState {
     }
 
     /// Jump the overlay straight into the disk-swap submenu. Used by
-    /// the F4 hotkey — "please insert side B" prompts are common
+    /// the F4 hotkey - "please insert side B" prompts are common
     /// enough during multi-disk play that making the user tab through
     /// Root every time would be annoying.
     pub fn open_disk(&mut self) {
@@ -117,7 +117,7 @@ enum Selected {
 }
 
 /// One renderable line in the overlay. Building the same list for both
-/// render and select keeps the two paths perfectly in sync — keyboard
+/// render and select keeps the two paths perfectly in sync - keyboard
 /// Enter and mouse click resolve to the exact same `Selected`.
 struct Item {
     label: String,
@@ -184,7 +184,7 @@ fn items_for(
                 Item::new("Aspect ratio", Selected::Goto(Screen::Aspect))
                     .with_badge(par_badge(video.par_mode, region)),
             );
-            // Disk submenu — enabled only for FDS carts.
+            // Disk submenu - enabled only for FDS carts.
             let mut disk_item = Item::new("Disk", Selected::Goto(Screen::Disk));
             if let Some(info) = fds {
                 disk_item = disk_item.with_badge(fds_root_badge(info));
@@ -262,7 +262,7 @@ fn items_for(
             }
             let mut eject = Item::new("Eject", Selected::Cmd(UiCommand::FdsEject));
             if info.current_side.is_none() {
-                // Already ejected — nothing to do.
+                // Already ejected - nothing to do.
                 eject = eject.disabled();
             }
             items.push(eject);
@@ -278,7 +278,7 @@ fn items_for(
             );
             ruler = ruler.with_badge(if debug.scanline_ruler_on { "ON" } else { "off" });
             // OAM dump fires once and prints to stderr; nothing to
-            // badge — short cooldown handled host-side.
+            // badge - short cooldown handled host-side.
             let oam = Item::new(
                 "OAM dump (8 frames)",
                 Selected::Cmd(UiCommand::DumpOamBurst(8)),
@@ -409,7 +409,7 @@ fn handle_nav_keys(ctx: &Context, state: &mut OverlayState, items: &[Item]) {
 }
 
 fn paint_dim_layer(ctx: &Context) {
-    // Raw layer painter in absolute screen coords — no Area state to
+    // Raw layer painter in absolute screen coords - no Area state to
     // memoize. `content_rect` matches the surface-size override set
     // by `UiLayer::run`, so this always covers exactly what the GPU
     // will render.
@@ -425,13 +425,13 @@ fn paint_dim_layer(ctx: &Context) {
 // Virtual-pixel canvas dimensions. Everything inside the overlay is
 // laid out in *virtual* pixels and then mapped to screen pixels via a
 // single integer scale factor. This eliminates the "panel shifts on
-// window resize" jitter that the old egui-Frame-based layout had — no
+// window resize" jitter that the old egui-Frame-based layout had - no
 // auto-sizing, no two layout passes fighting. Width picked to comfortably
 // hold the longest label we currently ship ("Aspect ratio  8:7 (NES)").
 const VW: f32 = 192.0;
 // Vertical metrics (virtual px). `row_h` is the cell height; text is
 // centered inside it. `title_h` is a slightly taller top strip that
-// also holds the separator rule below the title. Sized for VT323 —
+// also holds the separator rule below the title. Sized for VT323 -
 // its em-box is tall, so rows stay legible even at the tight pitch.
 const TITLE_H: f32 = 16.0;
 const ROW_H: f32 = 11.0;
@@ -447,7 +447,7 @@ const ITEM_PX: f32 = 8.0;
 /// Picks the largest `s` such that `VW * s` and `vh * s` both fit in
 /// `rect`, floored to an integer so text stays on pixel boundaries.
 /// Returns at least scale 1 even when the window is smaller than the
-/// virtual canvas — clipping is preferable to non-integer scaling.
+/// virtual canvas - clipping is preferable to non-integer scaling.
 fn virtual_transform(rect: Rect, vh: f32) -> (f32, Pos2) {
     let sx = (rect.width() / VW).floor().max(1.0);
     let sy = (rect.height() / vh).floor().max(1.0);
@@ -460,7 +460,7 @@ fn virtual_transform(rect: Rect, vh: f32) -> (f32, Pos2) {
 }
 
 /// Map a virtual-pixel point to screen-space. All drawing goes through
-/// this — change the transform and the whole overlay scales with it.
+/// this - change the transform and the whole overlay scales with it.
 #[inline]
 fn vpos(origin: Pos2, s: f32, vx: f32, vy: f32) -> Pos2 {
     egui::pos2(origin.x + vx * s, origin.y + vy * s)
@@ -494,7 +494,7 @@ fn paint_menu(ctx: &Context, state: &mut OverlayState, items: &[Item]) {
     hit_test_rows(ctx, state, items, origin, s);
 }
 
-/// Colors — derived from the NES mini home menu (red selection bar,
+/// Colors - derived from the NES mini home menu (red selection bar,
 /// near-black card fill, dimmed inactive text). Not palette-accurate
 /// to NES hardware, just stylistically close.
 mod palette {
@@ -624,7 +624,7 @@ fn hit_test_rows(
     origin: Pos2,
     s: f32,
 ) {
-    // Raw pointer + click check — no egui widget interaction registry.
+    // Raw pointer + click check - no egui widget interaction registry.
     // Safe because the overlay is modal and nothing else is drawing
     // widgets while it's open. `hover_pos` is the current mouse
     // position; `pointer_interact_pos` lags or is `None` outside of
@@ -641,7 +641,7 @@ fn hit_test_rows(
     // since the last frame. Without this, a stationary pointer that
     // happens to sit over an item would overwrite keyboard / gamepad
     // navigation every frame, pinning the highlight to the mouse
-    // position. A click is always honored regardless — the user
+    // position. A click is always honored regardless - the user
     // clearly wants the row they clicked on.
     let moved = state
         .last_pointer
@@ -693,7 +693,7 @@ pub fn run_overlay(
         return false;
     }
 
-    // Build items, clamp cursor, capture pending selection, paint —
+    // Build items, clamp cursor, capture pending selection, paint -
     // all in one pass. We resolve the pending selection by rebuilding
     // items just-in-time so the action carries the right `Selected`.
     let mut items = items_for(state.screen, video, region, recent, nes_loaded, fds, debug);

@@ -2,7 +2,7 @@
 //! Jaleco SS88006 (iNES mapper 18).
 //!
 //! Jaleco's workhorse 1990-1991 ASIC. Shipped on JF-23 through JF-40
-//! boards covering roughly 15 games — The Lord of King, Magic John,
+//! boards covering roughly 15 games - The Lord of King, Magic John,
 //! Pizza Pop, Shin Satomi Hakkenden, Plasma Ball, Mouryou Senki
 //! Madara, Perman Part 2, etc. Some boards pair the SS88006 with a
 //! µPD7755C / µPD7756C ADPCM sound IC; the expansion audio is out of
@@ -10,13 +10,13 @@
 //!
 //! ## Programming model
 //!
-//! **PRG layout** — four 8 KB windows, last one fixed:
-//! - `$8000-$9FFF` — 8 KB switchable (PRG bank 0)
-//! - `$A000-$BFFF` — 8 KB switchable (PRG bank 1)
-//! - `$C000-$DFFF` — 8 KB switchable (PRG bank 2)
-//! - `$E000-$FFFF` — last 8 KB bank (fixed)
+//! **PRG layout** - four 8 KB windows, last one fixed:
+//! - `$8000-$9FFF` - 8 KB switchable (PRG bank 0)
+//! - `$A000-$BFFF` - 8 KB switchable (PRG bank 1)
+//! - `$C000-$DFFF` - 8 KB switchable (PRG bank 2)
+//! - `$E000-$FFFF` - last 8 KB bank (fixed)
 //!
-//! **CHR layout** — eight independent 1 KB windows.
+//! **CHR layout** - eight independent 1 KB windows.
 //!
 //! ## The register scheme: nibbles written in pairs
 //!
@@ -31,15 +31,15 @@
 //! | `$8000` / `$8001` | PRG bank 0 low / high nibble |
 //! | `$8002` / `$8003` | PRG bank 1 low / high nibble |
 //! | `$9000` / `$9001` | PRG bank 2 low / high nibble |
-//! | `$9002` | PRG-RAM chip enable / write protect (ignored here — no shipping game tests it) |
+//! | `$9002` | PRG-RAM chip enable / write protect (ignored here - no shipping game tests it) |
 //! | `$A000`-`$D003` | CHR banks 0-7 low / high nibble (same pattern) |
 //! | `$E000`-`$E003` | 4 nibbles of 16-bit IRQ reload value (LSN-first) |
 //! | `$F000` | Acknowledge IRQ + reload counter from the reload value |
 //! | `$F001` | Acknowledge IRQ + set enable bit + counter size |
 //! | `$F002` | Mirroring: 0=H, 1=V, 2=single-A, 3=single-B |
-//! | `$F003` | Expansion audio (ADPCM) — unsupported |
+//! | `$F003` | Expansion audio (ADPCM) - unsupported |
 //!
-//! Note `$F002` mirroring has `0=Horizontal, 1=Vertical` — swapped
+//! Note `$F002` mirroring has `0=Horizontal, 1=Vertical` - swapped
 //! from MMC3 / MMC1 where `0=Vertical, 1=Horizontal`.
 //!
 //! ## IRQ
@@ -48,7 +48,7 @@
 //! also selects a counter SIZE: 16 / 12 / 8 / 4 bits. The low-N bits
 //! of the stored 16-bit counter are what's clocked and compared to
 //! zero; the high bits are preserved but stationary. Fires when the
-//! masked portion hits zero after a pre-decrement (not before —
+//! masked portion hits zero after a pre-decrement (not before -
 //! opposite of mapper 16's quirk). Load value N, enable → fires on
 //! cycle N. On underflow the masked bits wrap back to `mask` and
 //! keep counting.
@@ -61,7 +61,7 @@
 //! 8 KB at `$6000-$7FFF` when the cart declares it. Battery-backed
 //! on some carts (JF-27 / JF-40 variants). `$9002` nominally gates
 //! chip-enable + write-protect, but no shipping game is known to
-//! test it — we leave it unwired, matching Mesen2 / puNES.
+//! test it - we leave it unwired, matching Mesen2 / puNES.
 //!
 //! Clean-room references (behavioral only, no copied code):
 //! - `~/Git/Mesen2/Core/NES/Mappers/Jaleco/JalecoSs88006.h`
@@ -245,7 +245,7 @@ impl JalecoSs88006 {
             }
             0xF003 => {
                 // Expansion audio (µPD7755C / µPD7756C ADPCM). Out of
-                // scope — same deferral as Mesen2 / puNES.
+                // scope - same deferral as Mesen2 / puNES.
             }
             _ => {}
         }
@@ -480,13 +480,13 @@ mod tests {
     #[test]
     fn chr_bank_selector_is_full_8_bits() {
         let mut m = JalecoSs88006::new(tagged_cart());
-        // Assemble 0xFF (255 — last bank in our 256-bank fixture).
+        // Assemble 0xFF (255 - last bank in our 256-bank fixture).
         m.cpu_write(0xA000, 0x0F);
         m.cpu_write(0xA001, 0x0F);
         assert_eq!(m.ppu_read(0x0000), 255);
     }
 
-    // ---- Mirroring ($F002 — note swapped 0=H, 1=V) ----
+    // ---- Mirroring ($F002 - note swapped 0=H, 1=V) ----
 
     #[test]
     fn f002_mirroring_all_four_modes() {
@@ -561,10 +561,10 @@ mod tests {
 
     #[test]
     fn irq_8_bit_counter_wraps_within_low_byte() {
-        // 8-bit mode with high byte of counter set — the high byte
+        // 8-bit mode with high byte of counter set - the high byte
         // stays frozen; only the low byte clocks.
         let mut m = JalecoSs88006::new(tagged_cart());
-        // Reload value = 0xAB05 — high byte 0xAB sticks, low byte 0x05
+        // Reload value = 0xAB05 - high byte 0xAB sticks, low byte 0x05
         // counts down.
         m.cpu_write(0xE000, 0x05);
         m.cpu_write(0xE001, 0x00);
@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn f003_expansion_audio_is_silently_dropped() {
         // Mesen2 parks this pending expansion audio support. For us
-        // it should be a no-op — no side effects on other state.
+        // it should be a no-op - no side effects on other state.
         let mut m = JalecoSs88006::new(tagged_cart());
         m.cpu_write(0xE000, 5); // stage some reload state
         m.cpu_write(0xF003, 0xFF);

@@ -4,7 +4,7 @@
 //! Timing model: every `bus.read` / `bus.write` costs exactly one CPU
 //! cycle; extra "internal" cycles are modeled as dummy reads against the
 //! correct bus address (matching the real chip). The CPU therefore does
-//! not return cycle counts — cycles are tallied in the master clock by
+//! not return cycle counts - cycles are tallied in the master clock by
 //! the bus.
 
 pub mod flags;
@@ -42,7 +42,7 @@ pub struct Cpu {
     /// branch with no page cross (3-cycle form) AND the IRQ line was
     /// still low one cycle before the penultimate. Consumed and
     /// cleared by `poll_interrupts_at_end`. Gates the "branch-delays-
-    /// IRQ" suppression — see `ops::branch` for the sample window
+    /// IRQ" suppression - see `ops::branch` for the sample window
     /// rationale and the Mesen2/puNES references.
     branch_taken_no_cross: bool,
 }
@@ -66,7 +66,7 @@ impl Cpu {
         // what blargg `cpu_reset/registers.nes` expects.
         //
         // A, X, Y start at 0; P = $34 (I=1, B=1, unused=1, others
-        // clear — also per `cpu_reset`'s expected-power-on snapshot).
+        // clear - also per `cpu_reset`'s expected-power-on snapshot).
         Self {
             a: 0,
             x: 0,
@@ -97,7 +97,7 @@ impl Cpu {
         // PPU see the correct cycle count. The read addresses don't
         // matter (side effects fall through open bus / RAM), but we
         // stick to $00FF which is the post-decrement stack slot on
-        // real hardware — lets future stack-watching tests agree.
+        // real hardware - lets future stack-watching tests agree.
         for _ in 0..5 {
             let _ = bus.read(0x00FF);
         }
@@ -118,7 +118,7 @@ impl Cpu {
     /// the **penultimate** CPU cycle of the instruction (real 6502),
     /// not between instructions. We approximate this by:
     /// - Reading `bus.prev_irq_line` / `bus.prev_nmi_pending` at the
-    ///   end of each instruction — those fields capture end-of-previous-
+    ///   end of each instruction - those fields capture end-of-previous-
     ///   cycle state, which after an N-cycle instruction equals the
     ///   end of cycle N-1 (the penultimate).
     /// - Using the I-flag value that was active during the penultimate
@@ -159,7 +159,7 @@ impl Cpu {
     fn poll_interrupts_at_end(&mut self, bus: &mut Bus, op: u8, i_flag_before: bool) {
         // NMI uses an edge-triggered latch: `bus.nmi_pending` is set
         // once per rising edge by the PPU and cleared on service. Like
-        // Mesen2's `_needNmi`, we just consume it on latch — the line
+        // Mesen2's `_needNmi`, we just consume it on latch - the line
         // being held asserted won't produce a new edge, so we don't
         // need a separate "already serviced" flag.
         if bus.prev_nmi_pending {
@@ -181,7 +181,7 @@ impl Cpu {
         // cross (3-cycle form), the 6502 suppresses IRQ recognition
         // when the IRQ was newly asserted *during the penultimate
         // cycle*. The gate that decides whether the quirk applies
-        // lives in `branch()` itself — it compares the IRQ line
+        // lives in `branch()` itself - it compares the IRQ line
         // one cycle before the penultimate; `branch_taken_no_cross`
         // is only set when that check passes. Here at the final
         // poll, suppression is unconditional once the flag is set
@@ -325,7 +325,7 @@ mod tests {
     }
 
     /// IRQ already asserted before a taken-no-cross branch is NOT
-    /// suppressed — the branch-delays-IRQ quirk only applies when
+    /// suppressed - the branch-delays-IRQ quirk only applies when
     /// the line rises *during* the branch's penultimate cycle. An
     /// IRQ that was already high at entry polls normally.
     ///
@@ -348,7 +348,7 @@ mod tests {
 
         // Force IRQ high before BCC starts. The first bus tick of
         // BCC's opcode fetch picks frame_irq up through the APU
-        // tick, so by the end of cycle 1 `bus.irq_line` is high —
+        // tick, so by the end of cycle 1 `bus.irq_line` is high -
         // i.e. `branch()`'s "one cycle before penultimate" sample
         // (taken right after the operand fetch) sees the line
         // already asserted, and does NOT mark the quirk.
@@ -367,11 +367,11 @@ mod tests {
     #[test]
     fn branch_not_taken_does_not_delay_irq() {
         // $8000: CLC
-        // $8001: BCS +$02    (not taken — carry is clear)
+        // $8001: BCS +$02    (not taken - carry is clear)
         // $8003..: NOP
         let (mut cpu, mut bus) = build_cpu_and_bus(&[
             0x18, // CLC
-            0xB0, 0x02, // BCS +$02 — not taken
+            0xB0, 0x02, // BCS +$02 - not taken
             0xEA, 0xEA, 0xEA, 0xEA,
         ]);
         cpu.p.set_interrupt(false);

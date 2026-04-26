@@ -37,7 +37,7 @@ fn addr_abs_indexed_read(cpu: &mut Cpu, bus: &mut Bus, index: u8) -> u16 {
         // Page crossed: the real chip first reads from the bad (un-carried)
         // high byte, then re-reads from the correct address. Emit the
         // dummy via `bus.dummy_read` so the page-cross-to-$2007 quirk
-        // (buffer doesn't advance twice) is modelled — see
+        // (buffer doesn't advance twice) is modelled - see
         // `Ppu::cpu_read_dummy`.
         let bad = (base & 0xFF00) | (effective & 0x00FF);
         bus.dummy_read(bad);
@@ -297,7 +297,7 @@ fn branch(cpu: &mut Cpu, bus: &mut Bus, condition: bool) {
     // `bus.prev_irq_line` is the IRQ-line snapshot captured at the
     // start of the current bus cycle. The operand fetch above is the
     // branch's cycle 2; when it returns, `prev_irq_line` reflects
-    // the line state at the end of cycle 1 — one cycle before the
+    // the line state at the end of cycle 1 - one cycle before the
     // penultimate. The 6502's "branch-delays-IRQ" quirk only
     // suppresses recognition when IRQ was newly asserted *during*
     // the penultimate cycle (i.e. low at end-of-1, high at end-of-2),
@@ -317,7 +317,7 @@ fn branch(cpu: &mut Cpu, bus: &mut Bus, condition: bool) {
         // 3-cycle taken branch form → apply the quirk iff IRQ was
         // still low one cycle before the penultimate. A branch that
         // started with IRQ already asserted doesn't get the free
-        // pass — it polls normally on its penultimate.
+        // pass - it polls normally on its penultimate.
         if !page_crossed && !irq_before_penult {
             cpu.mark_branch_taken_no_cross();
         }
@@ -993,7 +993,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             cpu.push(bus, status);
             cpu.p.set_interrupt(true);
             // NMI hijack: if NMI was pending at end-of-push-P, redirect
-            // vector to $FFFA. Pushed P keeps B=1 (BRK) — hijack only
+            // vector to $FFFA. Pushed P keeps B=1 (BRK) - hijack only
             // retargets the vector. NMI latch consumed.
             let vector: u16 = if bus.prev_nmi_pending {
                 bus.nmi_pending = false;
@@ -1007,7 +1007,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             // Suppress BRK's own poll at end-of-instruction. Any NMI
             // that arrived too late to hijack (cycles 6–7 of BRK) is
             // deferred to after the handler's first instruction, not
-            // recognized immediately — matches Mesen2's explicit
+            // recognized immediately - matches Mesen2's explicit
             // `_prevNeedNmi = false` at end of BRK (NesCpu.cpp:238),
             // required by cpu_interrupts_v2/2-nmi_and_brk.
             bus.prev_nmi_pending = false;
@@ -1051,7 +1051,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             sbc(cpu, v);
         }
 
-        // LAX — load A and X together (no immediate — $AB is the unstable ANE)
+        // LAX - load A and X together (no immediate - $AB is the unstable ANE)
         0xA7 => {
             let a = addr_zp(cpu, bus);
             let v = bus.read(a);
@@ -1095,7 +1095,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             cpu.set_zn(v);
         }
 
-        // SAX — store A & X (flags untouched)
+        // SAX - store A & X (flags untouched)
         0x87 => {
             let a = addr_zp(cpu, bus);
             bus.write(a, cpu.a & cpu.x);
@@ -1113,7 +1113,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             bus.write(a, cpu.a & cpu.x);
         }
 
-        // SLO — ASL + ORA
+        // SLO - ASL + ORA
         0x07 => rmw_zp_combine(cpu, bus, asl_value, ora_combine),
         0x17 => rmw_zp_x_combine(cpu, bus, asl_value, ora_combine),
         0x0F => rmw_abs_combine(cpu, bus, asl_value, ora_combine),
@@ -1122,7 +1122,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
         0x03 => rmw_ind_x_combine(cpu, bus, asl_value, ora_combine),
         0x13 => rmw_ind_y_combine(cpu, bus, asl_value, ora_combine),
 
-        // RLA — ROL + AND
+        // RLA - ROL + AND
         0x27 => rmw_zp_combine(cpu, bus, rol_value, and_combine),
         0x37 => rmw_zp_x_combine(cpu, bus, rol_value, and_combine),
         0x2F => rmw_abs_combine(cpu, bus, rol_value, and_combine),
@@ -1131,7 +1131,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
         0x23 => rmw_ind_x_combine(cpu, bus, rol_value, and_combine),
         0x33 => rmw_ind_y_combine(cpu, bus, rol_value, and_combine),
 
-        // SRE — LSR + EOR
+        // SRE - LSR + EOR
         0x47 => rmw_zp_combine(cpu, bus, lsr_value, eor_combine),
         0x57 => rmw_zp_x_combine(cpu, bus, lsr_value, eor_combine),
         0x4F => rmw_abs_combine(cpu, bus, lsr_value, eor_combine),
@@ -1140,7 +1140,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
         0x43 => rmw_ind_x_combine(cpu, bus, lsr_value, eor_combine),
         0x53 => rmw_ind_y_combine(cpu, bus, lsr_value, eor_combine),
 
-        // RRA — ROR + ADC
+        // RRA - ROR + ADC
         0x67 => rmw_zp_combine(cpu, bus, ror_value, adc_combine),
         0x77 => rmw_zp_x_combine(cpu, bus, ror_value, adc_combine),
         0x6F => rmw_abs_combine(cpu, bus, ror_value, adc_combine),
@@ -1149,7 +1149,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
         0x63 => rmw_ind_x_combine(cpu, bus, ror_value, adc_combine),
         0x73 => rmw_ind_y_combine(cpu, bus, ror_value, adc_combine),
 
-        // DCP — DEC + CMP (uses A)
+        // DCP - DEC + CMP (uses A)
         0xC7 => rmw_zp_combine(cpu, bus, dec_value, cmp_a_combine),
         0xD7 => rmw_zp_x_combine(cpu, bus, dec_value, cmp_a_combine),
         0xCF => rmw_abs_combine(cpu, bus, dec_value, cmp_a_combine),
@@ -1158,7 +1158,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
         0xC3 => rmw_ind_x_combine(cpu, bus, dec_value, cmp_a_combine),
         0xD3 => rmw_ind_y_combine(cpu, bus, dec_value, cmp_a_combine),
 
-        // ISB / ISC — INC + SBC
+        // ISB / ISC - INC + SBC
         0xE7 => rmw_zp_combine(cpu, bus, inc_value, sbc_combine),
         0xF7 => rmw_zp_x_combine(cpu, bus, inc_value, sbc_combine),
         0xEF => rmw_abs_combine(cpu, bus, inc_value, sbc_combine),
@@ -1167,20 +1167,20 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
         0xE3 => rmw_ind_x_combine(cpu, bus, inc_value, sbc_combine),
         0xF3 => rmw_ind_y_combine(cpu, bus, inc_value, sbc_combine),
 
-        // ALR — AND #imm then LSR A
+        // ALR - AND #imm then LSR A
         0x4B => {
             let v = cpu.fetch_byte(bus);
             cpu.a &= v;
             cpu.a = lsr_value(cpu, cpu.a);
         }
-        // ANC — AND #imm, copies bit 7 into carry
+        // ANC - AND #imm, copies bit 7 into carry
         0x0B | 0x2B => {
             let v = cpu.fetch_byte(bus);
             cpu.a &= v;
             cpu.set_zn(cpu.a);
             cpu.p.set_carry((cpu.a & 0x80) != 0);
         }
-        // ARR — AND #imm, then ROR A, with custom C/V from the result
+        // ARR - AND #imm, then ROR A, with custom C/V from the result
         0x6B => {
             let v = cpu.fetch_byte(bus);
             cpu.a &= v;
@@ -1193,7 +1193,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             cpu.p
                 .set_overflow(((result >> 6) ^ (result >> 5)) & 1 != 0);
         }
-        // AXS / SBX — X = (A & X) - imm; sets C like CMP
+        // AXS / SBX - X = (A & X) - imm; sets C like CMP
         0xCB => {
             let v = cpu.fetch_byte(bus);
             let ax = cpu.a & cpu.x;
@@ -1204,7 +1204,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
         }
 
         // LXA / ATX (opcode $AB). puNES, Nestopia, and Mesen2 all implement
-        // this as a plain A = X = operand (no magic-constant ANE trick —
+        // this as a plain A = X = operand (no magic-constant ANE trick -
         // that's $8B). Blargg's test expects this deterministic form.
         0xAB => {
             let v = cpu.fetch_byte(bus);
@@ -1219,7 +1219,7 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
         // and Nestopia all pick a fixed magic ($EE is the de-facto
         // standard across emulators) so test ROMs that bracket-check the
         // result still get a deterministic answer. Cycle cost = 2
-        // (immediate). `instr_timing.nes` needs this one implemented —
+        // (immediate). `instr_timing.nes` needs this one implemented -
         // its test harness executes every opcode; an unimplemented $8B
         // halts the CPU before any timing measurement runs.
         0x8B => {
@@ -1304,9 +1304,9 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             cpu.set_zn(result);
         }
 
-        // JAM / KIL / STP — halt the CPU. With all other 244 opcodes
+        // JAM / KIL / STP - halt the CPU. With all other 244 opcodes
         // explicitly handled above, this arm also makes the match
-        // exhaustive on u8 — a missing future opcode would surface
+        // exhaustive on u8 - a missing future opcode would surface
         // as a non-exhaustive-match compile error rather than a
         // silent runtime halt.
         0x02 | 0x12 | 0x22 | 0x32 | 0x42 | 0x52 | 0x62 | 0x72 | 0x92 | 0xB2 | 0xD2 | 0xF2 => {

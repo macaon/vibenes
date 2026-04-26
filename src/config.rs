@@ -3,7 +3,7 @@
 //!
 //! Today this is a plain `Default`-backed struct, constructed in one
 //! place (`App::new`) and threaded through the Nes build path. No disk
-//! load, no TOML, no env-var parsing — deliberately minimal.
+//! load, no TOML, no env-var parsing - deliberately minimal.
 //!
 //! **Future work** (when a settings UI lands): load from
 //! `~/.config/vibenes/config.toml` via the XDG Base Directory
@@ -26,11 +26,11 @@ use std::path::PathBuf;
 pub enum SaveStyle {
     /// `$XDG_CONFIG_HOME/vibenes/saves/<rom-stem>.sav` (falls back
     /// to `$HOME/.config/vibenes/saves/<rom-stem>.sav` when
-    /// `XDG_CONFIG_HOME` is unset). Default since 2026-04-23 —
+    /// `XDG_CONFIG_HOME` is unset). Default since 2026-04-23 -
     /// matches Mesen2's `~/.config/Mesen2/Saves/<rom-stem>.sav`
     /// convention and keeps ROM directories clean.
     ConfigDir,
-    /// `rompath.sav` next to the `.nes` file. The FCEUX default —
+    /// `rompath.sav` next to the `.nes` file. The FCEUX default -
     /// self-describing, travels with the ROM when copied between
     /// machines. Available for users who prefer it.
     NextToRom,
@@ -62,7 +62,7 @@ pub struct SaveConfig {
     pub style: SaveStyle,
     /// Explicit directory for the `ByCrc` style, or the fallback when
     /// `NextToRom` can't write to the ROM's folder. `None` means use
-    /// the platform default — XDG data dir on Linux
+    /// the platform default - XDG data dir on Linux
     /// (`~/.local/share/vibenes/saves/`), Application Support on macOS,
     /// `%APPDATA%\vibenes\saves\` on Windows. Not resolved until a save
     /// actually needs the fallback path, so the dirs crate isn't a
@@ -76,7 +76,7 @@ pub struct SaveConfig {
     /// `core/emu.c:642`.
     ///
     /// None of the three reference emulators (Mesen2, puNES,
-    /// Nestopia) flush on every write — battery RAM is just normal
+    /// Nestopia) flush on every write - battery RAM is just normal
     /// SRAM on real hardware and the game has no "save commit"
     /// signal the emulator can latch on to. Emulators buffer writes
     /// and flush at session boundaries; `0` disables the periodic

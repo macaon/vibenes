@@ -4,7 +4,7 @@
 //! IPS (International Patching System) is the simplest possible
 //! sparse-delta format: a header, a sequence of `(offset, length,
 //! data)` records, and a terminator. We use it as the storage format
-//! for FDS disk saves — writes the game makes during play are
+//! for FDS disk saves - writes the game makes during play are
 //! diffed against the original disk image and the diff saved
 //! alongside the ROM as `<stem>.ips`. This matches Mesen2's
 //! convention, giving cross-emulator interop.
@@ -15,11 +15,11 @@
 //! [5 bytes]   ASCII "PATCH"
 //!
 //! record (repeats):
-//!   [3 bytes]   offset (big-endian) — stop if this is "EOF"
+//!   [3 bytes]   offset (big-endian) - stop if this is "EOF"
 //!   [2 bytes]   length (big-endian)
 //!     if length > 0:
 //!       [length bytes]  data
-//!     if length == 0:      (RLE record — we decode, don't emit)
+//!     if length == 0:      (RLE record - we decode, don't emit)
 //!       [2 bytes]   run length (big-endian)
 //!       [1 byte]    fill byte
 //!
@@ -48,7 +48,7 @@
 //! ## Why not a crate
 //!
 //! IPS encode + decode is ~100 LOC each and doing it ourselves keeps
-//! the save path trustworthy — we know exactly how bytes become
+//! the save path trustworthy - we know exactly how bytes become
 //! files and back.
 
 use std::fmt;
@@ -134,7 +134,7 @@ pub fn encode(base: &[u8], new: &[u8]) -> Result<Vec<u8>, IpsError> {
         }
         let len = end - start;
 
-        // Refuse to emit an offset whose three bytes spell "EOF" —
+        // Refuse to emit an offset whose three bytes spell "EOF" -
         // reading that patch would stop at the terminator prematurely.
         // 0x454F46 = 4_542_790. FDS files are way smaller so this
         // path is unreachable for our use but keeps the encoder
@@ -165,7 +165,7 @@ pub fn encode(base: &[u8], new: &[u8]) -> Result<Vec<u8>, IpsError> {
 }
 
 /// Apply an IPS patch to `base`, returning a new buffer with the
-/// patch applied. `base`'s length is preserved — we don't grow the
+/// patch applied. `base`'s length is preserved - we don't grow the
 /// file (FDS disks are fixed-size; out-of-bounds writes would be a
 /// bug we want to see).
 pub fn apply(base: &[u8], patch: &[u8]) -> Result<Vec<u8>, IpsError> {
@@ -182,7 +182,7 @@ pub fn apply(base: &[u8], patch: &[u8]) -> Result<Vec<u8>, IpsError> {
         }
         if &p[0..3] == EOF_MARKER {
             // Convention: if bytes remain after EOF, they're trailing
-            // garbage we ignore — the reference IPS spec is silent
+            // garbage we ignore - the reference IPS spec is silent
             // but real-world tools add stuff (e.g. size-extension
             // trailer). FDS needs none of that.
             return Ok(out);
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn random_mutation_fuzz_roundtrip() {
-        // Deterministic pseudo-randomness — seed it from a linear
+        // Deterministic pseudo-randomness - seed it from a linear
         // congruential generator so the test is reproducible.
         let mut seed: u32 = 0xDEAD_BEEF;
         let mut rand = || -> u8 {

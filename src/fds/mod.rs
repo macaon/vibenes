@@ -16,7 +16,7 @@
 //! - **8 KiB CHR-RAM at PPU `$0000-$1FFF`** populated the same way.
 //! - **Disk registers at `$4020-$4025` / `$4030-$4033`** control motor,
 //!   read/write, CRC, and the 16-bit timer IRQ.
-//! - **Audio at `$4040-$4097`** — 1 wavetable channel with FM
+//! - **Audio at `$4040-$4097`** - 1 wavetable channel with FM
 //!   modulator. Out of scope for the current phase (register file
 //!   gets stored so audio-DSP work lands cleanly later).
 //!
@@ -25,24 +25,24 @@
 //! This is Phase 0 (file-format parsing + BIOS resolution + clean
 //! error on missing BIOS). Subsequent phases layer on top:
 //!
-//! - **Phase 1** — mapper 20 implementation in [`crate::mapper::fds`],
+//! - **Phase 1** - mapper 20 implementation in [`crate::mapper::fds`],
 //!   disk transport state machine, IRQ.
-//! - **Phase 2** — disk-swap UI (eject / insert via the overlay).
-//! - **Phase 3** — IPS-sidecar save persistence (writes during play
+//! - **Phase 2** - disk-swap UI (eject / insert via the overlay).
+//! - **Phase 3** - IPS-sidecar save persistence (writes during play
 //!   get diffed against the original disk image).
-//! - **Phase 4** — FDS audio synthesis (deferred alongside VRC6/7,
+//! - **Phase 4** - FDS audio synthesis (deferred alongside VRC6/7,
 //!   MMC5, N163, Sunsoft 5B expansion audio).
 //!
 //! ## References
 //!
-//! - `~/Git/Mesen2/Core/NES/Mappers/FDS/Fds.{h,cpp}` — the best
+//! - `~/Git/Mesen2/Core/NES/Mappers/FDS/Fds.{h,cpp}` - the best
 //!   behavioral reference for the disk transport + BIOS handshake.
 //!   GPL-3.0-or-later, same license as this project, so code patterns
 //!   can be ported with attribution (per `CLAUDE.md` clean-room
 //!   carve-out for non-core subsystems).
-//! - `~/Git/Mesen2/Core/NES/Loaders/FdsLoader.{h,cpp}` — file-format
+//! - `~/Git/Mesen2/Core/NES/Loaders/FdsLoader.{h,cpp}` - file-format
 //!   parsing.
-//! - nesdev.org/wiki/Family_Computer_Disk_System — complete hardware
+//! - nesdev.org/wiki/Family_Computer_Disk_System - complete hardware
 //!   reference.
 
 pub mod bios;
@@ -65,12 +65,12 @@ pub struct FdsData {
     /// markers, fake CRCs, inter-block gaps. The disk transport's
     /// `disk_position` indexes into this.
     pub gapped_sides: Vec<Vec<u8>>,
-    /// 56-byte disk-header block for each side — used by the auto-
+    /// 56-byte disk-header block for each side - used by the auto-
     /// insert matching path (Phase 2+).
     pub headers: Vec<Vec<u8>>,
     /// The `disksys.rom` BIOS (exactly 8 KiB). Lives at `$E000-$FFFF`.
     pub bios: Vec<u8>,
-    /// Whether the BIOS's CRC32 matched the known-good value — for
+    /// Whether the BIOS's CRC32 matched the known-good value - for
     /// diagnostic logging only; runtime behavior is identical either
     /// way.
     pub bios_known_good: bool,

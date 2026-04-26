@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Taito TC0190 / TC0350 — iNES mapper 33.
+//! Taito TC0190 / TC0350 - iNES mapper 33.
 //!
 //! Two 8 KiB switchable PRG slots plus the standard `{-2}` / `{-1}`
 //! fixed pair, six CHR slots (two 2 KiB followed by four 1 KiB), and
-//! software-controlled vertical/horizontal mirroring. No IRQs — the
+//! software-controlled vertical/horizontal mirroring. No IRQs - the
 //! TC0350 variant on *Don Doko Don* never used the interrupt that
 //! the closely-related mapper 48 chip exposes.
 //!
@@ -22,7 +22,7 @@
 //!
 //! ## CHR addressing quirk
 //!
-//! Unlike MMC3, the two 2 KiB CHR registers do **not** drop the LSB —
+//! Unlike MMC3, the two 2 KiB CHR registers do **not** drop the LSB -
 //! the byte written is a multiple of 2 KiB into the CHR image, so a
 //! full 512 KiB CHR can be addressed by those slots. The four 1 KiB
 //! CHR slots are limited to the first 256 KiB. We honor both ranges
@@ -310,7 +310,7 @@ mod tests {
         let mut m = TaitoTc0190::new(cart_prg256k_chr256k());
         // Writing 1 to a 2 KiB CHR reg points to CHR offset 2 KiB.
         // The 2 KiB window covers 1 KiB tag banks 2 and 3, so the
-        // first half reads tag 2 and the second half reads tag 3 —
+        // first half reads tag 2 and the second half reads tag 3 -
         // proving the LSB was NOT dropped (an MMC3-style mapper
         // would have aligned the bank to 2 KiB and shown 2/2).
         m.cpu_write(0x8002, 1);
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn registers_mirror_across_top_half() {
-        // The chip decodes only A0, A1, A13, A15 — `addr & 0xA003`.
+        // The chip decodes only A0, A1, A13, A15 - `addr & 0xA003`.
         // So any address in `$8000-$9FFF` with A1=1, A0=0 (e.g.
         // `$9FFE`) hits the same register as `$8002`, and any address
         // in `$A000-$BFFF` hits the `$A___` register group.

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Konami VRC7 — iNES mapper 85.
+//! Konami VRC7 - iNES mapper 85.
 //!
 //! Big chip on a tiny game list. Commercial usage is essentially one
 //! cart, *Lagrange Point* (Konami, 1991, JP-only), with a handful of
 //! homebrews leaning on its FM audio. The mapper itself is a
-//! straightforward member of the VRC family — three switchable 8 KiB
+//! straightforward member of the VRC family - three switchable 8 KiB
 //! PRG slots, eight 1 KiB CHR banks, four mirroring modes, and the
-//! standard VRC IRQ counter — but it carries an on-cart YM2413
+//! standard VRC IRQ counter - but it carries an on-cart YM2413
 //! derivative (OPLL) wired through `$9010` / `$9030`. All the FM
 //! synth complexity lives in the vendored emu2413 core; see
 //! [`crate::mapper::vrc7_opll`] for the FFI wrapper.
@@ -15,8 +15,8 @@
 //!
 //! VRC7 originally shipped on two slightly different boards (commonly
 //! "VRC7a" and "VRC7b") that differ only in which address-line bit
-//! selects the second register at each base. The trick — taken
-//! straight from Mesen2's `Core/NES/Mappers/Konami/VRC7.h` — is to
+//! selects the second register at each base. The trick - taken
+//! straight from Mesen2's `Core/NES/Mappers/Konami/VRC7.h` - is to
 //! mirror `A4` to `A3` for everything *except* the audio-port select
 //! at `$9010`, then mask `addr & 0xF038` and dispatch:
 //!
@@ -40,7 +40,7 @@
 //! | `$F000`  | IRQ control                              |
 //! | `$F008`  | IRQ acknowledge                          |
 //!
-//! `$E000` bits — `R` (bit 7): PRG-RAM enable. `W` (bit 6): mute audio
+//! `$E000` bits - `R` (bit 7): PRG-RAM enable. `W` (bit 6): mute audio
 //! (writes to `$9010`/`$9030` are dropped while set per the wiki).
 //! Bits 0-1: mirroring (0 V / 1 H / 2 A-only / 3 B-only).
 //!
@@ -49,7 +49,7 @@
 //!
 //! ## Audio
 //!
-//! OPLL register write is a two-step exchange — `$9010` latches the
+//! OPLL register write is a two-step exchange - `$9010` latches the
 //! target register number, then `$9030` deposits a value at that
 //! register inside the chip. The VRC family's mute bit (`$E000.b6`)
 //! gates *both* writes per nesdev wiki. We clock the FM core at its
@@ -57,7 +57,7 @@
 //! (one OPLL sample ≈ every 36 CPU cycles at NTSC) and cache the
 //! latest 16-bit signed sample for [`Mapper::audio_output`]. The
 //! mixing scale matches Mesen2's `NesSoundMixer.cpp:191` weight of
-//! 1 against the shared 5018-denominator mix bus — Mesen2 adds the
+//! 1 against the shared 5018-denominator mix bus - Mesen2 adds the
 //! raw `OPLL_calc` result with a multiplier of 1, so we divide by
 //! 5018 to land in our `f32` mix space.
 //!
@@ -65,7 +65,7 @@
 //!
 //! Wiki: <https://www.nesdev.org/wiki/VRC7>. Mapper structure ported
 //! from `~/Git/Mesen2/Core/NES/Mappers/Konami/VRC7.h`; OPLL backend
-//! is the vendored emu2413 v1.5.9 by Mitsutaka Okazaki (MIT) — same
+//! is the vendored emu2413 v1.5.9 by Mitsutaka Okazaki (MIT) - same
 //! library Mesen2 ships under `Core/Shared/Utilities/emu2413.cpp`.
 //! IRQ model is the standard VRC counter, mirrored from
 //! [`crate::mapper::vrc2_4`].
@@ -92,7 +92,7 @@ const PRESCALER_STEP: i16 = 3;
 /// band.
 const CPU_HZ: u64 = 1_789_773;
 
-/// `(CPU_HZ << 16) / OPLL_SAMPLE_RATE` — increment per CPU cycle is
+/// `(CPU_HZ << 16) / OPLL_SAMPLE_RATE` - increment per CPU cycle is
 /// `1 << 16`; once `clock_acc` crosses this threshold we emit one
 /// OPLL sample and subtract.
 const OPLL_THRESHOLD_Q16: u32 = ((CPU_HZ << 16) / OPLL_SAMPLE_RATE as u64) as u32;
@@ -194,17 +194,17 @@ pub struct Vrc7 {
     chr_bank_count: usize,
 
     mirroring: Mirroring,
-    /// `$E000.b7` — gates `$6000-$7FFF` PRG-RAM access. When clear,
+    /// `$E000.b7` - gates `$6000-$7FFF` PRG-RAM access. When clear,
     /// reads return open-bus (we surface 0) and writes are dropped.
     prg_ram_enable: bool,
-    /// `$E000.b6` — when set, writes to `$9010`/`$9030` are dropped
+    /// `$E000.b6` - when set, writes to `$9010`/`$9030` are dropped
     /// (the chip stays in whatever state it was last left in but
     /// stops being driven).
     audio_muted: bool,
 
     irq: VrcIrq,
     opll: Opll,
-    /// Last value latched by `$9010` — the OPLL register-select port.
+    /// Last value latched by `$9010` - the OPLL register-select port.
     /// `$9030` reads this back to know which OPLL register to write
     /// the data byte into. Both writes are gated by [`Self::audio_muted`].
     opll_pending_reg: u8,
@@ -439,7 +439,7 @@ impl Mapper for Vrc7 {
     fn on_cpu_cycle(&mut self) {
         self.irq.clock();
 
-        // Generate an OPLL sample roughly once every ~36 CPU cycles —
+        // Generate an OPLL sample roughly once every ~36 CPU cycles -
         // the Q16 accumulator carries the 0.998 fractional remainder
         // forward across ticks so the long-term rate is exact.
         self.clock_acc = self.clock_acc.wrapping_add(1 << 16);
@@ -544,12 +544,12 @@ mod tests {
         let mut m = Vrc7::new(cart());
         // VRC7a uses bit 3 to disambiguate; VRC7b uses bit 4. Writing
         // to $8010 (VRC7b's "PRG bank 1") must land in the same place
-        // as $8008 (VRC7a's). Audio port $9010 is exempt — see below.
+        // as $8008 (VRC7a's). Audio port $9010 is exempt - see below.
         m.cpu_write(0x8010, 7);
         assert_eq!(m.cpu_peek(0xA000), 7);
         m.cpu_write(0x9010, 0xFF);
         // $9010 is the audio register-select port, NOT another PRG
-        // alias — slot 2 must remain unchanged at 0.
+        // alias - slot 2 must remain unchanged at 0.
         assert_eq!(m.cpu_peek(0xC000), 0);
     }
 

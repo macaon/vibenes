@@ -1,4 +1,4 @@
-emu2413 — Yamaha YM2413 (OPLL) emulator
+emu2413 - Yamaha YM2413 (OPLL) emulator
 =======================================
 
 Vendored library, not part of vibenes' first-party source.
@@ -6,13 +6,13 @@ Vendored library, not part of vibenes' first-party source.
 - **Upstream**: https://github.com/digital-sound-antiques/emu2413
 - **Author**: Mitsutaka Okazaki
 - **Version**: v1.5.9 (2022-09-21)
-- **License**: MIT — see `LICENSE`. Used unmodified.
+- **License**: MIT - see `LICENSE`. Used unmodified.
 
 Purpose
 -------
 
 Provides the YM2413 / VRC7 FM synth core consumed by mapper 85 (Konami
-VRC7) — `src/mapper/vrc7.rs` calls into it through the FFI bindings in
+VRC7) - `src/mapper/vrc7.rs` calls into it through the FFI bindings in
 `src/mapper/vrc7_opll.rs`. The same chip is the de facto reference
 implementation in Mesen2, mGBA, and several MSX/SMS emulators.
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Sunsoft 5B expansion audio — full YM2149F-compatible synth: three
+//! Sunsoft 5B expansion audio - full YM2149F-compatible synth: three
 //! tone channels, a shared 17-bit LFSR noise generator, and a shared
 //! envelope generator with the 4-bit AY-3-8910-style shape control.
 //!
@@ -15,7 +15,7 @@
 //!
 //! Two carry-through registers from the FME-7 / 5B mapper:
 //! - `$C000-$DFFF`: select internal audio register (low 4 bits).
-//!   Bits 4-7 disable writes when nonzero (AY-3-8910 family quirk —
+//!   Bits 4-7 disable writes when nonzero (AY-3-8910 family quirk -
 //!   we honor it).
 //! - `$E000-$FFFF`: write the byte to the selected internal register.
 //!
@@ -39,7 +39,7 @@
 //! low" (wiki §Sound). The native chip-internal clock is the CPU
 //! clock divided by 16 for tone (so each tone sub-tick is 16 CPU
 //! cycles before the period multiplier kicks in). Mesen2 simplifies
-//! the tone path to "channel update every 2 CPU cycles" — close
+//! the tone path to "channel update every 2 CPU cycles" - close
 //! enough that *Gimmick!*'s pitch sounds right; we keep that for
 //! parity. Noise advances every 32 CPU cycles before its period
 //! divider; envelope every 16 CPU cycles before its period divider.
@@ -48,9 +48,9 @@
 //!
 //! Mesen2's `NesSoundMixer.cpp:189` weight for `AudioChannel::Sunsoft5B`
 //! is `15`, with no inline multiplier inside `Sunsoft5bAudio::UpdateOutputLevel`
-//! — so per-raw-unit scale into our 0..1 mix space is `15 / 5018 ≈ 0.00299`.
+//! - so per-raw-unit scale into our 0..1 mix space is `15 / 5018 ≈ 0.00299`.
 //! With LUT[15] ≈ 177 (= levels[31] cast to u8), peak raw ≈ 531 with
-//! all three channels at full volume. Peak mix sample ≈ 1.59 — louder
+//! all three channels at full volume. Peak mix sample ≈ 1.59 - louder
 //! than FDS / VRC6, matching Mesen2's intended balance for *Gimmick!*'s
 //! lead-instrument role.
 
@@ -59,7 +59,7 @@ const NUM_REGISTERS: usize = 0x10;
 
 const SUNSOFT5B_MIX_SCALE: f32 = 15.0 / 5018.0;
 
-/// 16-entry volume LUT — the YM2149F's 4-bit volume scale, 1.5 dB
+/// 16-entry volume LUT - the YM2149F's 4-bit volume scale, 1.5 dB
 /// per *half*-step (3 dB per full step). `volume_lut[v]` matches
 /// Mesen2's `_volumeLut[v]` byte-for-byte.
 fn build_volume_lut() -> [u8; 16] {
@@ -73,7 +73,7 @@ fn build_volume_lut() -> [u8; 16] {
     lut
 }
 
-/// 32-entry envelope-output LUT — same logarithmic ladder at half
+/// 32-entry envelope-output LUT - same logarithmic ladder at half
 /// the 4-bit-volume granularity. `env_lut[2v + 1] == volume_lut[v]`
 /// for v in 1..=15; `env_lut[0] == env_lut[1] == 0` (silent floor).
 /// Matches the relationship documented at
@@ -89,7 +89,7 @@ fn build_envelope_lut() -> [u8; 32] {
 }
 
 /// Shared envelope generator. State machine matches Nestopia's
-/// `S5b::Sound::Envelope` — `count` runs 0x1F → 0x00, `attack` is
+/// `S5b::Sound::Envelope` - `count` runs 0x1F → 0x00, `attack` is
 /// XOR-merged with the count to pick the LUT index (so an "up" ramp
 /// just writes attack=0x1F and the same descending counter produces
 /// 0x1F^0x1F=0..0x00^0x1F=0x1F = 0..31). End-of-ramp behavior is
@@ -109,7 +109,7 @@ struct Envelope {
     alternate: bool,
     hold: bool,
     holding: bool,
-    /// Sub-CPU-cycle counter — envelope steps every 16 CPU cycles
+    /// Sub-CPU-cycle counter - envelope steps every 16 CPU cycles
     /// before the `period` divider applies.
     sub_cycle: u8,
     timer: i32,
@@ -141,7 +141,7 @@ impl Envelope {
         self.period = (self.period & 0x00FF) | (u16::from(value) << 8);
     }
 
-    /// Register `$0D` — reset the envelope and set its shape.
+    /// Register `$0D` - reset the envelope and set its shape.
     /// Following Nestopia's `WriteReg2` mapping for the C=0 case
     /// (continue=0 → behave as continue=1 with hold=1 + alternate
     /// derived from attack). This makes shapes $0-$3 collapse to the
@@ -151,11 +151,11 @@ impl Envelope {
         self.holding = false;
         self.attack = if (value & 0x04) != 0 { 0x1F } else { 0x00 };
         if (value & 0x08) != 0 {
-            // Continue = 1 — honor hold + alternate as written.
+            // Continue = 1 - honor hold + alternate as written.
             self.hold = (value & 0x01) != 0;
             self.alternate = (value & 0x02) != 0;
         } else {
-            // Continue = 0 — collapse onto an equivalent C=1 shape:
+            // Continue = 0 - collapse onto an equivalent C=1 shape:
             // hold = 1, alternate = (attack != 0). This makes
             // $4-$7 ramp up then snap to silent (output 0 after
             // alternate flips attack to 0 at end-of-ramp), and
@@ -215,7 +215,7 @@ impl Envelope {
 /// Shared 17-bit LFSR noise generator. Steps every `period * 32` CPU
 /// cycles. Output is the LSB of the register. Tap configuration
 /// (XOR feedback at bits 0 and 3 of the post-shift state) is the
-/// standard AY-3-8910/YM2149 polynomial — bits 16/13 of the wiki's
+/// standard AY-3-8910/YM2149 polynomial - bits 16/13 of the wiki's
 /// "tap" description map to 0/3 here because we shift right and
 /// inject the new bit at bit 16.
 #[derive(Debug, Clone)]
@@ -245,7 +245,7 @@ impl Noise {
     /// Advance one CPU cycle. Returns the current noise bit (true
     /// = high). Steps the LFSR every `period * 32` CPU cycles.
     fn clock(&mut self) -> bool {
-        // Base divider — every 32 CPU cycles count one "noise tick".
+        // Base divider - every 32 CPU cycles count one "noise tick".
         self.sub_cycle = self.sub_cycle.wrapping_add(1);
         if self.sub_cycle < 32 {
             return (self.lfsr & 1) != 0;
@@ -258,7 +258,7 @@ impl Noise {
             return (self.lfsr & 1) != 0;
         }
         self.timer = period;
-        // Standard AY noise polynomial — feedback = bit_0 XOR bit_3
+        // Standard AY noise polynomial - feedback = bit_0 XOR bit_3
         // of the current LFSR state, shift right by 1, inject feedback
         // into bit 16. Equivalent to taps at 16/13 of the post-shift
         // value (the form the nesdev wiki documents).
@@ -276,14 +276,14 @@ pub struct Sunsoft5bAudio {
     /// writes. Bit 7 high disables `$E000` writes (AY-3-8910 quirk).
     current_register: u8,
     write_disabled: bool,
-    /// 16 internal YM2149F registers — keeps the raw written bytes
+    /// 16 internal YM2149F registers - keeps the raw written bytes
     /// available for state save / introspection.
     registers: [u8; NUM_REGISTERS],
     /// Per-channel down-counters reloaded with the channel's 12-bit
     /// period when they reach zero. Stepping happens every other
     /// CPU cycle (the `process_tick` toggle).
     timer: [i32; NUM_CHANNELS],
-    /// 4-bit step counter per channel — tone is high for steps 0..7,
+    /// 4-bit step counter per channel - tone is high for steps 0..7,
     /// low for steps 8..15.
     tone_step: [u8; NUM_CHANNELS],
     /// Toggles every CPU cycle; when true, channels update.
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn tone_disabled_silences_channel_when_noise_also_disabled() {
         // With both tone AND noise disabled on a channel, AY semantics
-        // say the channel outputs CONSTANT volume — not silence — so
+        // say the channel outputs CONSTANT volume - not silence - so
         // we silence this case via volume = 0 instead.
         let mut a = Sunsoft5bAudio::new();
         write_internal(&mut a, 0x00, 0x02);

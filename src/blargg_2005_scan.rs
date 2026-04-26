@@ -9,22 +9,22 @@
 //! forever:` loop, so our cue for "done" is a stable PC.
 //!
 //! This module provides:
-//!   * `StuckPcDetector` — a cheap heuristic that fires once the CPU
+//!   * `StuckPcDetector` - a cheap heuristic that fires once the CPU
 //!     has been trapped in a small PC window for long enough that the
 //!     final screen is definitely drawn.
-//!   * `read_nametable_ascii` — reads the 32×30 tile layout of
+//!   * `read_nametable_ascii` - reads the 32×30 tile layout of
 //!     nametable 0 and interprets each tile ID as its ASCII code. This
 //!     works because blargg's devcart font uploads pattern `N` to the
 //!     glyph for ASCII char `N` (`'0'` lands at tile `$30`, `' '` at
 //!     tile `$20`, etc.), which is the simplest PPU text pipeline and
 //!     what every ROM in the 2005 suite uses.
-//!   * `extract_result_code` — parses "result: N" (or just the first
+//!   * `extract_result_code` - parses "result: N" (or just the first
 //!     on-screen digit if no label is present) into a result byte.
 //!
 //! The CHR-RAM font-upload detail means we do *not* need a separate
 //! glyph table: the ROM and the font are in one-to-one agreement. If
 //! a future ROM uses a different mapping, the scanner will emit
-//! garbage but not crash — `extract_result_code` returns `None` and
+//! garbage but not crash - `extract_result_code` returns `None` and
 //! the caller can fall back to dumping the raw nametable.
 
 use crate::nes::Nes;
@@ -33,7 +33,7 @@ use crate::nes::Nes;
 /// window before we call the test "done". Each poll happens every
 /// `POLL_INTERVAL_CYCLES` CPU cycles on the caller side, so tuning
 /// this is in multiples of roughly 10k cycles. 30 polls ≈ 300k CPU
-/// cycles ≈ 10 NTSC frames — long enough for the final screen to be
+/// cycles ≈ 10 NTSC frames - long enough for the final screen to be
 /// drawn, short enough that a short test doesn't wait too much past
 /// its own settling.
 pub const STUCK_POLL_THRESHOLD: u32 = 30;
@@ -117,7 +117,7 @@ pub fn nametable_has_text(nes: &Nes) -> bool {
 /// contains a recognized pass/fail marker.
 ///
 /// A printed title like `6502 TIMING TEST (16 SECONDS)` counts as
-/// "text" but not as "done" — the stuck-PC heuristic can fire during
+/// "text" but not as "done" - the stuck-PC heuristic can fire during
 /// a long test's NMI-wait loop while that header is the only thing on
 /// screen. Gating the runner on a marker keeps it polling until the
 /// test actually writes its verdict.
@@ -171,7 +171,7 @@ fn tile_byte_to_ascii(b: u8) -> char {
 ///    These tests would normally also report via `$6000` but the
 ///    ROMs in `cpu_dummy_reads/`, `cpu_reset/`, and a handful of
 ///    others either skip the `$6000` handshake or complete before
-///    our `test_runner` times out — the nametable text is the
+///    our `test_runner` times out - the nametable text is the
 ///    reliable signal. We map `Passed → 1`, `Failed → 2`,
 ///    `Error <N> → N`.
 ///

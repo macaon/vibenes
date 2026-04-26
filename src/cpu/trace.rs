@@ -6,9 +6,9 @@
 //! Zero cost when `VIBENES_TRACE_LIMIT` isn't set.
 //!
 //! Env vars (read once at startup):
-//! - `VIBENES_TRACE_LIMIT` — cap on CPU cycles. Beyond this the trace stops
+//! - `VIBENES_TRACE_LIMIT` - cap on CPU cycles. Beyond this the trace stops
 //!   emitting (but emulation continues). Setting any value enables tracing.
-//! - `VIBENES_TRACE_START` — optional lower bound; no lines emitted below
+//! - `VIBENES_TRACE_START` - optional lower bound; no lines emitted below
 //!   this CPU cycle. Default 0.
 //!
 //! Line format (matches [`tools/mesen_trace.lua`] field-for-field):

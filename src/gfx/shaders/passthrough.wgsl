@@ -10,7 +10,7 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
-    // Classic fullscreen triangle — one triangle that covers all of NDC:
+    // Classic fullscreen triangle - one triangle that covers all of NDC:
     //   vid=0 → (-1,-1)  bottom-left
     //   vid=1 → ( 3,-1)  past the right edge
     //   vid=2 → (-1, 3)  past the top edge

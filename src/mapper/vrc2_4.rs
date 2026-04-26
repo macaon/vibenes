@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Konami VRC2 + VRC4 — iNES mappers 21, 22, 23, 25.
+//! Konami VRC2 + VRC4 - iNES mappers 21, 22, 23, 25.
 //!
 //! These two ASIC families ship under four mapper numbers because the
 //! Famicom carts wired the chip's address-decode pins differently per
@@ -12,14 +12,14 @@
 //!
 //! |Mapper| Submapper 0 (heuristic) | 1 | 2 | 3 |
 //! |---|---|---|---|---|
-//! | 21 | VRC4a / VRC4c (OR-merged) | VRC4a | VRC4c | — |
-//! | 22 | VRC2a                     | VRC2a | —     | — |
-//! | 23 | VRC2b / VRC4e (OR-merged) | —     | VRC4e | VRC2b |
+//! | 21 | VRC4a / VRC4c (OR-merged) | VRC4a | VRC4c | - |
+//! | 22 | VRC2a                     | VRC2a | -     | - |
+//! | 23 | VRC2b / VRC4e (OR-merged) | -     | VRC4e | VRC2b |
 //! | 25 | VRC2c / VRC4b / VRC4d     | VRC4b | VRC4d | VRC2c |
 //!
 //! Submapper 0 (legacy iNES 1.0 ROMs) is the common case in the wild;
 //! we OR the candidate `(A0, A1)` extractions across all variants of
-//! that mapper number — Mesen2's trick to make non-NES-2.0 dumps work
+//! that mapper number - Mesen2's trick to make non-NES-2.0 dumps work
 //! without per-game annotation. NES 2.0 ROMs with explicit submappers
 //! land on a single variant.
 //!
@@ -40,7 +40,7 @@
 //! ## VRC2 microwire latch (`$6000-$6FFF`)
 //!
 //! VRC2 carts without WRAM expose a 1-bit storage latch through the
-//! `$6000` window — used as the EEPROM data line on a couple of
+//! `$6000` window - used as the EEPROM data line on a couple of
 //! Japanese titles. Reads return the latch in bit 0 (rest open-bus,
 //! we surface 0); writes store value bit 0. VRC4 carts ignore this
 //! and use the window for normal PRG-RAM.
@@ -97,7 +97,7 @@ fn detect_variant(mapper_id: u16, submapper: u8) -> (Variant, bool) {
     let (variant, heuristic) = match mapper_id {
         21 => match submapper {
             2 => (Variant::Vrc4c, false),
-            // Submapper 0 (legacy) and 1 both default to VRC4a — for
+            // Submapper 0 (legacy) and 1 both default to VRC4a - for
             // mapper 21 the legacy decode is "OR of VRC4a + VRC4c
             // address bits" which we activate via the heuristic flag.
             _ => (Variant::Vrc4a, submapper == 0),
@@ -115,7 +115,7 @@ fn detect_variant(mapper_id: u16, submapper: u8) -> (Variant, bool) {
             // VRC4d (Mesen2's mapper-25 heuristic).
             _ => (Variant::Vrc4b, submapper == 0),
         },
-        // Out-of-range mapper IDs shouldn't reach here — `build`
+        // Out-of-range mapper IDs shouldn't reach here - `build`
         // dispatches on the four IDs above.
         _ => (Variant::Vrc4a, false),
     };
@@ -263,7 +263,7 @@ impl Vrc2_4 {
         let cart_has_ram = cart.prg_ram_size > 0 || cart.prg_nvram_size > 0;
         let use_microwire = variant.is_vrc2() && !cart_has_ram && !heuristic;
         // When heuristic mode might collapse a VRC2 + VRC4 board into
-        // one variant, we always allocate WRAM — the VRC4 case needs
+        // one variant, we always allocate WRAM - the VRC4 case needs
         // it and the microwire latch is harmless to skip for the
         // boards that would have used it (those are sub-3 declared).
         let prg_ram = if use_microwire {
@@ -390,13 +390,13 @@ impl Vrc2_4 {
 
         match addr {
             0x8000..=0x8006 if (addr & 0x000C) == 0 => {
-                // $8000 / $8002 / $8004 / $8006 — PRG reg 0.
+                // $8000 / $8002 / $8004 / $8006 - PRG reg 0.
                 self.prg_reg_0 = value & 0x1F;
             }
             0x9000..=0x9003 => {
                 // Mesen2 routes the entire $9000-$9003 range to
                 // mirroring on VRC2-family variants (including
-                // heuristic — sub 0 leaves us classified as VRC2b on
+                // heuristic - sub 0 leaves us classified as VRC2b on
                 // mapper 23 even though some legacy ROMs are VRC4e).
                 // VRC4-family variants use $9000/1 for mirroring and
                 // $9002/3 for PRG mode. Earlier code wrongly let
@@ -406,7 +406,7 @@ impl Vrc2_4 {
                 let is_mirror_addr = self.variant.is_vrc2() || matches!(addr, 0x9000 | 0x9001);
                 if is_mirror_addr {
                     // VRC2 strictly latches the low bit; VRC4 (and
-                    // heuristic VRC2 — Mesen2 says so) pick from the
+                    // heuristic VRC2 - Mesen2 says so) pick from the
                     // 4-way table.
                     let mask = if self.variant.is_vrc2() && !self.heuristic {
                         0x01
@@ -466,7 +466,7 @@ impl Mapper for Vrc2_4 {
             0x6000..=0x7FFF => {
                 if self.use_microwire {
                     // VRC2 microwire latch: low bit visible at $6000;
-                    // upper bits open-bus (we surface zero — no real
+                    // upper bits open-bus (we surface zero - no real
                     // game samples them).
                     return self.microwire_latch & 0x01;
                 }
@@ -534,7 +534,7 @@ impl Mapper for Vrc2_4 {
     }
 
     fn on_cpu_cycle(&mut self) {
-        // VRC2 has no IRQ. In heuristic mode (sub 0) we let it run —
+        // VRC2 has no IRQ. In heuristic mode (sub 0) we let it run -
         // the IRQ stays disabled until something writes $F002, and
         // pure-VRC2 ROMs never touch those addresses, so the cost is
         // a single branch in `clock()`.
@@ -698,7 +698,7 @@ mod tests {
     fn vrc4_mirroring_uses_both_bits() {
         // Mapper 23 sub 2 → VRC4e (no heuristic). VRC4e translates
         // $9000 to canonical $9000 directly only when bits 2/3 of
-        // raw are zero — they are.
+        // raw are zero - they are.
         let mut m = Vrc2_4::new(make_cart(8, 8, 23, 2));
         m.cpu_write(0x9000, 0x02);
         assert_eq!(m.mirroring(), Mirroring::SingleScreenLower);
@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn chr_lo_hi_combine_into_9_bit_page() {
         // Use mapper 23 sub 0 (heuristic) for natural canonical
-        // addressing — see prg_mode tests above.
+        // addressing - see prg_mode tests above.
         let mut m = Vrc2_4::new(make_cart(8, 256, 23, 0));
         m.cpu_write(0xB000, 0x05); // lo = 5
         m.cpu_write(0xB001, 0x01); // hi = 1 → page = 0x15 = 21
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn vrc2b_address_translation_into_prg_reg() {
         // Mapper 23 sub 3 = VRC2b. A0 = addr&1, A1 = (addr>>1)&1, so
-        // $8001 lands on $8001 (still PRG reg 0 — addr & 0xF00F &
+        // $8001 lands on $8001 (still PRG reg 0 - addr & 0xF00F &
         // 0x000C == 0).
         let mut m = Vrc2_4::new(make_cart(8, 8, 23, 3));
         for raw in [0x8000u16, 0x8001, 0x8002, 0x8003] {

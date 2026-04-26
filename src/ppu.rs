@@ -81,7 +81,7 @@ pub struct Ppu {
     /// the same visibility window as Mesen2's cycle-339 branch
     /// (NesPpu.cpp:946-954).
     skip_last_dot_latched: bool,
-    /// Delayed view of `(mask & 0x18) != 0` — mirrors Mesen2's
+    /// Delayed view of `(mask & 0x18) != 0` - mirrors Mesen2's
     /// `_renderingEnabled` (NesPpu.cpp:1458-1461). A `$2001` write
     /// updates `mask` immediately but the effective "rendering
     /// enabled" signal lags by one PPU cycle, because Mesen2 applies
@@ -105,7 +105,7 @@ pub struct Ppu {
     /// the VBlank flag would be set (scanline 241, dot 0 or 1 with VBL
     /// not yet set this frame). The upcoming VBlank-set tick sees this
     /// and skips both the status-flag set and the `vbl_just_set`
-    /// marker — so both the current read AND any follow-up read in the
+    /// marker - so both the current read AND any follow-up read in the
     /// same frame observe bit 7 = 0, and NMI never asserts. Matches
     /// Mesen2's `_preventVblFlag` (NesPpu.cpp:592, 1340). Required by
     /// `ppu_vbl_nmi/02-vbl_set_time.nes`.
@@ -176,7 +176,7 @@ pub struct Ppu {
     overflow_bug_counter: u8,
 
     pub frame_buffer: Vec<u8>,
-    /// PPU I/O open bus — the "decay register" (nesdev). CPU reads of
+    /// PPU I/O open bus - the "decay register" (nesdev). CPU reads of
     /// unimplemented / write-only register bits return the last value
     /// this bus was driven with. Per-bit decay timers in
     /// [`Ppu::open_bus_refresh`] track when each bit was last refreshed
@@ -191,7 +191,7 @@ pub struct Ppu {
 }
 
 /// PPU open-bus decay threshold in PPU dots. NTSC PPU runs at
-/// ~5.369 MHz, so 3.2 M dots ≈ 596 ms — well inside the "< 1 second"
+/// ~5.369 MHz, so 3.2 M dots ≈ 596 ms - well inside the "< 1 second"
 /// window asserted by `ppu_open_bus` tests 3/5/7/9 while still longer
 /// than the 100 × 10 ms burst loops those tests use. Real hardware
 /// varies per unit and with temperature (~600 ms typical per nesdev).
@@ -255,7 +255,7 @@ impl Ppu {
     /// For each bit of `mask` that's set, copy the corresponding bit
     /// of `value` into [`Ppu::open_bus`] and reset that bit's decay
     /// timer. Bits not in the mask keep both their stored value and
-    /// their last-refresh timestamp — i.e. they keep decaying.
+    /// their last-refresh timestamp - i.e. they keep decaying.
     fn refresh_open_bus_bits(&mut self, mask: u8, value: u8) {
         let now = self.master_ppu_cycle;
         self.open_bus = (self.open_bus & !mask) | (value & mask);
@@ -266,7 +266,7 @@ impl Ppu {
         }
     }
 
-    /// Return the open-bus byte with per-bit decay applied — any bit
+    /// Return the open-bus byte with per-bit decay applied - any bit
     /// whose last refresh is older than [`OPEN_BUS_DECAY_PPU_DOTS`]
     /// reads back as 0. Used when a read needs to source bits from
     /// decay (e.g. low 5 bits of `$2002`) or to return pure decay for
@@ -312,7 +312,7 @@ impl Ppu {
     }
 
     /// Read-only accessors for debug / diagnostic tooling (frame_dump
-    /// binary). Not used by the emulation loop — the `tick` pipeline
+    /// binary). Not used by the emulation loop - the `tick` pipeline
     /// mutates these directly.
     pub fn debug_mask(&self) -> u8 {
         self.mask
@@ -378,13 +378,13 @@ impl Ppu {
         }
 
         // Sample the odd-frame-skip decision at the START of dot 339
-        // processing, mirroring Mesen2 (`NesPpu.cpp:946-954` — the
+        // processing, mirroring Mesen2 (`NesPpu.cpp:946-954` - the
         // check lives inside the cycle-339 ProcessTileLoading branch,
         // before any subsequent advance). Consumed at end-of-tick to
         // skip dot 340.
         // Use the 1-tick-delayed `rendering_enabled` (not `self.mask`
         // directly) so a `$2001` write landing in the same CPU cycle
-        // as dot 339 does NOT influence this dot's skip decision —
+        // as dot 339 does NOT influence this dot's skip decision -
         // matches Mesen2's `UpdateState` deferral (NesPpu.cpp:1425).
         if self.region == Region::Ntsc
             && is_pre
@@ -475,14 +475,14 @@ impl Ppu {
             // issues: garbage NT at dot 257, garbage AT at dot 259,
             // sprite pat-lo at dot 261, sprite pat-hi at dot 263.
             //
-            // The exact dots matter for MMC3 A12 counter filtering —
+            // The exact dots matter for MMC3 A12 counter filtering -
             // batching all fetches at dot 257 would collapse 8 A12
             // rises into one, and firing one dot late (dots 258/260/
             // 262/264) shifts the first A12 rise of scanline 0 by
             // exactly one PPU cycle, which shows up as an off-by-one
             // failure on `mmc3_test/4-scanline_timing #3`. The BG
             // fetch block above uses `(dot - 1) % 8 == {0, 2, 4, 6}`
-            // — first-dot-of-access semantics — and this block is
+            // - first-dot-of-access semantics - and this block is
             // aligned the same way.
             //
             // OAMADDR is held at 0 throughout this window (nesdev).
@@ -491,7 +491,7 @@ impl Ppu {
                 let slot = ((self.dot - 257) / 8) as usize;
                 match (self.dot - 257) % 8 {
                     0 => {
-                        // Garbage NT fetch — drives A12 low. Tagged
+                        // Garbage NT fetch - drives A12 low. Tagged
                         // as a SpriteNametable so MMC5's IRQ detector
                         // (sub-C) can ignore it and only count the
                         // real BG NT reads at dots 337/339/1.
@@ -499,7 +499,7 @@ impl Ppu {
                         let _ = self.ppu_bus_read(addr, PpuFetchKind::SpriteNametable, mapper);
                     }
                     2 => {
-                        // Garbage AT fetch — drives A12 low.
+                        // Garbage AT fetch - drives A12 low.
                         let at_addr = 0x23C0
                             | (self.v & 0x0C00)
                             | ((self.v >> 4) & 0x38)
@@ -518,7 +518,7 @@ impl Ppu {
                 self.v = (self.v & !0x7BE0) | (self.t & 0x7BE0);
             }
             // Garbage NT fetches at dots 337 and 339 keep the address
-            // bus honest — MMC5 uses these as part of its 3-same-NT
+            // bus honest - MMC5 uses these as part of its 3-same-NT
             // scanline signature (tagged BgNametable), MMC3 sees the
             // same A12 timeline it would on hardware.
             if self.dot == 337 || self.dot == 339 {
@@ -540,7 +540,7 @@ impl Ppu {
         // scanline's eval_end. If we ran this inside eval_tick at
         // dot 256 (the natural place), `sprite_count` would be
         // updated for the NEXT scanline before the current
-        // scanline's last pixel rendered — dropping any sprite at
+        // scanline's last pixel rendered - dropping any sprite at
         // X >= 248 that depended on a slot index >= the new count.
         // Reproduced as a flickering pixel at the right edge in
         // Goemon Gaiden 2's name-entry screen.
@@ -567,7 +567,7 @@ impl Ppu {
         self.dot += 1;
         // NTSC odd-frame dot skip: when rendering is enabled at the
         // START of dot 339 on the pre-render scanline of an odd
-        // frame, the last dot (340) is skipped — the pre-render ends
+        // frame, the last dot (340) is skipped - the pre-render ends
         // at 339 instead of 340. Decision point matches Mesen2
         // `ProcessTileLoading` (NesPpu.cpp:946-954), which samples
         // `IsRenderingEnabled()` inside the cycle-339 branch before
@@ -579,7 +579,7 @@ impl Ppu {
         // `ppu_vbl_nmi/10-even_odd_timing` #3/#5.
         //
         // `self.skip_last_dot_latched` is set above (when entering
-        // dot 339) — see the block earlier in tick().
+        // dot 339) - see the block earlier in tick().
         if self.skip_last_dot_latched {
             self.skip_last_dot_latched = false;
             self.dot = 0;
@@ -599,7 +599,7 @@ impl Ppu {
         // Apply any `$2001` write that happened during this PPU cycle
         // to the delayed `rendering_enabled` signal. Done at end of
         // tick so the NEXT tick (and any rendering-dependent decision
-        // it makes) sees the new state — matching Mesen2's
+        // it makes) sees the new state - matching Mesen2's
         // `UpdateState` running at the end of each Exec cycle
         // (NesPpu.cpp:1361-1362, 1458-1461).
         self.rendering_enabled = (self.mask & 0x18) != 0;
@@ -705,7 +705,7 @@ impl Ppu {
         // --- Sprite pixel: first opaque sprite in secondary-OAM order ---
         //     PLUS independent sprite-0 opacity sampling for the hit flag.
         //     Per nesdev: sprite-0 hit is "sprite 0 opaque AND BG opaque"
-        //     — it is NOT gated on sprite 0 winning the priority mux. If
+        //     - it is NOT gated on sprite 0 winning the priority mux. If
         //     sprite 3 also covers the pixel and comes first in secondary
         //     OAM, sprite 3 wins the display mux but sprite 0 still sets
         //     the hit flag. NES Open Tournament Golf's boot wait loop
@@ -828,7 +828,7 @@ impl Ppu {
         // Dots 65–256: primary OAM scan.
         if (dot & 1) == 1 {
             // Odd cycle: read from primary OAM. At dot 65, also
-            // initialize the state machine from current OAMADDR —
+            // initialize the state machine from current OAMADDR -
             // this reproduces the behavior where writing $2003 with
             // a non-multiple-of-4 value before eval starts causes
             // misaligned scans (see oam_flicker_test_reenable).
@@ -853,7 +853,7 @@ impl Ppu {
         let y = self.oam_copy_buffer as i16;
 
         if self.oam_copy_done {
-            // Phase drained — still increment the primary-OAM high
+            // Phase drained - still increment the primary-OAM high
             // cursor so OAMADDR keeps advancing as on real HW. When
             // secondary OAM is full, reads come from it instead (OAM
             // write-disable turns writes into reads).
@@ -871,7 +871,7 @@ impl Ppu {
             }
 
             if self.sec_oam_addr < 32 {
-                // Still have secondary-OAM room — copy the byte.
+                // Still have secondary-OAM room - copy the byte.
                 self.secondary_oam[self.sec_oam_addr as usize] = self.oam_copy_buffer;
 
                 if self.sprite_in_range {
@@ -910,7 +910,7 @@ impl Ppu {
                         }
                     }
                 } else {
-                    // Not in range — skip to the next sprite.
+                    // Not in range - skip to the next sprite.
                     self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
                     self.sprite_addr_l = 0;
                     if self.sprite_addr_h == 0 {
@@ -918,7 +918,7 @@ impl Ppu {
                     }
                 }
             } else {
-                // Secondary OAM full — overflow-detect branch.
+                // Secondary OAM full - overflow-detect branch.
                 // Writes-disabled: reads come back from secondary OAM
                 // instead of the just-latched primary byte.
                 self.oam_copy_buffer =
@@ -1016,7 +1016,7 @@ impl Ppu {
                 self.secondary_oam[slot * 4] as i16,
             )
         } else {
-            // Dummy fetch for empty slots — tile $FF, Y at next scanline
+            // Dummy fetch for empty slots - tile $FF, Y at next scanline
             // so the fine-y math lands at row 0.
             (0xFFu8, 0u8, 0u8, (next - 1) as i16)
         };
@@ -1046,7 +1046,7 @@ impl Ppu {
         // MMC5 only routes through its sprite CHR bank set in 8×16
         // sprite mode; in 8×8 mode a "sprite" pattern fetch is
         // behaviorally a BG-side fetch (same bank set). Baking that
-        // decision into the fetch tag keeps the mapper dumb — it
+        // decision into the fetch tag keeps the mapper dumb - it
         // simply trusts the kind.
         let kind = if height == 16 {
             PpuFetchKind::SpritePattern
@@ -1073,7 +1073,7 @@ impl Ppu {
     /// `cpu_read` variant that the bus calls for the page-cross dummy
     /// read emitted by `abs,X` / `abs,Y` / `(zp),Y`. For `$2007`, real
     /// hardware's aborted read doesn't advance the PPU's internal buffer
-    /// state cleanly — the CPU re-reads before the PPU has a chance to
+    /// state cleanly - the CPU re-reads before the PPU has a chance to
     /// refill from VRAM. Blargg's `dmc_dma_during_read4/double_2007_read`
     /// accepts any of four buckets; returning the current buffer
     /// without advancing `v` / refilling lands us in the `22 33 44 55 66
@@ -1097,12 +1097,12 @@ impl Ppu {
                 // sprite-0, sprite-overflow); bits 0-4 come from the
                 // open-bus decay register. The read refreshes bits
                 // 5-7 of decay with the status bits but LEAVES BITS
-                // 0-4 decaying — matches `ppu_open_bus` tests 6/7.
+                // 0-4 decaying - matches `ppu_open_bus` tests 6/7.
                 //
                 // Also clears VBL, clears NMI level, and resets the
                 // $2005/$2006 write toggle. Arms `prevent_vbl` when
                 // the read lands exactly on the CPU cycle whose
-                // post-access dot will raise VBL — Mesen2's
+                // post-access dot will raise VBL - Mesen2's
                 // `UpdateStatusFlag` `_cycle == 0` branch
                 // (NesPpu.cpp:590-593); their `_cycle` is the
                 // last-processed dot, so their 0 maps to our
@@ -1124,7 +1124,7 @@ impl Ppu {
                 // bits 2-4 unimplemented in hardware and always read
                 // as 0; every other byte reads the stored value
                 // verbatim. The read refreshes all 8 bits of decay
-                // with the returned (masked) value — `ppu_open_bus`
+                // with the returned (masked) value - `ppu_open_bus`
                 // tests 10/11.
                 let raw = self.oam[self.oam_addr as usize];
                 let value = if self.oam_addr & 0x03 == 0x02 {
@@ -1139,7 +1139,7 @@ impl Ppu {
                 // Dummy read at $2007 mirror: return the current
                 // buffer without advancing v or refilling (see
                 // `cpu_read_dummy`). Refresh decay with the returned
-                // value anyway — matches the read's observable
+                // value anyway - matches the read's observable
                 // effect on the I/O bus.
                 let v = self.data_buffer;
                 self.refresh_open_bus_bits(0xFF, v);
@@ -1167,13 +1167,13 @@ impl Ppu {
                 self.refresh_open_bus_bits(refresh_mask, returned);
                 self.increment_v();
                 // Post-increment v appears on the PPU address bus
-                // outside rendering — gives MMC3's A12 watcher
+                // outside rendering - gives MMC3's A12 watcher
                 // another edge to observe.
                 mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
                 returned
             }
             // Write-only registers ($2000, $2001, $2003, $2005, $2006).
-            // Reads return pure decay with NO refresh — `ppu_open_bus`
+            // Reads return pure decay with NO refresh - `ppu_open_bus`
             // tests 3 and 5.
             _ => self.open_bus_decayed(),
         }
@@ -1183,7 +1183,7 @@ impl Ppu {
         let reg = addr & 0x0007;
         // Every CPU write to a PPU register drives all 8 bits of the
         // I/O bus, so the decay register is fully refreshed with the
-        // written value — `ppu_open_bus` test 2.
+        // written value - `ppu_open_bus` test 2.
         self.refresh_open_bus_bits(0xFF, data);
         match reg {
             0x00 => {
@@ -1245,7 +1245,7 @@ impl Ppu {
                 self.ppu_bus_write(addr, data, PpuFetchKind::Idle, mapper);
                 self.increment_v();
                 // Post-increment `v` is placed on the address bus
-                // outside rendering — another A12 opportunity for
+                // outside rendering - another A12 opportunity for
                 // MMC3 (Mesen2 NesPpu.cpp ProcessPpuDataAccess).
                 mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
             }
@@ -1269,7 +1269,7 @@ impl Ppu {
         match addr {
             0x0000..=0x1FFF => mapper.ppu_read(addr),
             0x2000..=0x3EFF => {
-                // Give the mapper first dibs on the nametable byte —
+                // Give the mapper first dibs on the nametable byte -
                 // MMC5 uses this for `$5105` NT slot mapping,
                 // fill-mode, and ExRAM-as-NT. `Default` means use
                 // CIRAM via the cart's mirroring() configuration (the

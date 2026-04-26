@@ -41,7 +41,7 @@ pub struct Dmc {
     dma_pending: Option<u16>,
     /// Mesen2-style `_transferStartDelay` (`DeltaModulationChannel.cpp:
     /// 266-270`): when `$4015` bit 4 enables the channel from an idle
-    /// state, the DMA is NOT armed immediately — it's delayed by 2 or
+    /// state, the DMA is NOT armed immediately - it's delayed by 2 or
     /// 3 CPU cycles based on the current cycle-count parity. The
     /// buffer-refill path (shift register empties, buffer was empty,
     /// sample still active) bypasses this delay and arms DMA right
@@ -66,7 +66,7 @@ impl Dmc {
     pub fn new(region: Region) -> Self {
         // Rate tables are published in CPU cycles per bit. The timer below
         // counts down in the `P, P-1, ..., 0, reload` pattern where the
-        // reload cycle is the one that shifts — so period must be stored
+        // reload cycle is the one that shifts - so period must be stored
         // as `table_value - 1` to make one full cycle equal exactly
         // `table_value` CPU cycles. (Mesen2 does the same subtraction.)
         let period = match region {
@@ -82,9 +82,9 @@ impl Dmc {
             // at power-on (`NesCpu.cpp:160-164`) where ours runs only
             // 7 (5 dummy reads + 2 vector reads). On Mesen those 8
             // cycles tick `apu.dmc` 8 times; on us, 7. To keep our
-            // DMC bit-shift cadence in lock-step with Mesen — which
+            // DMC bit-shift cadence in lock-step with Mesen - which
             // is what the parity-driven DMA cost in
-            // `Bus::service_pending_dmc_dma` is calibrated against —
+            // `Bus::service_pending_dmc_dma` is calibrated against -
             // we offset the initial timer by one tick so the first
             // underflow lands on the same absolute CPU cycle. Both
             // models are "correct" up to a single-cycle reset
@@ -98,7 +98,7 @@ impl Dmc {
             bytes_remaining: 0,
             shift_reg: 0,
             // Nesdev APU DMC: "8 bits are used up before another sample
-            // byte is required" — at reset the counter is at 8, so the
+            // byte is required" - at reset the counter is at 8, so the
             // first bit-shift won't drain the buffer until a full byte
             // (8 × period = 3424 NTSC cycles at rate 0) has elapsed.
             // Matches Mesen2 `DeltaModulationChannel.cpp:36` and puNES
@@ -139,7 +139,7 @@ impl Dmc {
             // outstanding DMA fetch. Without clearing `dma_pending`, a
             // fetch armed just before the disable would still be serviced
             // by the bus and the byte would land in `buffer`, which the
-            // next enable would then shift out — an extra stray sample.
+            // next enable would then shift out - an extra stray sample.
             // The currently-buffered / mid-shift byte is *kept* (hardware
             // lets the current shift register finish naturally).
             self.bytes_remaining = 0;
@@ -169,7 +169,7 @@ impl Dmc {
 
     /// Warm-reset: behaves like `set_enabled(false)` (channel silenced,
     /// pending DMA dropped) but explicitly documents the nesdev-mandated
-    /// preservation of `output` — a DC offset the next $4011 write may
+    /// preservation of `output` - a DC offset the next $4011 write may
     /// pop against, matching hardware behavior.
     pub fn on_warm_reset(&mut self) {
         self.enabled = false;
@@ -303,7 +303,7 @@ impl Dmc {
     }
 
     /// Snapshot of DMC internals for per-instruction tracing. Kept
-    /// minimal and `#[inline]`-friendly — all fields are the ones we
+    /// minimal and `#[inline]`-friendly - all fields are the ones we
     /// diff against Mesen2's trace to find DMA-timing drift.
     pub fn trace_snapshot(&self) -> DmcTraceSnapshot {
         DmcTraceSnapshot {
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn dma_complete_does_not_raise_irq_when_looping() {
         let mut d = ntsc();
-        d.write_ctrl(0xC0); // IRQ enabled, loop set — loop wins, no IRQ
+        d.write_ctrl(0xC0); // IRQ enabled, loop set - loop wins, no IRQ
         d.write_sample_len(0x00);
         d.set_enabled(true, false);
         tick_past_enable_delay(&mut d);
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn sample_addr_wraps_ffff_to_8000() {
         // Drive `dma_complete` directly so we don't need to tick the
-        // shift register — the wrap only depends on `current_addr`
+        // shift register - the wrap only depends on `current_addr`
         // advancing once per completed DMA.
         let mut d = ntsc();
         d.write_ctrl(0x00);

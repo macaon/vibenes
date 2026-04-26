@@ -38,7 +38,7 @@ pub struct Bus {
 
     open_bus: u8,
 
-    /// DMA state machine — Mesen2 port (`NesCpu.cpp:325-448`). Both
+    /// DMA state machine - Mesen2 port (`NesCpu.cpp:325-448`). Both
     /// DMC DMA and OAM (sprite) DMA flow through the same parity-gated
     /// get/put loop in [`Bus::process_pending_dma`]. DMC arming inside
     /// `tick_pre_access` (after the APU ticks) sets `need_halt` and
@@ -126,7 +126,7 @@ impl Bus {
     /// DMC DMA (if pending) is serviced **before** the read, matching real
     /// hardware: the CPU is halted via RDY, several stall cycles are
     /// inserted, the DMC fetches its sample byte, and only then does the
-    /// CPU's read complete. DMA does not start during writes — a request
+    /// CPU's read complete. DMA does not start during writes - a request
     /// raised during a write cycle waits for the next read.
     /// CPU bus read variant for the page-cross dummy read emitted by
     /// `abs,X` / `abs,Y` / `(zp),Y` indexed loads. Routes `$2007` to
@@ -169,7 +169,7 @@ impl Bus {
             // $4020-$5FFF is cartridge-claimable expansion space. Most
             // mappers (NROM / MMC1 / UxROM / CNROM / AxROM / MMC3)
             // don't decode it and leave `cpu_read_ex` defaulted to
-            // `None`, so reads return open bus — the last value the
+            // `None`, so reads return open bus - the last value the
             // CPU put on the data lines. Required by
             // `cpu_exec_space/test_cpu_exec_space_apu` which fetches
             // opcodes from this region and expects the just-written
@@ -189,7 +189,7 @@ impl Bus {
     pub fn write(&mut self, addr: u16, data: u8) {
         // Writes do NOT service DMC DMA. Mesen2's `MemoryWrite`
         // (`NesCpu.cpp:241-251`) deliberately omits any
-        // `ProcessPendingDma` call — the DMC DMA always waits for
+        // `ProcessPendingDma` call - the DMC DMA always waits for
         // the next CPU bus *read* before halting. Our previous
         // `service_pending_dmc_dma_on_write` (3-cycle "halt absorbed
         // by write" branch, ostensibly from Nestopia `NstApu.cpp:
@@ -215,7 +215,7 @@ impl Bus {
                 // DMA window to STA itself. The next instruction's
                 // cycle-1 tick re-captures `bus.irq_line` (which stays
                 // live across DMA) so a DMA-window assertion still
-                // fires on the cycle after DMA releases — matches
+                // fires on the cycle after DMA releases - matches
                 // Mesen2's lazy-DMA-inside-MemoryRead model. Required
                 // by `cpu_interrupts_v2/4-irq_and_dma.nes`.
                 let saved_prev_irq = self.prev_irq_line;
@@ -225,7 +225,7 @@ impl Bus {
                 // reads during the loop's halt/align cycles return
                 // open bus without side effects). Mesen2 defers this
                 // to the next instruction's MemoryRead; we run it
-                // synchronously here for the same net effect — the
+                // synchronously here for the same net effect - the
                 // CPU can't do anything else while halted anyway.
                 self.sprite_dma_running = true;
                 self.sprite_dma_page = data;
@@ -246,7 +246,7 @@ impl Bus {
         self.tick_post_access(false);
     }
 
-    /// Peek without ticking — for debuggers/tracers only. Does not have
+    /// Peek without ticking - for debuggers/tracers only. Does not have
     /// bus side effects.
     pub fn peek(&self, addr: u16) -> u8 {
         match addr {
@@ -256,7 +256,7 @@ impl Bus {
         }
     }
 
-    /// Start-of-cycle phase — runs before the CPU's bus access.
+    /// Start-of-cycle phase - runs before the CPU's bus access.
     ///
     /// Drives the PPU via the master clock (`clock.start_cpu_cycle`)
     /// rather than a fixed per-cycle dot count. The number of PPU
@@ -265,7 +265,7 @@ impl Bus {
     /// (`NesCpu.cpp:73-75,317-322`) reads advance the master by 5
     /// then end by 7, writes by 7 then 5. The split is asymmetric so
     /// the PPU's dot positions within a CPU cycle shift based on
-    /// master-clock phase — reproducing the dynamic 2/1 / 1/2 split
+    /// master-clock phase - reproducing the dynamic 2/1 / 1/2 split
     /// that our old fixed 2/1 model couldn't. Required to move
     /// `dmc_dma_during_read4`'s iter alignment off the off-by-one
     /// position it was stuck at.
@@ -273,7 +273,7 @@ impl Bus {
     /// APU + mapper tick here too (matching Mesen2's
     /// `ProcessCpuClock` call inside `StartCpuCycle`). The CPU
     /// interrupt-polling snapshot (`prev_irq_line`,
-    /// `prev_nmi_pending`) is captured at the top — these reflect
+    /// `prev_nmi_pending`) is captured at the top - these reflect
     /// state at end of the **previous** cycle, which is what the
     /// 6502's penultimate-cycle polling expects.
     fn tick_pre_access(&mut self, is_read: bool) {
@@ -304,7 +304,7 @@ impl Bus {
         }
     }
 
-    /// End-of-cycle phase — runs after the CPU's bus access.
+    /// End-of-cycle phase - runs after the CPU's bus access.
     ///
     /// Ticks the remaining PPU dots for this cycle (1 or 2 on NTSC)
     /// via `clock.end_cpu_cycle`, then performs the rising-edge
@@ -321,7 +321,7 @@ impl Bus {
         // post-access PPU-dot window); without this refresh, the
         // rise wouldn't be visible to next cycle's `prev_irq_line`
         // snapshot, delaying CPU recognition by one full CPU cycle
-        // (= 3 PPU cycles) — the `mmc3_test/4-scanline_timing #3`
+        // (= 3 PPU cycles) - the `mmc3_test/4-scanline_timing #3`
         // symptom. APU IRQ state doesn't change in post-access
         // (APU ticks only in pre-access) so re-OR'ing it is a
         // no-op for the APU side.
@@ -344,7 +344,7 @@ impl Bus {
     }
 
 
-    /// Unified DMA processor — Mesen2 port (`NesCpu.cpp:325-448`).
+    /// Unified DMA processor - Mesen2 port (`NesCpu.cpp:325-448`).
     /// Handles DMC DMA, OAM (sprite) DMA, and their interleave in a
     /// single parity-gated get/put loop:
     ///
@@ -368,7 +368,7 @@ impl Bus {
     /// buffer advances on `$2007`, controller shifts on `$4016`/
     /// `$4017`). For the NES-flavour `$4016`/`$4017` case Mesen's
     /// `skipDummyReads` rule limits the shift to the halt cycle only
-    /// — required by `dmc_dma_during_read4/dma_4016_read` (golden
+    /// - required by `dmc_dma_during_read4/dma_4016_read` (golden
     /// `08 08 07 08 08`).
     fn process_pending_dma(&mut self, pending_addr: u16) {
         if self.in_dma_loop {
@@ -384,11 +384,11 @@ impl Bus {
         // the controllers.
         let skip_dummy_reads = pending_addr == 0x4016 || pending_addr == 0x4017;
 
-        // Halt cycle — always runs once. `need_halt` is cleared
+        // Halt cycle - always runs once. `need_halt` is cleared
         // BEFORE `tick_pre_access` (Mesen2 line 354) so that if the
         // APU tick inside this cycle re-arms DMC (same-cycle buffer
         // drain after the halt is decided), the new `need_halt=true`
-        // survives into the loop — the halt-cycle clear was for the
+        // survives into the loop - the halt-cycle clear was for the
         // entering DMA's flag, not a new one that armed mid-cycle.
         self.need_halt = false;
         self.tick_pre_access(true);
@@ -400,7 +400,7 @@ impl Bus {
 
         while self.dmc_dma_running || self.sprite_dma_running {
             let get_cycle = (self.clock.cpu_cycles() & 1) == 0;
-            // Mesen's `processCycle` lambda — clear exactly one
+            // Mesen's `processCycle` lambda - clear exactly one
             // pending flag (halt > dummy priority) per DMA cycle,
             // regardless of which branch actually runs. This is the
             // mechanism that lets need_halt / need_dummy_read burn
@@ -418,7 +418,7 @@ impl Bus {
             };
             if get_cycle {
                 if self.dmc_dma_running && !clear_flag {
-                    // DMC fetch — uses `mapper.cpu_read` direct so
+                    // DMC fetch - uses `mapper.cpu_read` direct so
                     // the PRG bus sees the DMC address, not
                     // `pending_addr` (matches Mesen2 line 406:
                     // `ProcessDmaRead(_apu->GetDmcReadAddress(), …)`).
@@ -428,7 +428,7 @@ impl Bus {
                     self.apu.dmc_dma_complete(byte);
                     self.dmc_dma_running = false;
                 } else if self.sprite_dma_running {
-                    // Sprite DMA read — sprite_counter indexes bytes
+                    // Sprite DMA read - sprite_counter indexes bytes
                     // 0..255 (the read slot of each read/write pair).
                     let sprite_addr =
                         ((self.sprite_dma_page as u16) << 8) | (sprite_counter >> 1);
@@ -437,7 +437,7 @@ impl Bus {
                     self.tick_post_access(true);
                     sprite_counter = sprite_counter.wrapping_add(1);
                 } else {
-                    // DMC waiting, no sprite DMA — dummy read of
+                    // DMC waiting, no sprite DMA - dummy read of
                     // pending_addr (clear_flag above already
                     // consumed one pending flag).
                     self.tick_pre_access(true);
@@ -449,7 +449,7 @@ impl Bus {
             } else {
                 // Put cycle.
                 if self.sprite_dma_running && (sprite_counter & 1) == 1 {
-                    // Sprite write — commit the byte read last cycle
+                    // Sprite write - commit the byte read last cycle
                     // to $2004.
                     self.tick_pre_access(false);
                     self.ppu.cpu_write(0x2004, sprite_byte, &mut *self.mapper);
@@ -460,7 +460,7 @@ impl Bus {
                         self.sprite_dma_running = false;
                     }
                 } else {
-                    // Alignment read — happens pre-sprite-DMA to
+                    // Alignment read - happens pre-sprite-DMA to
                     // land on an even get cycle, or between DMC
                     // halt/dummy and DMC read.
                     self.tick_pre_access(true);
@@ -478,7 +478,7 @@ impl Bus {
     /// Bus read as issued by the DMA unit (Mesen2 `ProcessDmaRead`,
     /// `NesCpu.cpp:450-467`). Performs the same side-effect match as
     /// [`Bus::read`] but without the `tick_pre_access` /
-    /// `tick_post_access` calls — those are driven explicitly by the
+    /// `tick_post_access` calls - those are driven explicitly by the
     /// DMA loop so the cycle accounting stays in our hands.
     fn dma_bus_read(&mut self, addr: u16) -> u8 {
         let value = match addr {

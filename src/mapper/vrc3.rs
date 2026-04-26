@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Konami VRC3 — iNES mapper 73.
+//! Konami VRC3 - iNES mapper 73.
 //!
 //! Used (apparently) only by the Famicom port of *Salamander*. Tiny
 //! ASIC: one switchable 16 KiB PRG bank at `$8000-$BFFF`, the last
@@ -19,9 +19,9 @@
 //! | `$D000`  | IRQ acknowledge + copy `A` → `E`                  |
 //! | `$F000`  | PRG bank @ `$8000` (low 3 bits select 16 KiB bank)|
 //!
-//! `$C000` bits — `M` (bit 2) selects 8-bit (1) or 16-bit (0) counter
+//! `$C000` bits - `M` (bit 2) selects 8-bit (1) or 16-bit (0) counter
 //! mode. `E` (bit 1) is the IRQ enable. `A` (bit 0) is the
-//! "enable-on-acknowledge" latch — `$D000` copies it into `E` so a
+//! "enable-on-acknowledge" latch - `$D000` copies it into `E` so a
 //! game can re-enable IRQs in the same instruction that acknowledges
 //! the previous one. Any write to `$C000` acks the pending IRQ; a
 //! `$C000` write with `E` set reloads the full 16-bit counter from
@@ -32,7 +32,7 @@
 //! 16-bit counter clocked every CPU cycle when enabled. On overflow
 //! from `$FFFF` the counter is reloaded from the 16-bit latch and an
 //! `/IRQ` is asserted. In 8-bit mode (`M` bit set) only the low 8
-//! bits increment and only the low 8 bits reload on overflow — the
+//! bits increment and only the low 8 bits reload on overflow - the
 //! high byte is preserved across overflows (until a `$C000` reload
 //! rewrites it).
 //!
@@ -42,7 +42,7 @@
 //! `~/Git/nestopia/source/core/board/NstBoardKonamiVrc3.cpp`. Mesen2
 //! has a stale typo in its 8-bit-mode IRQ branch (`if(_smallCounter ==
 //! 0)` checks the bool mode flag rather than the post-increment value)
-//! that prevents 8-bit-mode IRQs from firing — never tickled because
+//! that prevents 8-bit-mode IRQs from firing - never tickled because
 //! Salamander uses 16-bit mode. We implement both paths per the wiki.
 
 use crate::mapper::Mapper;
@@ -58,7 +58,7 @@ pub struct Vrc3 {
     prg_ram: Vec<u8>,
     mirroring: Mirroring,
     /// Selected 16 KiB bank for `$8000-$BFFF`. Low 3 bits of the
-    /// `$F000` write — VRC3 carts cap out at 128 KiB (8 banks).
+    /// `$F000` write - VRC3 carts cap out at 128 KiB (8 banks).
     prg_bank: u8,
     /// `prg_bank_count - 1` in 16 KiB units. Always a power of two
     /// for known carts so we mask instead of mod.
@@ -315,7 +315,7 @@ mod tests {
         m.cpu_write(0xF000, 0x05);
         assert_eq!(m.cpu_peek(0x8000), 5);
         assert_eq!(m.cpu_peek(0xBFFF), 5);
-        // High bits ignored — only low 3 bits matter on a 128 KiB cart.
+        // High bits ignored - only low 3 bits matter on a 128 KiB cart.
         m.cpu_write(0xFFFF, 0xFA); // 0xFA & 0x07 = 0x02
         assert_eq!(m.cpu_peek(0x8000), 2);
         // Last bank still pinned.
@@ -407,7 +407,7 @@ mod tests {
             m.on_cpu_cycle();
         }
         assert!(m.irq_line());
-        // Ack via $C000 with E clear — IRQ clears, counter unchanged
+        // Ack via $C000 with E clear - IRQ clears, counter unchanged
         // by reload (E was 0, no force-reload).
         let pre = m.irq_counter;
         m.cpu_write(0xC000, 0x00);
@@ -446,7 +446,7 @@ mod tests {
     fn disabled_counter_does_not_tick() {
         let mut m = Vrc3::new(cart());
         m.cpu_write(0x8000, 0x05);
-        m.cpu_write(0xC000, 0x00); // E=0 — counter held
+        m.cpu_write(0xC000, 0x00); // E=0 - counter held
         let pre = m.irq_counter;
         for _ in 0..1000 {
             m.on_cpu_cycle();

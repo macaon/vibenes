@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Commands produced by the UI layer and consumed by the host app.
 //!
-//! egui widgets must not mutate emulator state directly — they push
+//! egui widgets must not mutate emulator state directly - they push
 //! variants of this enum into a scratch `Vec` that the host drains
 //! after the UI pass. This keeps the UI thread free of borrows on
 //! `Nes` / `AudioStream` and gives the host a single dispatch seam

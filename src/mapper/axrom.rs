@@ -6,7 +6,7 @@
 //!   (128KB, sufficient for the common AxROM titles; some later boards
 //!   extend to 16 banks = 256KB).
 //! - Mirroring: the cart hardwires single-screen, and the *bit 4* of the
-//!   bank-select write picks which nametable the PPU sees — clear = lower
+//!   bank-select write picks which nametable the PPU sees - clear = lower
 //!   ($2000), set = upper ($2400). This is what's known as "one-screen
 //!   mirroring" and distinguishes AxROM from most other mappers.
 //!
@@ -78,7 +78,7 @@ impl Mapper for Axrom {
                 Mirroring::SingleScreenLower
             };
         }
-        // No PRG-RAM on AxROM — writes to $6000-$7FFF are open bus.
+        // No PRG-RAM on AxROM - writes to $6000-$7FFF are open bus.
     }
 
     fn cpu_peek(&self, addr: u16) -> u8 {

@@ -2,7 +2,7 @@
 //! FDS BIOS (`disksys.rom`) file resolution.
 //!
 //! Nintendo's 8 KiB FDS BIOS is copyrighted and not legally
-//! distributable — users must supply their own dump. This module
+//! distributable - users must supply their own dump. This module
 //! locates the file, validates it, and surfaces a clear error when
 //! it's missing. The FDS isn't runnable without it: game code JSRs
 //! into BIOS entry points for every disk operation (file load,
@@ -13,16 +13,16 @@
 //!
 //! First match wins:
 //!
-//! 1. `VIBENES_FDS_BIOS` env var (absolute path). Highest priority —
+//! 1. `VIBENES_FDS_BIOS` env var (absolute path). Highest priority -
 //!    lets CI and test harnesses override anything.
 //! 2. `--fds-bios <path>` CLI flag (parsed in `main.rs`, threaded in
 //!    as `cli_override`).
-//! 3. `config.fds.bios_path` — where a future settings UI writes.
+//! 3. `config.fds.bios_path` - where a future settings UI writes.
 //! 4. `$XDG_CONFIG_HOME/vibenes/bios/disksys.rom` (default
 //!    `$HOME/.config/vibenes/bios/disksys.rom`). The `bios/`
 //!    subdir mirrors the existing `saves/` layout so firmware and
 //!    save data live side-by-side in the config directory.
-//! 5. Same directory as the `.fds` being loaded — last-ditch for
+//! 5. Same directory as the `.fds` being loaded - last-ditch for
 //!    users who keep everything next to the ROM.
 //!
 //! ## What we check
@@ -44,13 +44,13 @@ pub const BIOS_FILENAME: &str = "disksys.rom";
 
 /// CRC32 of the stock Japanese FDS BIOS shipped by Nintendo. Any
 /// user-supplied file matching this hash is known-good. Mismatches
-/// are warned, not rejected — modified / regional BIOSes exist.
+/// are warned, not rejected - modified / regional BIOSes exist.
 pub const KNOWN_GOOD_CRC32: u32 = 0x5E607DCF;
 
 /// Env var users can set to bypass all other lookup rules.
 pub const ENV_OVERRIDE: &str = "VIBENES_FDS_BIOS";
 
-/// Loaded FDS BIOS — exactly 8 KiB.
+/// Loaded FDS BIOS - exactly 8 KiB.
 #[derive(Clone)]
 pub struct FdsBios {
     /// Raw BIOS bytes, always exactly [`BIOS_SIZE`].
@@ -164,7 +164,7 @@ impl FdsBios {
         })
     }
 
-    /// Validate-and-wrap helper split out for testing — takes raw
+    /// Validate-and-wrap helper split out for testing - takes raw
     /// bytes plus a path for error reporting. Also what
     /// [`FdsBios::resolve`] calls after reading from disk.
     pub fn from_bytes(bytes: Vec<u8>, source: PathBuf) -> Result<Self, BiosError> {
@@ -226,7 +226,7 @@ fn gather_candidate_paths(search: &BiosSearch) -> Vec<PathBuf> {
     )
 }
 
-/// `$XDG_CONFIG_HOME/vibenes/bios/disksys.rom` — falling back to
+/// `$XDG_CONFIG_HOME/vibenes/bios/disksys.rom` - falling back to
 /// `$HOME/.config/vibenes/bios/disksys.rom` when `XDG_CONFIG_HOME`
 /// is unset. The `bios/` subdir mirrors the existing `saves/` layout
 /// (see `SaveStyle::ConfigDir`), so `.config/vibenes/` cleanly
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn xdg_layout_is_vibenes_bios_disksys_rom() {
         // The BIOS lives under a dedicated `bios/` subdir so it
-        // mirrors the existing `saves/` layout — both live side-by-
+        // mirrors the existing `saves/` layout - both live side-by-
         // side under `$XDG_CONFIG_HOME/vibenes/`.
         let out = xdg_config_path_for(Path::new("/home/alice/.config"));
         assert_eq!(

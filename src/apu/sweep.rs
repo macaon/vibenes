@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Sweep unit — pulse channels only.
+//! Sweep unit - pulse channels only.
 //!
 //! Pulse 1 uses ones'-complement negate (subtract shifted + 1), pulse 2
 //! uses two's-complement negate (subtract shifted). Mute is evaluated

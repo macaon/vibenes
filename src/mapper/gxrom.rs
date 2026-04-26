@@ -14,15 +14,15 @@
 //!   ++------ 32 KB PRG ROM bank at CPU $8000-$FFFF
 //! ```
 //!
-//! * PRG window is fixed at 32 KB — up to 4 banks (128 KB).
-//! * CHR window is fixed at 8 KB  — up to 4 banks (32 KB).
+//! * PRG window is fixed at 32 KB - up to 4 banks (128 KB).
+//! * CHR window is fixed at 8 KB  - up to 4 banks (32 KB).
 //! * Mirroring is solder-set from the iNES header (H or V).
 //! * No PRG-RAM, no battery, no IRQ, no bus-access side effects.
 //!
 //! Real boards have a bus conflict on the write (value ANDed with the
 //! ROM byte at the target address), but every shipping game writes a
 //! value that already matches the ROM byte, so Mesen2 and puNES both
-//! skip the AND — we do too, matching their behavior.
+//! skip the AND - we do too, matching their behavior.
 //!
 //! Common GxROM titles: Super Mario Bros. + Duck Hunt multicart,
 //! Dragon Power, Thunder & Lightning, Arkanoid (Japan).

@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! egui-based overlay menu. The menu is hidden during normal play and
 //! shown as a centered modal over a darkened freeze-frame when the
-//! user opens it (F1 by default — wired in [`crate::main`]).
+//! user opens it (F1 by default - wired in [`crate::main`]).
 //!
 //! Lifecycle per frame:
 //!
-//! 1. `on_window_event` — forward winit events to egui before the
+//! 1. `on_window_event` - forward winit events to egui before the
 //!    emulator sees them.
-//! 2. `run` — build the UI by calling egui. When the overlay is open,
+//! 2. `run` - build the UI by calling egui. When the overlay is open,
 //!    keyboard nav (↑/↓/Enter/Backspace) is consumed inside the egui
 //!    pass and resolves to commands pushed into `cmds`.
-//! 3. `paint` — called from inside [`crate::gfx::Renderer::render_with`]'s
+//! 3. `paint` - called from inside [`crate::gfx::Renderer::render_with`]'s
 //!    overlay closure. Uploads egui texture deltas, encodes the UI
 //!    render pass with `LoadOp::Load` (preserving the NES blit
 //!    underneath), and frees textures egui has released.
@@ -56,7 +56,7 @@ pub struct UiLayer {
     /// egui events queued by the host between frames (e.g. from the
     /// gamepad). Prepended to `raw_input.events` at the start of
     /// `run()` so the existing menu `consume_key` logic picks them
-    /// up unchanged — no second code path for gamepad navigation.
+    /// up unchanged - no second code path for gamepad navigation.
     queued_events: Vec<egui::Event>,
 }
 
@@ -88,7 +88,7 @@ impl UiLayer {
     }
 
     /// Queue a synthetic navigation key (press + release) to be fed
-    /// into egui on the next `run()`. Used for gamepad menu nav —
+    /// into egui on the next `run()`. Used for gamepad menu nav -
     /// the overlay then handles it via the same `consume_key` path
     /// the keyboard uses. Calling this while the overlay is closed
     /// is a no-op in practice: the menu only consumes these keys
@@ -174,7 +174,7 @@ impl UiLayer {
         cmds: &mut Vec<UiCommand>,
     ) {
         // Keep ctx's pixels_per_point in sync with winit's current
-        // scale factor — prevents pointer coords and layout from
+        // scale factor - prevents pointer coords and layout from
         // drifting apart on fractional scaling or delayed
         // ScaleFactorChanged events.
         let scale_factor = window.scale_factor() as f32;
@@ -225,7 +225,7 @@ impl UiLayer {
 
     /// Paint the UI built by the last `run` into `view`, using the
     /// already-recording `encoder`. Safe to call even if `run` was
-    /// skipped — returns silently with no overlay drawn.
+    /// skipped - returns silently with no overlay drawn.
     pub fn paint(
         &mut self,
         device: &wgpu::Device,
@@ -272,7 +272,7 @@ impl UiLayer {
             });
             // egui_wgpu::Renderer::render takes RenderPass<'static>.
             // `forget_lifetime` drops the compile-time borrow of
-            // `encoder` — any accidental mid-pass encoder mutation
+            // `encoder` - any accidental mid-pass encoder mutation
             // becomes a runtime validation error instead.
             let mut pass = pass.forget_lifetime();
             self.renderer.render(&mut pass, &paint_jobs, &screen);

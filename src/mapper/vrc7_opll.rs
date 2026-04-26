@@ -2,7 +2,7 @@
 //! Safe Rust wrapper around the vendored emu2413 OPLL FM core
 //! ([`vendor/emu2413/`]).
 //!
-//! emu2413 is the de-facto reference YM2413 / VRC7 implementation —
+//! emu2413 is the de-facto reference YM2413 / VRC7 implementation -
 //! Mesen2, mGBA, and several MSX/SMS emulators all build against it
 //! directly. We vendor v1.5.9 (MIT, by Mitsutaka Okazaki) and link it
 //! through this single file. The rest of the codebase only sees the
@@ -54,7 +54,7 @@ pub struct Opll {
 // SAFETY: emu2413 stores all chip state inside the `OPLL` struct
 // returned by `OPLL_new`; there is no thread-local or global state.
 // Callers are responsible for not aliasing the same `Opll` from
-// multiple threads concurrently — `&mut self` on every method that
+// multiple threads concurrently - `&mut self` on every method that
 // mutates ensures Rust enforces this. The struct is otherwise
 // portable across threads.
 unsafe impl Send for Opll {}
@@ -84,14 +84,14 @@ impl Opll {
 
     /// Power-on / reset. Clears all envelope and phase state but
     /// preserves the patch ROM (i.e. the 15 fixed VRC7 instruments
-    /// stay loaded — they live in the ROM, not the writable registers).
+    /// stay loaded - they live in the ROM, not the writable registers).
     pub fn reset(&mut self) {
         // SAFETY: handle is non-null and exclusively borrowed via &mut self.
         unsafe { OPLL_reset(self.handle.as_ptr()) };
     }
 
     /// Write a value to OPLL register `reg`. VRC7 exposes registers
-    /// `$00-$07` (instrument patch RAM), `$0E` (rhythm — VRC7 ignores
+    /// `$00-$07` (instrument patch RAM), `$0E` (rhythm - VRC7 ignores
     /// it), `$10-$18` (per-channel low F-number / period), `$20-$28`
     /// (per-channel block + key-on + sus), and `$30-$38` (per-channel
     /// instrument # + volume). emu2413 silently ignores out-of-range
@@ -113,7 +113,7 @@ impl Opll {
 impl Drop for Opll {
     fn drop(&mut self) {
         // SAFETY: handle was obtained from `OPLL_new` and has not been
-        // freed — `Drop` runs exactly once per instance.
+        // freed - `Drop` runs exactly once per instance.
         unsafe { OPLL_delete(self.handle.as_ptr()) };
     }
 }
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn silent_chip_outputs_zero() {
         let mut opll = Opll::new();
-        // No key-on, no register writes — every channel should be
+        // No key-on, no register writes - every channel should be
         // silent and the mixed output should sit at exactly zero for
         // any number of samples.
         for _ in 0..1024 {
@@ -149,7 +149,7 @@ mod tests {
         let mut opll = Opll::new();
         // Patch 1 (Violin) on channel 0, max volume.
         opll.write_reg(0x30, 0x10);
-        // F-number low byte for ~A4. Exact pitch doesn't matter — we
+        // F-number low byte for ~A4. Exact pitch doesn't matter - we
         // just want a non-silent envelope.
         opll.write_reg(0x10, 0x80);
         // Block=4, F-number high bit = 0, key-on bit set.

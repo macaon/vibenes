@@ -318,7 +318,7 @@ impl Renderer {
     /// `LoadOp::Load`, then submit and present.
     ///
     /// The overlay closure is handed `(device, queue, view, encoder,
-    /// (surface_w, surface_h))` — everything an egui-style pass needs
+    /// (surface_w, surface_h))` - everything an egui-style pass needs
     /// to upload buffers and encode a second render pass.
     pub fn render_with<F>(&mut self, on_overlay: F) -> PresentOutcome
     where

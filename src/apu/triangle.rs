@@ -3,7 +3,7 @@
 //! only when both the linear counter and length counter are nonzero.
 //!
 //! Ultrasonic handling (timer < 2): mute to the center of the triangle
-//! wave (the duty[8] slot = 0x0F) rather than silencing — matches puNES
+//! wave (the duty[8] slot = 0x0F) rather than silencing - matches puNES
 //! and what blargg expects.
 
 use super::length::LengthCounter;
@@ -46,15 +46,15 @@ impl Triangle {
         self.length.is_nonzero()
     }
 
-    /// $4008: CRRRRRRR — control flag + linear counter reload value.
+    /// $4008: CRRRRRRR - control flag + linear counter reload value.
     pub fn write_linear(&mut self, data: u8) {
         // The control-flag bit drives two pieces of state that behave
         // differently on a same-cycle write:
         //   * `control_flag` itself gates the linear-counter reload
         //     suppression inside `clock_quarter_frame`; this is NOT
-        //     staged — per nesdev, linear-counter suppression follows
+        //     staged - per nesdev, linear-counter suppression follows
         //     the most-recently-written control value immediately.
-        //   * the shared length halt — this IS staged, matching the
+        //   * the shared length halt - this IS staged, matching the
         //     pulse/noise rule (see length.rs).
         self.control_flag = (data & 0x80) != 0;
         self.linear_reload_value = data & 0x7F;
@@ -105,7 +105,7 @@ impl Triangle {
 
     pub fn output(&self) -> u8 {
         if self.period < 2 {
-            // Ultrasonic — mute to midpoint rather than 0 (puNES).
+            // Ultrasonic - mute to midpoint rather than 0 (puNES).
             return 0x0F / 2 + 1; // value at sequence center
         }
         TRIANGLE_SEQUENCE[self.sequencer_pos as usize]

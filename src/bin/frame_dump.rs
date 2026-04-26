@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Diagnostic binary — run a ROM for N frames, dump the final
+//! Diagnostic binary - run a ROM for N frames, dump the final
 //! framebuffer as a PPM image to stdout, and print PPU state
 //! (mask / ctrl / v / t / fine_x) + the first 16 pixels of a
 //! user-selected scanline to stderr. Used to diagnose BG-pipeline
@@ -127,7 +127,7 @@ fn main() {
             eprintln!();
         }
         // Count distinct RGB values across the whole scanline as a
-        // sanity check — if the "black left column" is really 8 pixels
+        // sanity check - if the "black left column" is really 8 pixels
         // of backdrop, pixels 0..7 should all be identical.
         let mut unique: Vec<[u8; 3]> = Vec::new();
         for x in 0..FRAME_WIDTH {

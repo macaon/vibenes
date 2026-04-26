@@ -56,20 +56,20 @@ pub enum System {
 /// it from the ROM alone (UxROM, CNROM, AxROM variants differ).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusConflicts {
-    /// DB didn't flag it — use the mapper's default.
+    /// DB didn't flag it - use the mapper's default.
     Default,
     Yes,
     No,
 }
 
 /// Single row from the database. String fields (`board`, `pcb`, `chip`,
-/// `mirroring`) are `&'static str` slices into [`DB_CSV`] — zero-copy.
+/// `mirroring`) are `&'static str` slices into [`DB_CSV`] - zero-copy.
 #[derive(Debug, Clone, Copy)]
 pub struct DbEntry {
     pub system: System,
     pub board: &'static str,
     pub pcb: &'static str,
-    /// Mapper chip identifier — for MMC3 this distinguishes Rev A vs
+    /// Mapper chip identifier - for MMC3 this distinguishes Rev A vs
     /// Rev B/C, which changes IRQ firing semantics. Mesen's `InitMapper`
     /// activates Rev A behavior on `chip.starts_with("MMC3A")`.
     pub chip: &'static str,
@@ -194,7 +194,7 @@ mod tests {
         let db = DB.get_or_init(load);
         assert!(
             db.len() > 5000,
-            "DB seems short ({} entries) — did the CSV get truncated?",
+            "DB seems short ({} entries) - did the CSV get truncated?",
             db.len()
         );
     }
@@ -204,7 +204,7 @@ mod tests {
         // `001388B3,NesPal,NES-TLROM,NES-TLROM-03,MMC3C,...` is the first
         // NesPal entry in the source DB (Mesen2 commit 2022-07-21). If
         // this ever stops matching, the CSV has been regenerated with a
-        // different base set — verify then update the fixture.
+        // different base set - verify then update the fixture.
         let entry = lookup(0x001388B3).expect("fixture not in DB");
         assert_eq!(entry.system, System::NesPal);
         assert_eq!(entry.mapper_id, 4);
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn known_ntsc_crc_maps_to_ntsc() {
-        // `00098369,NesNtsc,,,,562,128,128,0,8,0,0,v,1,,1,,` — first
+        // `00098369,NesNtsc,,,,562,128,128,0,8,0,0,v,1,,1,,` - first
         // NTSC entry in the DB.
         let entry = lookup(0x00098369).expect("fixture not in DB");
         assert_eq!(entry.system, System::NesNtsc);

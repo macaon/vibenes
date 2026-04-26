@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Sunsoft FME-7 / 5A / 5B — iNES mapper 69.
+//! Sunsoft FME-7 / 5A / 5B - iNES mapper 69.
 //!
 //! Drove a handful of late-era Famicom + NES titles, headlined by
 //! *Gimmick!* (5B, with audio), *Batman: Return of the Joker* (FME-7,
@@ -25,12 +25,12 @@
 //! `$C000` PRG slots (`$9`/`$A`/`$B`), mirroring (`$C`), IRQ control
 //! (`$D`), IRQ counter low (`$E`), IRQ counter high (`$F`).
 //!
-//! ## `$8` PRG bank 0 layout — `ERbB BBBB`
+//! ## `$8` PRG bank 0 layout - `ERbB BBBB`
 //!
 //! - bit 7 (`E`): RAM enable. When clear with the RAM-select bit set,
 //!   `$6000-$7FFF` reads return open bus (we surface 0).
 //! - bit 6 (`R`): 0 = window holds PRG-ROM bank `BBBBBB`,
-//!   1 = window holds 8 KiB PRG-RAM (still bank-switchable —
+//!   1 = window holds 8 KiB PRG-RAM (still bank-switchable -
 //!   *Gimmick!* relies on this to address 8 KiB of save RAM).
 //! - bits 0-5: bank index (6 bits → 512 KiB on the FME-7, 256 KiB on
 //!   5A/5B; PRG-RAM banks max at 32 KiB on commercial carts).
@@ -41,16 +41,16 @@
 //! line (signal gate). Counter is a plain 16-bit decrement-per-CPU-
 //! cycle; IRQ asserts when the counter wraps from `$0000` to `$FFFF`
 //! (i.e. underflows). Any write to command `$D` acknowledges a
-//! pending IRQ. The latch is "directly settable" — no separate
+//! pending IRQ. The latch is "directly settable" - no separate
 //! reload register, unlike MMC3.
 //!
 //! Reference: <https://www.nesdev.org/wiki/Sunsoft_FME-7> and
 //! <https://www.nesdev.org/wiki/Sunsoft_5B_audio>. Cross-checked
 //! against `~/Git/Mesen2/Core/NES/Mappers/Sunsoft/SunsoftFme7.h`,
 //! `~/Git/punes/src/core/mappers/mapper_069.c`, and Mesen2's
-//! `Sunsoft5bAudio.h`. The IRQ semantics — counter ticks whenever
+//! `Sunsoft5bAudio.h`. The IRQ semantics - counter ticks whenever
 //! `irq_counter_enabled` regardless of `irq_enabled`, IRQ asserts
-//! only on underflow when `irq_enabled` — mirror Mesen2 exactly.
+//! only on underflow when `irq_enabled` - mirror Mesen2 exactly.
 
 use crate::mapper::sunsoft5b_audio::Sunsoft5bAudio;
 use crate::mapper::Mapper;
@@ -71,7 +71,7 @@ pub struct Fme7 {
 
     /// Latched command number from `$8000-$9FFF` writes.
     command: u8,
-    /// Last value written to command `$8` — bit 7 = RAM enable, bit 6 =
+    /// Last value written to command `$8` - bit 7 = RAM enable, bit 6 =
     /// RAM-select, bits 0-5 = bank.
     work_ram_value: u8,
     /// Bank indices for `$8000`, `$A000`, `$C000` (commands `$9`/`$A`/`$B`).
@@ -88,7 +88,7 @@ pub struct Fme7 {
 
     mirroring: Mirroring,
 
-    /// IRQ counter (16-bit) — decrements every CPU cycle when
+    /// IRQ counter (16-bit) - decrements every CPU cycle when
     /// `irq_counter_enabled`, and asserts `/IRQ` on underflow when
     /// `irq_enabled`.
     irq_counter: u16,
@@ -118,7 +118,7 @@ impl Fme7 {
         debug_assert!(chr_bank_count.is_power_of_two());
         let chr_bank_mask = chr_bank_count - 1;
 
-        // 32 KiB unconditionally — covers Gimmick!'s 8 KiB battery and
+        // 32 KiB unconditionally - covers Gimmick!'s 8 KiB battery and
         // gives the FME-7's bank-select space room without relying on
         // the cart header.
         let prg_ram_total =
@@ -176,7 +176,7 @@ impl Fme7 {
         let ram_select = (self.work_ram_value & 0x40) != 0;
         let ram_enable = (self.work_ram_value & 0x80) != 0;
         if !ram_select || !ram_enable {
-            return; // ROM mode or RAM disabled — write absorbed
+            return; // ROM mode or RAM disabled - write absorbed
         }
         let off = (addr - 0x6000) as usize;
         let bank = (self.work_ram_value & 0x3F) as usize & self.prg_ram_bank_mask;
@@ -475,7 +475,7 @@ mod tests {
         let mut m = Fme7::new(cart());
         send_cmd(&mut m, 0xE, 0x10); // counter low = 0x10
         send_cmd(&mut m, 0xF, 0x00); // counter high = 0x00 → counter = 0x0010
-        // No enables yet — counter held.
+        // No enables yet - counter held.
         for _ in 0..100 {
             m.on_cpu_cycle();
         }
@@ -506,7 +506,7 @@ mod tests {
         m.on_cpu_cycle();
         assert!(m.irq_line());
         assert_eq!(m.irq_counter, 0xFFFF);
-        // Ack via command $D — any value clears the line.
+        // Ack via command $D - any value clears the line.
         send_cmd(&mut m, 0xD, 0x00);
         assert!(!m.irq_line());
         assert!(!m.irq_enabled);
@@ -520,7 +520,7 @@ mod tests {
         m.cpu_write(0xC000, 0x08);
         m.cpu_write(0xE000, 0x0F);
         // Spin enough cycles to clock the audio module a few hundred
-        // times — output should become non-zero with a non-zero
+        // times - output should become non-zero with a non-zero
         // period and tone enabled.
         m.cpu_write(0xC000, 0x00); // period lo
         m.cpu_write(0xE000, 0x04);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Nintendo "Super Mario Bros. + Tetris + Nintendo World Cup" multicart
-//! — iNES mapper 37.
+//! - iNES mapper 37.
 //!
 //! A single PCB that glues three MMC3-compatible games together with a
 //! 3-bit outer-bank latch at `$6000-$7FFF`. The outer latch slices the
@@ -15,7 +15,7 @@
 //! | 7                | `$30000-$3FFFF` (64 KiB) | `$20000-$3FFFF` |
 //!
 //! The latch is captured *only* when MMC3's PRG-RAM-write gate would
-//! have permitted the byte through — the spec phrases it as "the MMC3
+//! have permitted the byte through - the spec phrases it as "the MMC3
 //! thinks this register is RAM, so you need to enable writes to PRG-
 //! RAM to update it." There is no actual PRG-RAM on the cart; reads
 //! from `$6000-$7FFF` return open bus (we surface 0).
@@ -51,7 +51,7 @@ pub struct Mapper037 {
     /// Latched outer block. Three bits, cleared by hard reset (modeled
     /// as power-on init). Per the wiki this register is also tied to
     /// the CIC reset line; we don't model CIC reset, so soft-reset
-    /// preserves the latch — matches the "without a working lockout
+    /// preserves the latch - matches the "without a working lockout
     /// chip, only a full power cycle gets you back to the menu"
     /// observation in the spec.
     block: u8,
@@ -113,7 +113,7 @@ impl Mapper for Mapper037 {
 
     fn cpu_peek(&self, addr: u16) -> u8 {
         match addr {
-            0x6000..=0x7FFF => 0, // open bus — no actual PRG-RAM
+            0x6000..=0x7FFF => 0, // open bus - no actual PRG-RAM
             0x8000..=0xFFFF => self.read_prg_byte(addr),
             _ => 0,
         }
@@ -126,7 +126,7 @@ impl Mapper for Mapper037 {
                     self.block = data & 0x07;
                 }
             }
-            // Everything else is plain MMC3 — bank regs, mirroring,
+            // Everything else is plain MMC3 - bank regs, mirroring,
             // PRG-RAM enable/protect, IRQ latch/reload/enable/ack.
             // We forward unchanged so the outer latch's enable gate
             // stays in sync with the inner mapper.
@@ -151,7 +151,7 @@ impl Mapper for Mapper037 {
             return;
         }
         // CHR-RAM path. The official multicart ships only CHR-ROM, so
-        // this branch is dead in practice — but a homebrew that
+        // this branch is dead in practice - but a homebrew that
         // (re-)labels itself as mapper 37 with CHR-RAM should still
         // see writes land in the same bank the read side resolves.
         let mmc3_bank = self.inner.chr_bank_for(addr);
@@ -199,7 +199,7 @@ impl Mapper for Mapper037 {
     }
 
     fn save_data(&self) -> Option<&[u8]> {
-        // No PRG-RAM on this cart per wiki, so always None — the inner
+        // No PRG-RAM on this cart per wiki, so always None - the inner
         // MMC3 has a RAM buffer but it's never observable to software,
         // and persisting it would just clutter the save dir.
         None
@@ -320,7 +320,7 @@ mod tests {
         // base = 0x10 | 0x08 = 0x18 (24), mask = 0x0F.
         // R6=0 → 24 | 0 = 24
         // R7=9 → 24 | (9 & 15) = 24 | 9 = 25 (bit 4 already set in 24)
-        // Wait — 24 = 0b11000. 9 = 0b01001. OR = 0b11001 = 25.
+        // Wait - 24 = 0b11000. 9 = 0b01001. OR = 0b11001 = 25.
         assert_eq!(m.cpu_peek(0x8000), 24);
         assert_eq!(m.cpu_peek(0xA000), 25);
         // last = 31 = 0b11111. 31 & 15 = 15. 24 | 15 = 31.
@@ -357,7 +357,7 @@ mod tests {
 
         // Write-protect via $A001 bit 6.
         m.cpu_write(0xA001, 0x40);
-        // Try to flip the latch — should be ignored.
+        // Try to flip the latch - should be ignored.
         m.cpu_write(0x6000, 0x07);
         assert_eq!(m.cpu_peek(0x8000), 8, "latch should still report block 3");
 
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn mmc3_irq_pipeline_still_drives_irq_line() {
         // Quick smoke test that forwarding to inner MMC3 keeps the
-        // IRQ counter alive. We don't simulate PPU A12 here — just
+        // IRQ counter alive. We don't simulate PPU A12 here - just
         // confirm `irq_line()` is reachable and starts low.
         let m = Mapper037::new(cart());
         assert!(!m.irq_line());

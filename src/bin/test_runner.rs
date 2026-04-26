@@ -65,7 +65,7 @@ fn run_one(rom_path: &Path, cycle_limit: u64) -> Result<Outcome> {
     // approximate 100ms of emulated time with ~180k CPU cycles on NTSC.
     const RESET_DELAY_CYCLES: u64 = 180_000;
     // After dispatching a reset, $6000 still holds the pre-reset $81
-    // because RAM/PRG-RAM is preserved — this is real hardware
+    // because RAM/PRG-RAM is preserved - this is real hardware
     // behavior. The test's reset handler only writes a fresh status
     // once its own pre-measurement delay finishes (often tens of
     // thousands of cycles), so ignore $81 until we observe either

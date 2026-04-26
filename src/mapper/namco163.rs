@@ -5,7 +5,7 @@
 //! (often written "N163") with expansion audio; mapper 210 covers its
 //! two audio-less descendants, Namco 175 and Namco 340. Mesen2 packs
 //! all three variants into one mapper class with runtime auto-detect,
-//! and we follow the same convention — the shipping iNES 1.0 library
+//! and we follow the same convention - the shipping iNES 1.0 library
 //! has a lot of ambiguously-tagged Namco carts that rely on behavior-
 //! sniffing to pick the right chip.
 //!
@@ -18,19 +18,19 @@
 //! | N340 | 210:2 | no audio, no PRG-RAM, `$E000` top 2 bits = mirror mode |
 //!
 //! Mapper 210 submapper 0 means "old header, could be either 175 or
-//! 340" — auto-detect per runtime hints.
+//! 340" - auto-detect per runtime hints.
 //!
 //! ## PRG
 //!
 //! Three switchable 8 KB windows + last bank fixed at `$E000`.
 //! Register writes (decoded via `addr & 0xF800`):
-//! - `$E000-$E7FF` — PRG bank 0 low 6 bits (`$8000-$9FFF`). Bit 7 on
+//! - `$E000-$E7FF` - PRG bank 0 low 6 bits (`$8000-$9FFF`). Bit 7 on
 //!   N163 disables audio output (we store but don't synth). Bits 6-7
 //!   on N340 select mirroring mode.
-//! - `$E800-$EFFF` — PRG bank 1 (`$A000-$BFFF`). Bits 6-7 on N163
+//! - `$E800-$EFFF` - PRG bank 1 (`$A000-$BFFF`). Bits 6-7 on N163
 //!   gate CIRAM-as-CHR routing for low/high CHR halves (see CHR).
-//! - `$F000-$F7FF` — PRG bank 2 (`$C000-$DFFF`).
-//! - `$F800-$FFFF` — PRG-RAM write-protect register (N163) plus the
+//! - `$F000-$F7FF` - PRG bank 2 (`$C000-$DFFF`).
+//! - `$F800-$FFFF` - PRG-RAM write-protect register (N163) plus the
 //!   audio address / auto-increment flag for `$4800` access.
 //!
 //! PRG-RAM is 8 KB at `$6000-$7FFF`. The N163 splits it into four
@@ -54,7 +54,7 @@
 //!
 //! Nametable registers (banks 8-11, at `$C000`/`$C800`/`$D000`/`$D800`)
 //! always route `>= $E0` → CIRAM regardless of gates. That's how a
-//! cart picks CIRAM mirroring — write `$E0` / `$E1` into the NT regs
+//! cart picks CIRAM mirroring - write `$E0` / `$E1` into the NT regs
 //! to build H / V / single-screen layouts.
 //!
 //! N175 has a twist: `$C000-$C7FF` writes are the PRG-RAM WP register
@@ -72,14 +72,14 @@
 //!
 //! N163 packs 128 bytes of internal RAM plus 8 channels of wavetable
 //! synthesis in the ASIC. This implementation exposes **only** the
-//! RAM side — writes / reads through `$4800` with the address +
+//! RAM side - writes / reads through `$4800` with the address +
 //! auto-increment latch at `$F800`. Games that use the 128-byte RAM
 //! for general state (a handful do) will work. Audio sample
 //! generation is deferred to a dedicated expansion-audio pass
 //! alongside VRC6 / VRC7 / FDS.
 //!
 //! If not battery-backed, the audio RAM powers on in an undefined
-//! state. We zero-init — same as the PRG-RAM init convention.
+//! state. We zero-init - same as the PRG-RAM init convention.
 //!
 //! ## Battery format
 //!
@@ -105,12 +105,12 @@ const AUDIO_RAM_SIZE: usize = 128;
 enum Variant {
     /// Full Namco 163. Mapper 19, or mapper 210 after auto-detect.
     Namco163,
-    /// Namco 175 — no audio, single-bit PRG-RAM WP. Mapper 210:1.
+    /// Namco 175 - no audio, single-bit PRG-RAM WP. Mapper 210:1.
     Namco175,
-    /// Namco 340 — no audio, no PRG-RAM, `$E000` bits 6-7 mirror.
+    /// Namco 340 - no audio, no PRG-RAM, `$E000` bits 6-7 mirror.
     /// Mapper 210:2.
     Namco340,
-    /// Auto-detect — start non-committal and let runtime sniffing
+    /// Auto-detect - start non-committal and let runtime sniffing
     /// pick 163 / 175 / 340.
     Unknown,
 }
@@ -127,7 +127,7 @@ pub struct Namco163 {
 
     variant: Variant,
     auto_detect: bool,
-    /// True once we've seen a write to `$6000-$7FFF` — rules out
+    /// True once we've seen a write to `$6000-$7FFF` - rules out
     /// Namco340 (which has no PRG-RAM).
     not_namco340: bool,
 
@@ -228,7 +228,7 @@ impl Namco163 {
                 _ => (Variant::Unknown, true),
             };
         }
-        // Mapper 19 default: assume N163 but keep auto-detect armed —
+        // Mapper 19 default: assume N163 but keep auto-detect armed -
         // some mis-tagged headers land N175 / N340 under mapper 19.
         (Variant::Namco163, true)
     }
@@ -258,7 +258,7 @@ impl Namco163 {
 
     /// Map a PPU read in `$0000-$1FFF` to the flat CHR byte, resolving
     /// the N163's CIRAM-as-CHR routing. Returns `None` when the slot
-    /// has been redirected to internal CIRAM — the caller then reads
+    /// has been redirected to internal CIRAM - the caller then reads
     /// from CIRAM directly (but `ppu_read` here always returns 0 for
     /// that case since CIRAM is owned by the PPU, not the mapper).
     fn map_chr(&self, addr: u16) -> Option<usize> {
@@ -297,7 +297,7 @@ impl Namco163 {
             }
             Variant::Namco175 => (self.write_protect & 0x01) != 0,
             Variant::Namco340 => false, // no PRG-RAM
-            // Unknown — permissive until a variant commits.
+            // Unknown - permissive until a variant commits.
             Variant::Unknown => true,
         }
     }
@@ -390,7 +390,7 @@ impl Namco163 {
 
                 if self.variant == Variant::Namco340 {
                     // N340 packs mirroring mode in bits 7-6. Order
-                    // matches Mesen2 — not the conventional 0=V/1=H.
+                    // matches Mesen2 - not the conventional 0=V/1=H.
                     self.mirroring = match (data >> 6) & 0x03 {
                         0 => Mirroring::SingleScreenLower,
                         1 => Mirroring::Vertical,
@@ -398,7 +398,7 @@ impl Namco163 {
                         _ => Mirroring::SingleScreenUpper,
                     };
                 }
-                // N163: bit 7 is "disable audio" — tracked at audio
+                // N163: bit 7 is "disable audio" - tracked at audio
                 // layer (deferred). We just store the bank bits.
             }
 
@@ -509,7 +509,7 @@ impl Mapper for Namco163 {
         }
         match self.map_chr(addr) {
             Some(i) => *self.chr.get(i).unwrap_or(&0),
-            None => 0, // routed to CIRAM — PPU handles the actual fetch
+            None => 0, // routed to CIRAM - PPU handles the actual fetch
         }
     }
 
@@ -563,7 +563,7 @@ impl Mapper for Namco163 {
                 NametableWriteTarget::CiramB
             }
         } else {
-            // CHR-ROM target — writes drop on the floor.
+            // CHR-ROM target - writes drop on the floor.
             NametableWriteTarget::Consumed
         }
     }
@@ -597,7 +597,7 @@ impl Mapper for Namco163 {
         // but those are separate buffers. Expose just the PRG-RAM
         // for now; when audio synthesis lands we'll promote to a
         // packed buffer per Mesen2's 8320-byte format. Games that
-        // save to audio RAM will lose that portion across reboot —
+        // save to audio RAM will lose that portion across reboot -
         // acceptable until audio lands.
         self.battery.then(|| self.prg_ram.as_slice())
     }
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn nt_routing_disabled_on_n175_and_n340() {
         let mut m = n175();
-        // N175 treats $C000 writes as WP, so no NT routing — returns
+        // N175 treats $C000 writes as WP, so no NT routing - returns
         // Default and the PPU falls through to normal mirroring.
         m.cpu_write(0xC000, 0xE0);
         assert_eq!(m.ppu_nametable_read(0, 0), NametableSource::Default);
@@ -841,10 +841,10 @@ mod tests {
         let mut m = n163();
         // Unlock globally, but bit 2 set → quarter $7000-$77FF locked.
         m.cpu_write(0xF800, 0x40 | 0x04);
-        m.cpu_write(0x6000, 0xAA); // quarter 0 — allowed
-        m.cpu_write(0x6800, 0xAA); // quarter 1 — allowed
-        m.cpu_write(0x7000, 0xBB); // quarter 2 — blocked
-        m.cpu_write(0x7800, 0xAA); // quarter 3 — allowed
+        m.cpu_write(0x6000, 0xAA); // quarter 0 - allowed
+        m.cpu_write(0x6800, 0xAA); // quarter 1 - allowed
+        m.cpu_write(0x7000, 0xBB); // quarter 2 - blocked
+        m.cpu_write(0x7800, 0xAA); // quarter 3 - allowed
         assert_eq!(m.cpu_peek(0x6000), 0xAA);
         assert_eq!(m.cpu_peek(0x6800), 0xAA);
         assert_eq!(m.cpu_peek(0x7000), 0x00);

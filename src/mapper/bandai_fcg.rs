@@ -14,27 +14,27 @@
 //! | legacy iNES 1.0 | 16:0 | both | latched (default) | 256 bytes if battery |
 //!
 //! **Submapper 4** (Dragon Ball 3, SD Gundam Gachapon Senshi, Dragon
-//! Ball Z: Kyoushuu! Saiyajin, etc.) — FCG-1/2 ASIC. Registers only
+//! Ball Z: Kyoushuu! Saiyajin, etc.) - FCG-1/2 ASIC. Registers only
 //! decoded at `$6000-$7FFF`. Writes to `$x00B` / `$x00C` modify the
 //! IRQ counter directly (no latch).
 //!
-//! **Submapper 5** — LZ93D50. Registers only at `$8000-$FFFF`. The
+//! **Submapper 5** - LZ93D50. Registers only at `$8000-$FFFF`. The
 //! IRQ counter has a 16-bit reload latch: `$x00B` / `$x00C` write the
 //! latch; `$x00A` copies the latch into the live counter. Games:
 //! Dragon Ball Z II/III, Dragon Ball Z Gaiden, Rokudenashi Blues, SD
 //! Gundam Gaiden 2-3, Crayon Shin-chan (no EEPROM). Mapper-16 EEPROM
 //! carts always use 24C02 per the nesdev wiki.
 //!
-//! **Mapper 159** — LZ93D50 + 24C01 (128 bytes) unconditionally.
+//! **Mapper 159** - LZ93D50 + 24C01 (128 bytes) unconditionally.
 //! Same register layout, same IRQ as submapper 5. Games: Dragon Ball
 //! Z: Kyoushuu! Saiya-jin, Magical Taruruuto-kun 1/2, SD Gundam
 //! Gaiden: Knight Gundam Monogatari.
 //!
-//! **Submapper 3** — LZ93D50 with 256-byte 24C02 EEPROM, always
+//! **Submapper 3** - LZ93D50 with 256-byte 24C02 EEPROM, always
 //! present. Datach Joint ROM System is its own mapper ID (157) but
 //! the standalone LZ93D50+24C02 boards live here.
 //!
-//! **Submapper 0 / legacy iNES 1.0** — header couldn't disambiguate,
+//! **Submapper 0 / legacy iNES 1.0** - header couldn't disambiguate,
 //! so we accept writes at BOTH ranges and default to 24C02 if the
 //! cart is marked battery-backed (matches Mesen2's fallback). No
 //! battery → no EEPROM.
@@ -51,9 +51,9 @@
 //! | `$x008` | PRG bank (4-bit, 16 KB at `$8000-$BFFF`) |
 //! | `$x009` | Mirroring: 0=V, 1=H, 2=Single-A, 3=Single-B |
 //! | `$x00A` | IRQ enable (bit 0). LZ93D50 also copies latch→counter. ACKs pending IRQ. |
-//! | `$x00B` | IRQ counter low — FCG-1/2: direct. LZ93D50: latch low byte. |
-//! | `$x00C` | IRQ counter high — FCG-1/2: direct. LZ93D50: latch high. |
-//! | `$x00D` | EEPROM control — bit 5 = SCL, bit 6 = SDA. No-op when no EEPROM. |
+//! | `$x00B` | IRQ counter low - FCG-1/2: direct. LZ93D50: latch low byte. |
+//! | `$x00C` | IRQ counter high - FCG-1/2: direct. LZ93D50: latch high. |
+//! | `$x00D` | EEPROM control - bit 5 = SCL, bit 6 = SDA. No-op when no EEPROM. |
 //!
 //! `$C000-$FFFF` is fixed to the last 16 KB PRG bank. PRG bank reg
 //! masks to 4 bits so up to 16 banks (256 KB).
@@ -73,15 +73,15 @@
 //!
 //! `$x00D` bit 5 drives SCL, bit 6 drives SDA. Reads at `$6000-$7FFF`
 //! return the EEPROM's SDA output in bit 4 (on carts that have one).
-//! Save file is the raw EEPROM contents — 128 bytes for 24C01,
-//! 256 bytes for 24C02 — persisted through the mapper's normal
+//! Save file is the raw EEPROM contents - 128 bytes for 24C01,
+//! 256 bytes for 24C02 - persisted through the mapper's normal
 //! `save_data` / `load_save_data` hooks.
 //!
 //! ## Scope
 //!
 //! Out: mapper 153 (SRAM variant is its own mapper), mapper 157
 //! (Datach barcode), mapper 159 (Bandai Karaoke). Large-PRG (>256 KB)
-//! carts that use the CHR regs' low bit as an extra PRG bank bit —
+//! carts that use the CHR regs' low bit as an extra PRG bank bit -
 //! no such mapper-16 cart exists in the commercial library.
 //!
 //! Clean-room references (behavioral only, no copied code):
@@ -101,11 +101,11 @@ const CHR_BANK_1K: usize = 1024;
 /// ASIC + EEPROM pairing detected from the header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Variant {
-    /// Submapper 4 — registers at `$6000-$7FFF`, IRQ counter direct.
+    /// Submapper 4 - registers at `$6000-$7FFF`, IRQ counter direct.
     Fcg12,
-    /// Submapper 5 — registers at `$8000-$FFFF`, latched IRQ counter.
+    /// Submapper 5 - registers at `$8000-$FFFF`, latched IRQ counter.
     Lz93d50,
-    /// Legacy iNES 1.0 / explicit submapper 0 — ambiguous. Accept
+    /// Legacy iNES 1.0 / explicit submapper 0 - ambiguous. Accept
     /// writes at BOTH ranges. Uses LZ93D50 IRQ semantics.
     Legacy,
 }
@@ -127,14 +127,14 @@ pub struct BandaiFcg {
 
     variant: Variant,
 
-    /// `$x008` — 4-bit 16 KB PRG bank for `$8000-$BFFF`.
+    /// `$x008` - 4-bit 16 KB PRG bank for `$8000-$BFFF`.
     prg_bank: u8,
-    /// `$x000-$x007` — 1 KB CHR bank selectors.
+    /// `$x000-$x007` - 1 KB CHR bank selectors.
     chr_regs: [u8; 8],
 
     irq_enabled: bool,
     irq_counter: u16,
-    /// LZ93D50 reload latch — unused for FCG-1/2.
+    /// LZ93D50 reload latch - unused for FCG-1/2.
     irq_reload: u16,
     irq_line: bool,
 
@@ -153,7 +153,7 @@ impl BandaiFcg {
         let prg_bank_count_16k = (cart.prg_rom.len() / PRG_BANK_16K).max(1);
 
         // The game database's `board` string is the authoritative
-        // source for ASIC + EEPROM identification — NES 2.0 headers
+        // source for ASIC + EEPROM identification - NES 2.0 headers
         // don't always populate `prg_nvram_size` for EEPROM carts
         // (Dragon Ball Z II, for instance, reports 0 KiB despite
         // shipping with a 24C02 chip). Per CLAUDE.md, Mesen2 uses
@@ -197,7 +197,7 @@ impl BandaiFcg {
     /// board string (explicit) > NES 2.0 submapper > fall-through to
     /// Legacy.
     fn pick_variant(cart: &Cartridge, db_board: Option<&'static str>) -> Variant {
-        // Mapper 159 is a strict LZ93D50 + 24C01 variant — no FCG-1/2
+        // Mapper 159 is a strict LZ93D50 + 24C01 variant - no FCG-1/2
         // behavior possible.
         if cart.mapper_id == 159 {
             return Variant::Lz93d50;
@@ -221,23 +221,23 @@ impl BandaiFcg {
     }
 
     /// Resolve EEPROM presence + chip. Order of authority:
-    ///   1. Mapper 159 — always 24C01 (128 bytes).
-    ///   2. FCG-1/2 variant — never an EEPROM.
-    ///   3. Game DB `+24C0X` suffix — explicit chip (DBZ II has
+    ///   1. Mapper 159 - always 24C01 (128 bytes).
+    ///   2. FCG-1/2 variant - never an EEPROM.
+    ///   3. Game DB `+24C0X` suffix - explicit chip (DBZ II has
     ///      `prg_nvram_size=0` in the header despite shipping with a
     ///      24C02, so the DB is more reliable than the header).
-    ///   4. Bare `LZ93D50` in DB — no EEPROM, overrides any header
+    ///   4. Bare `LZ93D50` in DB - no EEPROM, overrides any header
     ///      NVRAM size (Crayon Shin-chan is the one shipping example).
-    ///   5. Submapper 3 — always 24C02.
-    ///   6. Submapper 5 — chip size from `prg_nvram_size`.
-    ///   7. Legacy iNES 1.0 with battery flag — default to 24C02
+    ///   5. Submapper 3 - always 24C02.
+    ///   6. Submapper 5 - chip size from `prg_nvram_size`.
+    ///   7. Legacy iNES 1.0 with battery flag - default to 24C02
     ///      (Mesen2's fallback).
     fn pick_eeprom(
         cart: &Cartridge,
         variant: Variant,
         db_board: Option<&'static str>,
     ) -> Option<Eeprom24C0X> {
-        // Mapper 159 — always 24C01, no exceptions.
+        // Mapper 159 - always 24C01, no exceptions.
         if cart.mapper_id == 159 {
             return Some(Eeprom24C0X::new(EepromChip::C24C01));
         }
@@ -415,7 +415,7 @@ impl Mapper for BandaiFcg {
         if !self.irq_enabled {
             return;
         }
-        // Check-zero-BEFORE-decrement — the exact quirk Mesen2
+        // Check-zero-BEFORE-decrement - the exact quirk Mesen2
         // documents as load-bearing for Famicom Jump II and Magical
         // Taruruuto-kun 2. Counter = N, enabled → N+1 cycles before
         // /IRQ asserts. After firing, wraps to `0xFFFF` and does not
@@ -569,7 +569,7 @@ mod tests {
         assert_eq!(m.variant, Variant::Lz93d50);
         assert_eq!(m.save_data().map(|b| b.len()), Some(128));
         // Even without a battery flag or declared NVRAM, mapper 159
-        // still gets the 24C01 — the chip is hardwired to the board.
+        // still gets the 24C01 - the chip is hardwired to the board.
         let mut cart = tagged_cart(false, 0);
         cart.mapper_id = 159;
         let m2 = BandaiFcg::new(cart);
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn mapper_159_uses_8000_register_range() {
         let mut m = mapper_159();
-        // $6000-$7FFF is pure EEPROM read on 159 — writes go nowhere.
+        // $6000-$7FFF is pure EEPROM read on 159 - writes go nowhere.
         m.cpu_write(0x6008, 4);
         assert_eq!(m.cpu_peek(0x8000), 0);
         m.cpu_write(0x8008, 4);
@@ -801,12 +801,12 @@ mod tests {
         // LZ93D50 + 24C02 register range is $8000-$FFFF; $6000-$7FFF
         // is pure EEPROM read on this variant.
         let mut m = lz93d50_with_24c02();
-        // Default SDA output is 1 — bit 4 reads as `0x10`.
+        // Default SDA output is 1 - bit 4 reads as `0x10`.
         assert_eq!(m.cpu_peek(0x6000), 0x10);
         // After a STOP condition pulse (which keeps output=1, but
         // covers the no-op case).
         m.cpu_write(0x800D, 0b0110_0000); // SCL=1 SDA=1
-        m.cpu_write(0x800D, 0b0100_0000); // SCL=1 SDA=0 — START
+        m.cpu_write(0x800D, 0b0100_0000); // SCL=1 SDA=0 - START
         // In Address mode with counter=0; output still 1 until first
         // clock fall.
         assert_eq!(m.cpu_peek(0x6000), 0x10);
@@ -818,7 +818,7 @@ mod tests {
         // stores a byte, then reading it back returns the same value.
         let mut m = lz93d50_with_24c02();
 
-        // Helper — emit one I²C bit cycle. SCL drops first so SDA can
+        // Helper - emit one I²C bit cycle. SCL drops first so SDA can
         // safely transition, then rises for the bit sample. Ends at
         // `(SCL=1, SDA=sda)`. The bit value goes in $x00D as bit 5=SCL,
         // bit 6=SDA.
@@ -830,12 +830,12 @@ mod tests {
             m.cpu_write(0x800D, 0); // SCL=0 SDA=0
             m.cpu_write(0x800D, 1 << 6); // SCL=0 SDA=1
             m.cpu_write(0x800D, (1 << 5) | (1 << 6)); // SCL=1 SDA=1
-            m.cpu_write(0x800D, 1 << 5); // SCL=1 SDA=0 — START
+            m.cpu_write(0x800D, 1 << 5); // SCL=1 SDA=0 - START
         }
         fn stop(m: &mut BandaiFcg) {
             m.cpu_write(0x800D, 0); // SCL=0 SDA=0
             m.cpu_write(0x800D, 1 << 5); // SCL=1 SDA=0
-            m.cpu_write(0x800D, (1 << 5) | (1 << 6)); // SCL=1 SDA=1 — STOP
+            m.cpu_write(0x800D, (1 << 5) | (1 << 6)); // SCL=1 SDA=1 - STOP
         }
         fn send_byte(m: &mut BandaiFcg, b: u8) {
             for i in 0..8 {

@@ -2,7 +2,7 @@
 //! End-to-end battery-save persistence.
 //!
 //! Builds a synthetic battery-backed NROM in a tempdir, writes bytes
-//! to PRG-RAM via the bus, saves, drops the Nes, and reloads —
+//! to PRG-RAM via the bus, saves, drops the Nes, and reloads -
 //! verifying the bytes come back verbatim through a fresh mapper
 //! instance. Also asserts non-battery carts never write a save file.
 //!
@@ -46,7 +46,7 @@ fn build_nes_file(dir: &Path, name: &str, battery: bool) -> PathBuf {
     bytes.push(if battery { 0x02 } else { 0x00 }); // flag6: battery bit
     bytes.push(0x00); // flag7
     bytes.push(1); // PRG-RAM: 1 × 8 KiB
-    bytes.extend_from_slice(&[0u8; 7]); // remaining bytes zero — iNES 1.0.
+    bytes.extend_from_slice(&[0u8; 7]); // remaining bytes zero - iNES 1.0.
 
     // 32 KiB PRG: all NOPs, reset vector at $FFFC/$FFFD = $8000.
     let mut prg = vec![0xEAu8; 32 * 1024];

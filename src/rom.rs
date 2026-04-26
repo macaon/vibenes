@@ -15,7 +15,7 @@ const PRG_BANK_SIZE: usize = 16 * 1024;
 const CHR_BANK_SIZE: usize = 8 * 1024;
 const TRAINER_SIZE: usize = 512;
 
-/// True when the file looks like a Famicom Disk System image — by
+/// True when the file looks like a Famicom Disk System image - by
 /// extension (`.fds` / `.qd`, case-insensitive) or by 4-byte fwNES
 /// magic. Extension-only matches let bare `.fds` files without a
 /// header still route to the FDS loader.
@@ -102,7 +102,7 @@ impl Cartridge {
             .with_context(|| format!("failed to read ROM file: {}", path.display()))?;
 
         // Dispatch to the FDS parser when the file clearly looks like
-        // one — either `.fds` / `.qd` extension or the 4-byte fwNES
+        // one - either `.fds` / `.qd` extension or the 4-byte fwNES
         // magic at offset 0. Otherwise fall through to iNES.
         if is_fds_bytes_or_ext(path, &bytes) {
             return Self::from_fds_bytes(path, &bytes, fds_bios_override);
@@ -118,7 +118,7 @@ impl Cartridge {
         let image = FdsImage::from_bytes(bytes)
             .with_context(|| format!("parsing FDS image {}", path.display()))?;
 
-        // Warn on any non-fatal image oddities at load time — matches
+        // Warn on any non-fatal image oddities at load time - matches
         // how Phase 0's `load_fds_info` surfaced them.
         for w in &image.warnings {
             log::warn!("FDS: {w}");
@@ -138,7 +138,7 @@ impl Cartridge {
 
         // CRC over the raw bytes (excluding the optional fwNES
         // header) gives a stable key into the game DB for FDS
-        // titles. Not used today — FDS entries aren't in our DB yet —
+        // titles. Not used today - FDS entries aren't in our DB yet -
         // but Phase 2's disk-swap UI may want per-game labels.
         let crc_bytes: &[u8] = if image.had_header {
             &bytes[16..]
@@ -154,7 +154,7 @@ impl Cartridge {
             bios_known_good: bios.is_known_good,
             had_header: image.had_header,
             // Pristine raw sides feed the IPS save-diff pipeline. Clone
-            // out of the image before it goes out of scope — mapping to
+            // out of the image before it goes out of scope - mapping to
             // gapped/headers above already consumed what we needed from
             // it via shared references.
             original_raw_sides: image.sides.clone(),
@@ -162,7 +162,7 @@ impl Cartridge {
 
         Ok(Self {
             // FDS-specific carts don't use the iNES prg_rom /
-            // chr_rom arrays — BIOS + RAM serve the address space.
+            // chr_rom arrays - BIOS + RAM serve the address space.
             // Leave these empty; the FDS mapper never consults them.
             prg_rom: Vec::new(),
             chr_rom: Vec::new(),
@@ -296,7 +296,7 @@ impl Cartridge {
         // CHR-RAM carts (header byte 5 == 0) have no on-disk CHR; the
         // 8 KB RAM buffer we synthesize below is runtime-only and must
         // NOT feed into the CRC (Mesen2 hashes file bytes after the
-        // header / trainer — iNesLoader.cpp:62 — which excludes the
+        // header / trainer - iNesLoader.cpp:62 - which excludes the
         // synthetic RAM). Without this distinction, CHR-RAM carts
         // produce a different CRC from Mesen's DB key and never match.
         let chr_on_disk: &[u8] = if chr_size == 0 {
@@ -316,8 +316,8 @@ impl Cartridge {
         };
 
         // PRG+CHR CRC32 over the on-disk ROM bodies (matches Mesen2's
-        // `PrgChrCrc32` — iNesLoader.cpp:62-63). Trainer bytes, if
-        // present, are NOT included — they sit between the header and
+        // `PrgChrCrc32` - iNesLoader.cpp:62-63). Trainer bytes, if
+        // present, are NOT included - they sit between the header and
         // the PRG and neither emulator hashes them. The transient
         // `concat` allocates once per load (~300 KB typical); not
         // worth inlining a streaming variant.
@@ -336,7 +336,7 @@ impl Cartridge {
 
         // iNES 1.0 with header[8]=0 already had its RAM bumped to 8
         // KiB by the `ram_banks.max(1)` above. NES 2.0 is trusted
-        // verbatim — a NES 2.0 cart that declares 0/0 is valid and we
+        // verbatim - a NES 2.0 cart that declares 0/0 is valid and we
         // honor it (mappers still allocate their mandatory minimum
         // for the `$6000-$7FFF` window from `prg_ram_size.max(MIN)`).
         let mut cart = Self {
@@ -393,7 +393,7 @@ impl Cartridge {
     }
 
     pub fn describe(&self) -> String {
-        // FDS carts skip the iNES summary line entirely — they're
+        // FDS carts skip the iNES summary line entirely - they're
         // carried via `fds_data` and have very different stats
         // (BIOS + disk sides rather than PRG-ROM / CHR-ROM sizes).
         if let Some(fds) = &self.fds_data {

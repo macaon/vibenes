@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Irem G-101 — iNES mapper 32.
+//! Irem G-101 - iNES mapper 32.
 //!
 //! 52-pin DIP ASIC used by *Image Fight*, *Major League*, *Kaiketsu
 //! Yanchamaru 2*, and a handful of other Irem titles. Two 8 KiB
@@ -29,13 +29,13 @@
 //! `{-2}` and `{-1}` are the second-to-last and last 8 KiB banks of
 //! PRG-ROM, respectively.
 //!
-//! ## Submapper 1 — Major League
+//! ## Submapper 1 - Major League
 //!
 //! `Major League` ties CIRAM A10 to +5V on the cartridge, hardwiring
 //! single-screen (upper-page) mirroring. The `$9000` register is also
 //! disabled on this board, so the game can only request PRG mode 0.
 //! Activated via NES 2.0 submapper 1; iNES-1.0 dumps need a game-DB
-//! hint or per-cart override (we don't currently ship one — the
+//! hint or per-cart override (we don't currently ship one - the
 //! Mesen2-conventional submapper field on a NES 2.0 dump is enough).
 //!
 //! Reference: <https://www.nesdev.org/wiki/INES_Mapper_032>.
@@ -366,7 +366,7 @@ mod tests {
     fn major_league_submapper_locks_one_screen_and_ignores_9000() {
         let mut m = IremG101::new(cart(1));
         assert_eq!(m.mirroring(), Mirroring::SingleScreenUpper);
-        // Try to flip to mode 1 + horizontal — should be ignored.
+        // Try to flip to mode 1 + horizontal - should be ignored.
         m.cpu_write(0x9000, 0xFF);
         assert_eq!(m.mirroring(), Mirroring::SingleScreenUpper);
         m.cpu_write(0x8000, 0x05);

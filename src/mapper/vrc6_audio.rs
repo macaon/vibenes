@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Konami VRC6 expansion audio — 2 pulse channels + 1 sawtooth.
+//! Konami VRC6 expansion audio - 2 pulse channels + 1 sawtooth.
 //!
 //! Three voices on the cart, summed linearly into one DAC line that
 //! returns to the Famicom over the EXP6 pin:
@@ -7,7 +7,7 @@
 //! - **Pulse 1 / Pulse 2** (`$9000-$9002`, `$A000-$A002`): 16-step
 //!   counters with programmable duty (4-bit field selects a duty
 //!   threshold 0..15). Volume is 4-bit. An "ignore duty" bit makes
-//!   the channel output full volume every step — games use this to
+//!   the channel output full volume every step - games use this to
 //!   fake a sawtooth-ish sound on a pulse.
 //! - **Sawtooth** (`$B000-$B002`): a 7-step-per-octant accumulator
 //!   that adds `accumulator_rate` every even step, zeros on step 0,
@@ -20,9 +20,9 @@
 //!
 //! ## Global controls (`$9003`)
 //!
-//! - Bit 0: **halt audio** — freezes all three channel clocks. Games
+//! - Bit 0: **halt audio** - freezes all three channel clocks. Games
 //!   use this to silence the cart audio without losing state.
-//! - Bits 1-2: **frequency shift** — right-shift the period divider
+//! - Bits 1-2: **frequency shift** - right-shift the period divider
 //!   by 4 (bit 1) or 8 (bit 2) for high-pitched SFX.
 //!
 //! ## References
@@ -42,7 +42,7 @@
 /// `GetOutputVolume`, giving an effective per-raw-unit Mesen2 scale
 /// of 75. Our 0..1 unit is ~5018 Mesen2 units, so VRC6 per-raw =
 /// 75 / 5018 ≈ 0.01494. Peak raw = 61 → peak mix sample ≈ 0.912,
-/// ~3.6× the FDS peak — accurate to Mesen2's default balance where
+/// ~3.6× the FDS peak - accurate to Mesen2's default balance where
 /// VRC6 (the lead instrument in Akumajō Densetsu) sits prominent.
 const VRC6_MIX_SCALE: f32 = 75.0 / 5018.0;
 
@@ -190,7 +190,7 @@ impl Vrc6Saw {
                     // Nesdev: "If E is clear, the accumulator is forced
                     // to zero until E is again set" AND "The phase of
                     // the saw generator can be mostly reset by clearing
-                    // and immediately setting E." — both behaviors.
+                    // and immediately setting E." - both behaviors.
                     self.accumulator = 0;
                     self.step = 0;
                 }
@@ -214,7 +214,7 @@ impl Vrc6Saw {
             if self.step == 0 {
                 self.accumulator = 0;
             } else if (self.step & 0x01) == 0 {
-                // Even step: add rate. Wraps on 8-bit overflow —
+                // Even step: add rate. Wraps on 8-bit overflow -
                 // real hardware behavior, makes the "stuck high"
                 // case possible when the game sets a too-big rate.
                 self.accumulator = self.accumulator.wrapping_add(self.accumulator_rate);
@@ -275,7 +275,7 @@ impl Vrc6Audio {
     }
 
     /// Advance the three channels by one CPU cycle and update the
-    /// cached output. Safe to call regardless of `halt_audio` — the
+    /// cached output. Safe to call regardless of `halt_audio` - the
     /// flag gates CLOCKING only; reads of `last_output` return the
     /// frozen value exactly as real hardware does.
     pub fn clock(&mut self) {
@@ -294,7 +294,7 @@ impl Vrc6Audio {
         self.last_output
     }
 
-    /// Mix-ready sample in approximately 0.0..0.91 — pre-scaled
+    /// Mix-ready sample in approximately 0.0..0.91 - pre-scaled
     /// against the APU's 0.0..≈1.0 range matching Mesen2's defaults.
     pub fn mix_sample(&self) -> f32 {
         self.last_output as f32 * VRC6_MIX_SCALE
@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(a.pulse1.frequency_shift, 0);
     }
 
-    /// Bit 2 wins over bit 1 when both are set — Mesen2's precedence.
+    /// Bit 2 wins over bit 1 when both are set - Mesen2's precedence.
     #[test]
     fn frequency_shift_bit2_wins() {
         let mut a = Vrc6Audio::new();
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(a.pulse1.step, p1_step_before);
     }
 
-    /// Disabling a pulse clears its step to 0 — retrigger behavior.
+    /// Disabling a pulse clears its step to 0 - retrigger behavior.
     #[test]
     fn pulse_disable_resets_step() {
         let mut a = Vrc6Audio::new();
@@ -511,11 +511,11 @@ mod tests {
         // Re-clock once at saw peak to capture combined output in cache.
         // (The saw accumulator may have wrapped past 31 × 8 = 248 by
         // now; on the next even step the rate-63 add wraps to a lower
-        // value — we just assert the max seen stays at 31.)
+        // value - we just assert the max seen stays at 31.)
         assert!(a.output_level() > 0);
     }
 
-    /// Mix-sample scales the raw 0..61 to approximately 0.0..0.912 —
+    /// Mix-sample scales the raw 0..61 to approximately 0.0..0.912 -
     /// ~3.6× the FDS peak, matching Mesen2's default balance.
     #[test]
     fn mix_sample_peaks_near_0_91() {

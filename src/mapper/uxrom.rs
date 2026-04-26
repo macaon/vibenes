@@ -3,7 +3,7 @@
 //!
 //! PRG is split into two 16KB windows:
 //! - `$8000-$BFFF`: switchable bank, selected by any write to `$8000-$FFFF`.
-//!   The register is just a bank index — UNROM only decodes the low 3 bits
+//!   The register is just a bank index - UNROM only decodes the low 3 bits
 //!   (8 banks, 128KB), UOROM decodes a full byte (256 banks, 4MB).
 //! - `$C000-$FFFF`: hardwired to the **last** 16KB bank.
 //!
@@ -40,7 +40,7 @@ pub struct Uxrom {
 impl Uxrom {
     pub fn new(cart: Cartridge) -> Self {
         let prg_bank_count = (cart.prg_rom.len() / PRG_BANK_16K).max(1);
-        // UxROM is a register-of-infinite-width board — all game variants
+        // UxROM is a register-of-infinite-width board - all game variants
         // use power-of-two bank counts, so `count - 1` is a clean mask.
         // If a cart ever had a non-power-of-two bank count we'd mod instead.
         debug_assert!(prg_bank_count.is_power_of_two());
@@ -99,7 +99,7 @@ impl Mapper for Uxrom {
                 }
             }
             0x8000..=0xFFFF => {
-                // Bank select — any address in the register range works.
+                // Bank select - any address in the register range works.
                 // Low bits of `data` select the bank, higher bits ignored.
                 self.bank = data & self.bank_mask;
             }

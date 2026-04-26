@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! MMC4 / FxROM (mapper 10).
 //!
-//! The sibling of MMC2 — same register layout, same CHR latch trick,
+//! The sibling of MMC2 - same register layout, same CHR latch trick,
 //! same mirroring control. Differences:
 //!
 //! - **PRG windows are 16 KB, not 8 KB.**
-//!   - `$8000-$BFFF` — 16 KB switchable via `$A000` (4-bit)
-//!   - `$C000-$FFFF` — last 16 KB bank (fixed)
+//!   - `$8000-$BFFF` - 16 KB switchable via `$A000` (4-bit)
+//!   - `$C000-$FFFF` - last 16 KB bank (fixed)
 //! - **Latch triggers use the range form on both sides** (MMC2 has the
 //!   range on the right only, single addresses on the left):
 //!   - `$0FD8-$0FDF` → left latch = 0 (FD)
@@ -20,7 +20,7 @@
 //!
 //! All three MMC4 titles are Japan-only. Total library: 3 games.
 //!
-//! CHR register and latch semantics are identical to MMC2 — see
+//! CHR register and latch semantics are identical to MMC2 - see
 //! [`crate::mapper::mmc2`] for the longer writeup. The triggering
 //! fetch uses the pre-trigger bank; the change takes effect on the
 //! next fetch. We mirror that in `ppu_read` by resolving the bank
@@ -28,7 +28,7 @@
 //!
 //! Clean-room references (behavioral only, no copied code):
 //! - `~/Git/Mesen2/Core/NES/Mappers/Nintendo/MMC4.h` (derives from
-//!   `MMC2.h` — we duplicate the shared logic rather than build an
+//!   `MMC2.h` - we duplicate the shared logic rather than build an
 //!   inheritance chain, Rust-idiomatic)
 //! - `~/Git/punes/src/core/mappers/mapper_010.c` + `MMC4.c`
 //! - `~/Git/nestopia/source/core/board/NstBoardMmc4.cpp`
@@ -54,15 +54,15 @@ pub struct Mmc4 {
     battery: bool,
     save_dirty: bool,
 
-    /// `$A000` — 16 KB PRG bank index for `$8000-$BFFF`. 4-bit.
+    /// `$A000` - 16 KB PRG bank index for `$8000-$BFFF`. 4-bit.
     prg_bank: u8,
-    /// `$B000` — 4 KB CHR bank for `$0000-$0FFF` when left latch = 0.
+    /// `$B000` - 4 KB CHR bank for `$0000-$0FFF` when left latch = 0.
     left_fd: u8,
-    /// `$C000` — 4 KB CHR bank for `$0000-$0FFF` when left latch = 1.
+    /// `$C000` - 4 KB CHR bank for `$0000-$0FFF` when left latch = 1.
     left_fe: u8,
-    /// `$D000` — 4 KB CHR bank for `$1000-$1FFF` when right latch = 0.
+    /// `$D000` - 4 KB CHR bank for `$1000-$1FFF` when right latch = 0.
     right_fd: u8,
-    /// `$E000` — 4 KB CHR bank for `$1000-$1FFF` when right latch = 1.
+    /// `$E000` - 4 KB CHR bank for `$1000-$1FFF` when right latch = 1.
     right_fe: u8,
 
     /// Left-window latch (0 = FD, 1 = FE). Power-on: 1.
@@ -295,7 +295,7 @@ mod tests {
         cart
     }
 
-    // ---- PRG banking (16 KB windows — the MMC4 delta from MMC2) ----
+    // ---- PRG banking (16 KB windows - the MMC4 delta from MMC2) ----
 
     #[test]
     fn prg_default_layout_fixes_last_16k() {
@@ -312,10 +312,10 @@ mod tests {
     fn prg_a000_switches_16k_low_window() {
         let mut m = Mmc4::new(tagged_cart());
         m.cpu_write(0xA000, 7);
-        // Whole 16 KB window moves — not just the first 8 KB.
+        // Whole 16 KB window moves - not just the first 8 KB.
         assert_eq!(m.cpu_peek(0x8000), 7);
         assert_eq!(m.cpu_peek(0x9FFF), 7);
-        assert_eq!(m.cpu_peek(0xA000), 7); // still bank 7 — MMC2 would be different here
+        assert_eq!(m.cpu_peek(0xA000), 7); // still bank 7 - MMC2 would be different here
         assert_eq!(m.cpu_peek(0xBFFF), 7);
         // Fixed window unchanged.
         assert_eq!(m.cpu_peek(0xC000), 15);
@@ -382,7 +382,7 @@ mod tests {
         m.cpu_write(0xB000, 3);
         m.cpu_write(0xC000, 7);
         // Power-on = FE = bank 7.
-        assert_eq!(m.ppu_read(0x0FD8), 7); // triggering fetch — pre-trigger bank
+        assert_eq!(m.ppu_read(0x0FD8), 7); // triggering fetch - pre-trigger bank
         // Now the latch has flipped to FD.
         assert_eq!(m.ppu_read(0x0000), 3);
     }
@@ -429,7 +429,7 @@ mod tests {
         m.cpu_write(0xC000, 5);
         m.cpu_write(0xD000, 6);
         m.cpu_write(0xE000, 7);
-        // No latch triggers yet — both reads must see the FE-side bank.
+        // No latch triggers yet - both reads must see the FE-side bank.
         assert_eq!(m.ppu_read(0x0000), 5);
         assert_eq!(m.ppu_read(0x1000), 7);
     }

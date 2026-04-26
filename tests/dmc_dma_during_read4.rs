@@ -4,7 +4,7 @@
 //! This suite exercises the DMC DMA interaction with CPU reads of
 //! `$2007` and `$4016`. Two of the five ROMs are "CPU/PPU-sync-
 //! dependent" and accept any of a set of CRC-hashed output patterns
-//! rather than a single "golden" hash — which is why the standard
+//! rather than a single "golden" hash - which is why the standard
 //! `test_runner` treats them as failing when the emulator's output
 //! is nevertheless in an accepted bucket.
 //!
@@ -35,7 +35,7 @@ fn run_rom(name: &str) -> String {
     let path = rom_path(name);
     assert!(
         path.exists(),
-        "missing test ROM {} — clone https://github.com/christopherpow/nes-test-roms",
+        "missing test ROM {} - clone https://github.com/christopherpow/nes-test-roms",
         path.display()
     );
     let cart = Cartridge::load(&path).expect("load cartridge");
@@ -67,7 +67,7 @@ fn wait_for_keyword(name: &str, keyword: &str) -> String {
     let path = rom_path(name);
     assert!(
         path.exists(),
-        "missing test ROM {} — clone https://github.com/christopherpow/nes-test-roms",
+        "missing test ROM {} - clone https://github.com/christopherpow/nes-test-roms",
         path.display()
     );
     let cart = Cartridge::load(&path).expect("load cartridge");
@@ -118,11 +118,11 @@ fn extract_crc(text: &str) -> Option<String> {
 
 // -------------------- test_runner-green ROMs (sanity) --------------------
 
-/// `dma_2007_read.nes` — DMC DMA hits the CPU's read of `$2007`.
+/// `dma_2007_read.nes` - DMC DMA hits the CPU's read of `$2007`.
 /// Reports via the `$6000` status protocol. Gated here as a
 /// regression guard on the halt-cycle-replay code path in
 /// `Bus::service_pending_dmc_dma`.
-/// `dma_2007_read.nes` — DMC DMA hits an `lda $2007` and causes
+/// `dma_2007_read.nes` - DMC DMA hits an `lda $2007` and causes
 /// 2–3 extra buffer-advancing reads before the real read completes.
 /// The test source lists two accepted output patterns (`33 44` or
 /// `44 55` at the DMA-aligned iteration, everywhere else `11 22`)
@@ -188,10 +188,10 @@ fn rom_read_write_2007() {
 
 // -------------------- sync-dependent ROMs (CRC-bucket) --------------------
 
-/// `double_2007_read.nes` — `lda abs,X` with page-cross to `$2007`.
+/// `double_2007_read.nes` - `lda abs,X` with page-cross to `$2007`.
 /// The test's source comment (`dmc_dma_during_read4/source/
 /// double_2007_read.s:5-11`) lists four accepted output patterns,
-/// each with its own CRC — real hardware's outcome "depends on CPU-
+/// each with its own CRC - real hardware's outcome "depends on CPU-
 /// PPU synchronization". We aim for a deterministic result in any
 /// one of those buckets.
 ///
@@ -216,13 +216,13 @@ fn rom_double_2007_read_lands_in_accepted_bucket() {
     );
 }
 
-/// `dma_4016_read.nes` — DMC DMA's halt cycle re-reads `$4016`
+/// `dma_4016_read.nes` - DMC DMA's halt cycle re-reads `$4016`
 /// during an `lda $4016`, consuming one extra controller bit. The
 /// expected output per the source comment is `08 08 07 08 08`:
 /// exactly one of the five iterations drops from 8 bits to 7
 /// because the DMC halt aligned with the CPU's read cycle.
 ///
-/// Hardware-exact pattern is `08 08 07 08 08` (CRC `F0AB808C`) —
+/// Hardware-exact pattern is `08 08 07 08 08` (CRC `F0AB808C`) -
 /// after the parity-aware DMC stall + reset-tick alignment fixes
 /// in commit b413b09 we land on it.
 #[test]

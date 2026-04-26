@@ -49,7 +49,7 @@ impl Nes {
     /// [`Nes::load_battery`] to resolve a save path. Call this from
     /// the app's ROM loader right after `from_cartridge` /
     /// `swap_cartridge`. Test harnesses that build a `Cartridge` in-
-    /// memory and never intend to persist it skip this — the save
+    /// memory and never intend to persist it skip this - the save
     /// methods become no-ops.
     pub fn attach_save_metadata(&mut self, rom_path: impl Into<PathBuf>, prg_chr_crc32: u32) {
         self.save_meta = Some(SaveMeta {
@@ -95,7 +95,7 @@ impl Nes {
     /// No-op on non-battery carts, when no metadata is attached, and
     /// when `save_dirty()` is false. Returns `Ok(true)` on a
     /// successful write, `Ok(false)` when there was nothing to do,
-    /// `Err` on I/O error — the caller decides whether to surface it
+    /// `Err` on I/O error - the caller decides whether to surface it
     /// (usually just log and continue).
     pub fn save_battery(&mut self, cfg: &SaveConfig) -> Result<bool> {
         let Some(meta) = self.save_meta.as_ref() else {
@@ -127,7 +127,7 @@ impl Nes {
 
     /// Resolve the FDS disk-save (`.ips`) path for the current cart,
     /// or `None` when no metadata is attached. Same routing rules as
-    /// [`Nes::save_path`], just a different extension — a single cart
+    /// [`Nes::save_path`], just a different extension - a single cart
     /// can carry both a `.sav` (battery) and `.ips` (disk) file side
     /// by side.
     pub fn disk_save_path(&self, cfg: &SaveConfig) -> Option<PathBuf> {
@@ -207,7 +207,7 @@ impl Nes {
         self.bus.region()
     }
 
-    /// Warm reset — the user pressing the Reset button on the console.
+    /// Warm reset - the user pressing the Reset button on the console.
     /// RAM, PRG-RAM and cartridge state are preserved; the CPU reloads
     /// PC from the reset vector, the APU silences channels and keeps the
     /// DMC output level (so long samples don't pop), and the PPU resets

@@ -5,18 +5,18 @@
 //! re-release Punch-Out!! Both use the same programming model:
 //!
 //! **PRG layout** (fixed):
-//! - `$8000-$9FFF` — 8 KB switchable via `$A000` (4-bit, so up to 128 KB PRG)
-//! - `$A000-$BFFF` — third-to-last 8 KB bank (fixed)
-//! - `$C000-$DFFF` — second-to-last 8 KB bank (fixed)
-//! - `$E000-$FFFF` — last 8 KB bank (fixed; reset vector always visible)
+//! - `$8000-$9FFF` - 8 KB switchable via `$A000` (4-bit, so up to 128 KB PRG)
+//! - `$A000-$BFFF` - third-to-last 8 KB bank (fixed)
+//! - `$C000-$DFFF` - second-to-last 8 KB bank (fixed)
+//! - `$E000-$FFFF` - last 8 KB bank (fixed; reset vector always visible)
 //!
-//! **CHR layout** — two independent 4 KB windows, each with a pair of
+//! **CHR layout** - two independent 4 KB windows, each with a pair of
 //! bank regs (FD / FE, each 5-bit for up to 128 KB CHR) and a 1-bit
 //! latch selecting which one is live:
-//! - `$0000-$0FFF` — `$B000` sets FD bank, `$C000` sets FE bank
-//! - `$1000-$1FFF` — `$D000` sets FD bank, `$E000` sets FE bank
+//! - `$0000-$0FFF` - `$B000` sets FD bank, `$C000` sets FE bank
+//! - `$1000-$1FFF` - `$D000` sets FD bank, `$E000` sets FE bank
 //!
-//! **Mirroring**: `$F000` bit 0 — 0 = vertical, 1 = horizontal.
+//! **Mirroring**: `$F000` bit 0 - 0 = vertical, 1 = horizontal.
 //!
 //! ## The CHR latch (the only interesting thing)
 //!
@@ -26,7 +26,7 @@
 //! `$FD` and `$FE` at the bottom of each 4 KB pattern window act as
 //! the trigger.
 //!
-//! Trigger addresses (MMC2-specific — note the asymmetry, MMC4 uses
+//! Trigger addresses (MMC2-specific - note the asymmetry, MMC4 uses
 //! the range form on both sides):
 //! - PPU reads `$0FD8` exactly → left latch = 0 (FD bank)
 //! - PPU reads `$0FE8` exactly → left latch = 1 (FE bank)
@@ -43,7 +43,7 @@
 //!
 //! No PRG-RAM, no battery, no IRQ. Real boards have bus conflicts on
 //! `$A000-$FFFF` writes (value ANDed with ROM byte), but every
-//! shipping title writes matching bytes — skipping the AND matches
+//! shipping title writes matching bytes - skipping the AND matches
 //! Mesen2 / puNES / Nestopia behavior.
 //!
 //! Clean-room references (behavioral only, no copied code):
@@ -67,15 +67,15 @@ pub struct Mmc2 {
     prg_bank_count_8k: usize,
     chr_bank_count_4k: usize,
 
-    /// `$A000` — 8 KB PRG bank index for `$8000-$9FFF`. 4-bit.
+    /// `$A000` - 8 KB PRG bank index for `$8000-$9FFF`. 4-bit.
     prg_bank: u8,
-    /// `$B000` — 4 KB CHR bank for `$0000-$0FFF` when left latch = 0.
+    /// `$B000` - 4 KB CHR bank for `$0000-$0FFF` when left latch = 0.
     left_fd: u8,
-    /// `$C000` — 4 KB CHR bank for `$0000-$0FFF` when left latch = 1.
+    /// `$C000` - 4 KB CHR bank for `$0000-$0FFF` when left latch = 1.
     left_fe: u8,
-    /// `$D000` — 4 KB CHR bank for `$1000-$1FFF` when right latch = 0.
+    /// `$D000` - 4 KB CHR bank for `$1000-$1FFF` when right latch = 0.
     right_fd: u8,
-    /// `$E000` — 4 KB CHR bank for `$1000-$1FFF` when right latch = 1.
+    /// `$E000` - 4 KB CHR bank for `$1000-$1FFF` when right latch = 1.
     right_fe: u8,
 
     /// Current left-window latch (0 = FD, 1 = FE). Power-on: 1.
@@ -176,7 +176,7 @@ impl Mapper for Mmc2 {
     }
 
     fn cpu_write(&mut self, addr: u16, data: u8) {
-        // Registers decode by the top nibble — any write inside a
+        // Registers decode by the top nibble - any write inside a
         // 4 KB window hits that window's register. MMC2 has no
         // PRG-RAM at $6000-$7FFF, so writes there are dropped.
         if addr < 0x8000 {
@@ -213,7 +213,7 @@ impl Mapper for Mmc2 {
         if addr >= 0x2000 {
             return 0;
         }
-        // Resolve the byte using the CURRENT latches — the triggering
+        // Resolve the byte using the CURRENT latches - the triggering
         // fetch itself must see the pre-trigger bank.
         let i = self.map_chr(addr);
         let byte = *self.chr.get(i).unwrap_or(&0);
@@ -223,7 +223,7 @@ impl Mapper for Mmc2 {
     }
 
     fn ppu_write(&mut self, addr: u16, data: u8) {
-        // Commercial MMC2 carts are CHR-ROM — writes are no-ops. The
+        // Commercial MMC2 carts are CHR-ROM - writes are no-ops. The
         // CHR-RAM branch exists for robustness against fan-made ROMs
         // that repurpose the mapper. Latch semantics still apply: a
         // write to a trigger address updates the latch, matching
@@ -290,7 +290,7 @@ mod tests {
         // $A000 default = 0 → switchable window reads bank 0.
         assert_eq!(m.cpu_peek(0x8000), 0);
         assert_eq!(m.cpu_peek(0x9FFF), 0);
-        // Fixed windows — third-to-last, second-to-last, last.
+        // Fixed windows - third-to-last, second-to-last, last.
         assert_eq!(m.cpu_peek(0xA000), 13);
         assert_eq!(m.cpu_peek(0xC000), 14);
         assert_eq!(m.cpu_peek(0xE000), 15);
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn prg_a000_masks_to_4_bits() {
         let mut m = Mmc2::new(tagged_cart());
-        // High nibble must be ignored — F7 & 0x0F = 7.
+        // High nibble must be ignored - F7 & 0x0F = 7.
         m.cpu_write(0xA000, 0xF7);
         assert_eq!(m.cpu_peek(0x8000), 7);
     }
@@ -336,7 +336,7 @@ mod tests {
         m.cpu_write(0xC000, 5); // left FE
         m.cpu_write(0xD000, 6); // right FD
         m.cpu_write(0xE000, 7); // right FE
-        // Power-on latches are 1 (FE) — reads outside trigger ranges
+        // Power-on latches are 1 (FE) - reads outside trigger ranges
         // must return the FE bank from both windows.
         assert_eq!(m.ppu_read(0x0000), 5);
         assert_eq!(m.ppu_read(0x1000), 7);
@@ -349,7 +349,7 @@ mod tests {
         m.cpu_write(0xC000, 20); // left FE = 20
         // Baseline: FE.
         assert_eq!(m.ppu_read(0x0000), 20);
-        // Read $0FD8 — the fetch itself uses the pre-trigger bank (FE),
+        // Read $0FD8 - the fetch itself uses the pre-trigger bank (FE),
         // but after the read the latch flips to FD.
         assert_eq!(m.ppu_read(0x0FD8), 20);
         // Subsequent read picks up FD.
@@ -369,7 +369,7 @@ mod tests {
         // Prime: flip to FD.
         m.ppu_read(0x0FD8);
         assert_eq!(m.ppu_read(0x0000), 10);
-        // Read $0FD9 — NOT a trigger on MMC2. Latch must stay at FD.
+        // Read $0FD9 - NOT a trigger on MMC2. Latch must stay at FD.
         m.ppu_read(0x0FD9);
         assert_eq!(m.ppu_read(0x0000), 10);
         // $0FDF also not a trigger on the left side.
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn chr_bank_regs_mask_to_5_bits() {
-        // $B000-$E000 writes must mask to 5 bits — we have 32 banks so
+        // $B000-$E000 writes must mask to 5 bits - we have 32 banks so
         // a larger value would out-of-range without the mask.
         let mut m = Mmc2::new(tagged_cart());
         // 0xFF & 0x1F = 0x1F = 31 (last bank).

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! CRC32/IEEE-802.3 (polynomial `0xEDB88320`, reflected). Table-based
-//! implementation — ~1 KB of precomputed table for a ~1 byte/cycle loop.
+//! implementation - ~1 KB of precomputed table for a ~1 byte/cycle loop.
 //!
 //! Used to key into the game database: we compute a CRC32 over the
 //! concatenation of PRG-ROM + CHR-ROM (matching Mesen2's
-//! `romData.Info.Hash.PrgChrCrc32` — `iNesLoader.cpp:62-63`) and look
+//! `romData.Info.Hash.PrgChrCrc32` - `iNesLoader.cpp:62-63`) and look
 //! up region / chip / bus-conflict / submapper info that the iNES 1.0
 //! header cannot reliably encode.
 

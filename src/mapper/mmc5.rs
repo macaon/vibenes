@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! MMC5 / ExROM (mapper 5) — sub-phase A: PRG banking + PRG-RAM only.
+//! MMC5 / ExROM (mapper 5) - sub-phase A: PRG banking + PRG-RAM only.
 //!
 //! MMC5 is the most complex official NES mapper. This sub-phase ships
-//! the CPU-visible slice of it — the PRG window selectors, PRG-RAM
+//! the CPU-visible slice of it - the PRG window selectors, PRG-RAM
 //! with the two-register write-protect, and a stub for everything
 //! else. CHR banking lands in sub-B, scanline IRQ in sub-C, multiply
 //! and PRG-RAM protect-refinement in sub-D, ExRAM in sub-E, and
@@ -12,7 +12,7 @@
 //!
 //! | Addr | Effect |
 //! |---|---|
-//! | `$5100` | PRG mode — bits 1-0. 0=32K, 1=16K+16K, 2=16K+8K+8K, 3=four 8K. |
+//! | `$5100` | PRG mode - bits 1-0. 0=32K, 1=16K+16K, 2=16K+8K+8K, 3=four 8K. |
 //! | `$5101` | CHR mode (sub-B). |
 //! | `$5102` | PRG-RAM write-protect 1 (low 2 bits). Writes enabled only when `$5102 & 3 == 2` AND `$5103 & 3 == 1`. |
 //! | `$5103` | PRG-RAM write-protect 2 (low 2 bits). |
@@ -45,12 +45,12 @@
 //! ## Power-on defaults
 //!
 //! Per nesdev wiki + Mesen2 MMC5: `$5100 = 0x03` (8 KB mode), `$5117 =
-//! 0xFF` (last ROM bank pinned). Other registers are zeroed — which
+//! 0xFF` (last ROM bank pinned). Other registers are zeroed - which
 //! means `$5102/$5103` default to protect-engaged, so a fresh cart
 //! can't accidentally corrupt battery RAM before the game unlocks it.
 //!
 //! Clean-room references (behavioral only, no copied code):
-//! - `~/Git/Mesen2/Core/NES/Mappers/Nintendo/MMC5.h` — `GetCpuBankInfo`
+//! - `~/Git/Mesen2/Core/NES/Mappers/Nintendo/MMC5.h` - `GetCpuBankInfo`
 //!   and `UpdatePrgBanks` are the canonical model for the mode table.
 //! - `~/Git/punes/src/core/mappers/mapper_MMC5.c`
 //! - `reference/mappers.md §Mapper 5`
@@ -62,7 +62,7 @@ const PRG_BANK_8K: usize = 8 * 1024;
 const CHR_BANK_1K: usize = 1024;
 const EXRAM_SIZE: usize = 1024;
 /// CPU cycles without a PPU read before the mapper clears its
-/// "in frame" flag. Real MMC5 uses 3 cycles — the time it takes a
+/// "in frame" flag. Real MMC5 uses 3 cycles - the time it takes a
 /// stopped PPU to be detected via the absence of `/RD` pulses on M2
 /// rises. Matches Mesen2 `MMC5.h` `_ppuIdleCounter = 3` reset path.
 const PPU_IDLE_THRESHOLD: u8 = 3;
@@ -96,13 +96,13 @@ pub struct Mmc5 {
     chr_ram: bool,
     mirroring: Mirroring,
 
-    /// $5100 low 2 bits — PRG window layout selector.
+    /// $5100 low 2 bits - PRG window layout selector.
     prg_mode: u8,
     /// Raw values written to $5113..=$5117. Indexed by (addr - $5113).
     prg_regs: [u8; 5],
-    /// $5102 & 3 — half of the PRG-RAM write-protect pair.
+    /// $5102 & 3 - half of the PRG-RAM write-protect pair.
     prg_ram_protect1: u8,
-    /// $5103 & 3 — other half.
+    /// $5103 & 3 - other half.
     prg_ram_protect2: u8,
 
     /// Resolved window table, recomputed after every bank-selector
@@ -116,17 +116,17 @@ pub struct Mmc5 {
     prg_bank_count_8k: usize,
     prg_ram_bank_count_8k: usize,
 
-    /// $5101 low 2 bits — CHR window layout selector. 0=8K, 1=4K×2,
+    /// $5101 low 2 bits - CHR window layout selector. 0=8K, 1=4K×2,
     /// 2=2K×4, 3=1K×8.
     chr_mode: u8,
-    /// $5120-$5127 — BG CHR bank selectors.
+    /// $5120-$5127 - BG CHR bank selectors.
     chr_bg_regs: [u8; 8],
-    /// $5128-$512B — sprite CHR bank selectors (used only when 8×16
+    /// $5128-$512B - sprite CHR bank selectors (used only when 8×16
     /// sprite mode is active; the PPU tags those fetches
     /// `PpuFetchKind::SpritePattern`, everything else routes through
     /// the BG set).
     chr_spr_regs: [u8; 4],
-    /// $5130 low 2 bits — upper bank-index bits for CHR > 256 KB.
+    /// $5130 low 2 bits - upper bank-index bits for CHR > 256 KB.
     /// OR'd into every `$5120-$512B` value at bank-resolution time.
     chr_upper: u8,
 
@@ -139,17 +139,17 @@ pub struct Mmc5 {
     /// `$2007` reads route through the BG bank set.
     last_fetch_kind: PpuFetchKind,
 
-    /// `$5104` low 2 bits — ExRAM disposition. Sub-E will gate
+    /// `$5104` low 2 bits - ExRAM disposition. Sub-E will gate
     /// reads/writes against this; sub-C already respects the
     /// "read-only-during-rendering" rule for mode 3.
     exram_mode: u8,
-    /// `$5105` raw — 4 × 2-bit nametable slot selector. Decoded per
+    /// `$5105` raw - 4 × 2-bit nametable slot selector. Decoded per
     /// [`Mmc5::nt_slot_source`].
     nt_mapping: u8,
-    /// `$5106` — one byte pattern-table tile index used by every
+    /// `$5106` - one byte pattern-table tile index used by every
     /// fill-mode nametable cell.
     fill_tile: u8,
-    /// `$5107` — 2 bits of palette attribute for fill-mode slots.
+    /// `$5107` - 2 bits of palette attribute for fill-mode slots.
     /// The PPU ATtribute fetch at `0x3C0+` returns this 2-bit value
     /// replicated across all four quadrants (`color << 6 | color <<
     /// 4 | color << 2 | color`). Stored as raw; replicated at read
@@ -160,7 +160,7 @@ pub struct Mmc5 {
     exram: [u8; EXRAM_SIZE],
 
     // --- Scanline IRQ ---
-    /// `$5203` — counter target; IRQ fires when `scanline_counter`
+    /// `$5203` - counter target; IRQ fires when `scanline_counter`
     /// equals this after a scanline increment.
     irq_target: u8,
     /// `$5204` bit 7 latched at write time. Independent of the
@@ -185,7 +185,7 @@ pub struct Mmc5 {
     /// Previous PPU bus address. Used to count consecutive identical
     /// reads.
     last_ppu_addr: u16,
-    /// Capped at 2 — means "this address has now matched twice in a
+    /// Capped at 2 - means "this address has now matched twice in a
     /// row"; on the third match (counter sees it was already 2) we
     /// fire the scanline detector.
     nt_read_counter: u8,
@@ -256,7 +256,7 @@ impl Mmc5 {
             // Power-on CHR mode: 8 KB (matches Mesen2's default
             // `_chrMode = 0`). With regs zero-initialized this makes
             // the whole $0000-$1FFF window alias to CHR banks 0-7,
-            // the same flat layout the sub-A stub had — so anything
+            // the same flat layout the sub-A stub had - so anything
             // the game relies on seeing briefly before it writes its
             // own CHR banks still looks sensible.
             chr_mode: 0,
@@ -306,7 +306,7 @@ impl Mmc5 {
         // Per-mode register selection. Each mode's table maps the
         // 1 KB slot to (register index, window size in 1 KB).
         // Sprite-set slots 4-7 intentionally alias back to regs 8-11
-        // — there are only four sprite registers, so the top half
+        // - there are only four sprite registers, so the top half
         // of the window reuses them. (Matches Mesen2 `UpdateChrBanks`
         // `chrA ? ... : 0x08 + (slot & 3)` pattern.)
         let (reg_idx, size_1k) = match self.chr_mode & 0x03 {
@@ -337,7 +337,7 @@ impl Mmc5 {
                 (reg, 2usize)
             }
             _ => {
-                // 1 KB mode — eight windows. BG: regs 0..=7 in order.
+                // 1 KB mode - eight windows. BG: regs 0..=7 in order.
                 // Sprite: regs 8..=11 replicated across slots 0-3 and
                 // 4-7.
                 let reg = if is_sprite {
@@ -377,7 +377,7 @@ impl Mmc5 {
     /// raw bank registers. Called after any write that could change
     /// the window layout.
     fn update_prg_banks(&mut self) {
-        // $5117 is always ROM (last slot must be physical ROM — the
+        // $5117 is always ROM (last slot must be physical ROM - the
         // reset vector lives there). bit 7 is therefore part of the
         // bank index, masked off at each mode's alignment.
         let r5115 = self.prg_regs[2];
@@ -469,7 +469,7 @@ impl Mmc5 {
             }
         }
 
-        // PRG-RAM window at $6000-$7FFF — $5113 low 3 bits select
+        // PRG-RAM window at $6000-$7FFF - $5113 low 3 bits select
         // an 8 KB bank. Larger WRAM configurations can use bit 3
         // too, but sub-A's max is 64 KB via the header path below.
         let r5113 = self.prg_regs[0];
@@ -542,7 +542,7 @@ impl Mapper for Mmc5 {
 
     fn cpu_write(&mut self, addr: u16, data: u8) {
         match addr {
-            // $5100: PRG mode select — forces a window re-resolve.
+            // $5100: PRG mode select - forces a window re-resolve.
             0x5100 => {
                 self.prg_mode = data & 0x03;
                 self.update_prg_banks();
@@ -564,7 +564,7 @@ impl Mapper for Mmc5 {
             0x5105 => self.nt_mapping = data,
             // $5106: fill-mode tile byte (same tile at every NT cell).
             0x5106 => self.fill_tile = data,
-            // $5107: fill-mode attribute — low 2 bits picked and
+            // $5107: fill-mode attribute - low 2 bits picked and
             // replicated across all four quadrants at fetch time.
             0x5107 => self.fill_color = data & 0x03,
             // $5113: PRG-RAM bank at $6000-$7FFF.
@@ -592,11 +592,11 @@ impl Mapper for Mmc5 {
             0x5205 => self.mult_a = data,
             0x5206 => self.mult_b = data,
             // $5C00-$5FFF: ExRAM CPU write window.
-            //   Mode 0/1 — Only writable during rendering. Writes
+            //   Mode 0/1 - Only writable during rendering. Writes
             //              outside rendering clock a zero through
             //              (matches Mesen2 `WriteRam`).
-            //   Mode 2  — Plain R/W CPU RAM.
-            //   Mode 3  — Read-only from CPU; writes are dropped.
+            //   Mode 2  - Plain R/W CPU RAM.
+            //   Mode 3  - Read-only from CPU; writes are dropped.
             0x5C00..=0x5FFF => {
                 let idx = (addr - 0x5C00) as usize;
                 match self.exram_mode {
@@ -604,7 +604,7 @@ impl Mapper for Mmc5 {
                         self.exram[idx] = if self.in_frame { data } else { 0 };
                     }
                     2 => self.exram[idx] = data,
-                    _ => {} // mode 3 — read-only, drop write
+                    _ => {} // mode 3 - read-only, drop write
                 }
             }
             // $5128-$512F covers sprite regs + upper-reg stub.
@@ -697,12 +697,12 @@ impl Mapper for Mmc5 {
     }
 
     fn on_ppu_addr(&mut self, addr: u16, _ppu_cycle: u64, kind: PpuFetchKind) {
-        // Latch for the CHR resolver — the PPU invokes this hook
+        // Latch for the CHR resolver - the PPU invokes this hook
         // immediately before `ppu_read` (same bus access), so the
         // tag is fresh when CHR routing runs.
         self.last_fetch_kind = kind;
 
-        // Scanline IRQ — follows Mesen2's MapperReadVram +
+        // Scanline IRQ - follows Mesen2's MapperReadVram +
         // DetectScanlineStart structure in our own words.
         //
         // Model: the PPU's end-of-scanline garbage NT fetches at
@@ -711,13 +711,13 @@ impl Mapper for Mmc5 {
         // already walked past the last real BG tile and horizontal
         // v ← t is copied at dot 257. That three-in-a-row signature
         // is unique to scanline boundaries while rendering is active
-        // — no other part of the PPU's bus trace produces it. Reading
+        // - no other part of the PPU's bus trace produces it. Reading
         // a DIFFERENT address after the third same-addr read is what
         // triggers the scanline event (typically the AT fetch at
         // dot 3).
         let is_nt_fetch = (0x2000..=0x2FFF).contains(&addr) && (addr & 0x03FF) < 0x03C0;
         if is_nt_fetch && self.need_in_frame {
-            // Commit the pending in-frame transition — the mapper
+            // Commit the pending in-frame transition - the mapper
             // just observed the next scanline's first real NT fetch.
             self.need_in_frame = false;
             self.in_frame = true;
@@ -752,7 +752,7 @@ impl Mapper for Mmc5 {
 
     fn on_cpu_cycle(&mut self) {
         // MMC5 clears its in-frame flag after PPU_IDLE_THRESHOLD CPU
-        // cycles with no PPU bus activity — the emulated equivalent
+        // cycles with no PPU bus activity - the emulated equivalent
         // of observing /RD staying high across several M2 rises (real
         // MMC5's detection path). Rendering-disabled moments mid-
         // frame trigger this; the counter rearms on the next PPU
@@ -776,7 +776,7 @@ impl Mapper for Mmc5 {
                 // ExRAM slot. Modes 0/1 use ExRAM as an actual NT
                 // (byte-per-cell). Modes 2/3 repurpose ExRAM as CPU
                 // RAM, and the PPU sees an "empty" (zeroed) NT on
-                // these slots instead — matches Mesen2's
+                // these slots instead - matches Mesen2's
                 // `_emptyNametable` mapping in `SetNametableMapping`.
                 if self.exram_mode <= 1 {
                     NametableSource::Byte(self.exram[offset as usize & 0x03FF])
@@ -808,7 +808,7 @@ impl Mapper for Mmc5 {
                 // ExRAM-as-NT in modes 0/1 only. Writes outside
                 // rendering clock a zero through (same quirk as the
                 // CPU $5C00-$5FFF path). Modes 2/3 have ExRAM
-                // repurposed as CPU RAM — PPU-side NT writes do not
+                // repurposed as CPU RAM - PPU-side NT writes do not
                 // land in the buffer.
                 if self.exram_mode <= 1 {
                     let idx = offset as usize & 0x03FF;
@@ -825,7 +825,7 @@ impl Mapper for Mmc5 {
     }
 
     fn mirroring(&self) -> Mirroring {
-        // $5105 supersedes this via `ppu_nametable_read/write` —
+        // $5105 supersedes this via `ppu_nametable_read/write` -
         // `mirroring()` is only consulted for slots that return
         // `NametableSource::Default`, which MMC5 never does. Returning
         // the cart's header value keeps pre-init accesses sensible.
@@ -889,7 +889,7 @@ mod tests {
         }
     }
 
-    /// Drive a single PPU read via the trait surface — matching what
+    /// Drive a single PPU read via the trait surface - matching what
     /// the bus does on a real fetch. `kind` latches through
     /// `on_ppu_addr` so `ppu_read` sees the right classification.
     fn chr_read(m: &mut Mmc5, addr: u16, kind: PpuFetchKind) -> u8 {
@@ -897,7 +897,7 @@ mod tests {
         m.ppu_read(addr)
     }
 
-    /// Both halves of the PRG-RAM write-protect pair — after this,
+    /// Both halves of the PRG-RAM write-protect pair - after this,
     /// subsequent `$6000-$7FFF` writes stick.
     fn unlock_prg_ram(m: &mut Mmc5) {
         m.cpu_write(0x5102, 0b10);
@@ -989,7 +989,7 @@ mod tests {
 
     #[test]
     fn bit7_on_5117_ignored_always_rom() {
-        // $5117 bit 7 must not flip the slot to RAM — the last slot
+        // $5117 bit 7 must not flip the slot to RAM - the last slot
         // is always ROM per real hardware. A value of 0x01 should
         // resolve to ROM bank 1.
         let mut m = Mmc5::new(tagged_cart());
@@ -1003,16 +1003,16 @@ mod tests {
     fn prg_ram_write_blocked_until_both_protect_halves_match() {
         let mut m = Mmc5::new(tagged_cart());
 
-        // Write with both halves at default (0/0) — should not stick.
+        // Write with both halves at default (0/0) - should not stick.
         m.cpu_write(0x6000, 0xCC);
         assert_eq!(m.cpu_peek(0x6000), 0x00);
 
-        // Only one half matches — still blocked.
+        // Only one half matches - still blocked.
         m.cpu_write(0x5102, 0b10);
         m.cpu_write(0x6000, 0xDD);
         assert_eq!(m.cpu_peek(0x6000), 0x00);
 
-        // Full unlock — write lands.
+        // Full unlock - write lands.
         m.cpu_write(0x5103, 0b01);
         m.cpu_write(0x6000, 0xEE);
         assert_eq!(m.cpu_peek(0x6000), 0xEE);
@@ -1214,7 +1214,7 @@ mod tests {
 
     #[test]
     fn multiplier_reads_are_stable_across_repeats() {
-        // Reading either byte has no side effect — both bytes should
+        // Reading either byte has no side effect - both bytes should
         // keep returning the same product until an operand is rewritten.
         let mut m = Mmc5::new(tagged_cart());
         m.cpu_write(0x5205, 0x10);
@@ -1246,7 +1246,7 @@ mod tests {
 
     /// Simulate a single PPU bus read with the given kind, driving
     /// both the `on_ppu_addr` hook (where detection lives) and the
-    /// hypothetical `ppu_read` (for CHR reads). Returns nothing —
+    /// hypothetical `ppu_read` (for CHR reads). Returns nothing -
     /// tests inspect IRQ state via `irq_line` / `cpu_read_ex`.
     fn ppu_bus_read(m: &mut Mmc5, addr: u16, kind: PpuFetchKind) {
         m.on_ppu_addr(addr, 0, kind);
@@ -1369,10 +1369,10 @@ mod tests {
         // $5105 = 0b11_10_01_00:
         //   slot 0 -> 0 (CIRAM A)
         //   slot 1 -> 1 (CIRAM B)
-        //   slot 2 -> 2 (ExRAM-as-NT — requires mode 0/1)
+        //   slot 2 -> 2 (ExRAM-as-NT - requires mode 0/1)
         //   slot 3 -> 3 (Fill)
         m.cpu_write(0x5105, 0b11_10_01_00);
-        // ExRAM mode 0 — buffer serves as an extra nametable. The
+        // ExRAM mode 0 - buffer serves as an extra nametable. The
         // NT write path lands bytes while `in_frame` is true; use a
         // direct buffer poke via the bypass below.
         m.cpu_write(0x5104, 0x00);
@@ -1447,7 +1447,7 @@ mod tests {
     #[test]
     fn nt_slot_to_exram_returns_zero_when_mode_is_cpu_ram() {
         // In modes 2/3 the NT-mapped ExRAM slot reads as empty (zero)
-        // — real hardware routes the PPU fetch to an empty page
+        // - real hardware routes the PPU fetch to an empty page
         // rather than the ExRAM buffer so CPU-side data can't leak
         // into the rendered scene.
         let mut m = Mmc5::new(tagged_cart());
@@ -1456,7 +1456,7 @@ mod tests {
         m.cpu_write(0x5C00, 0xFF); // poke a value in
         assert_eq!(m.ppu_nametable_read(0, 0), NametableSource::Byte(0));
 
-        // Swap to mode 0 — now NT slot reads reflect the buffer.
+        // Swap to mode 0 - now NT slot reads reflect the buffer.
         m.cpu_write(0x5104, 0x00);
         assert_eq!(m.ppu_nametable_read(0, 0), NametableSource::Byte(0xFF));
     }
@@ -1466,7 +1466,7 @@ mod tests {
         let mut m = Mmc5::new(tagged_cart());
         m.cpu_write(0x5105, 0b00_00_00_10); // slot 0 -> ExRAM
 
-        // Mode 2 (CPU RAM) — PPU-side writes via slot must NOT
+        // Mode 2 (CPU RAM) - PPU-side writes via slot must NOT
         // corrupt the CPU's view of ExRAM.
         m.cpu_write(0x5104, 0x02);
         m.cpu_write(0x5C00, 0x11);
@@ -1476,7 +1476,7 @@ mod tests {
         );
         assert_eq!(m.cpu_read_ex(0x5C00), Some(0x11));
 
-        // Mode 0 with in_frame=true — PPU-side writes land.
+        // Mode 0 with in_frame=true - PPU-side writes land.
         m.cpu_write(0x5104, 0x00);
         m.in_frame = true;
         m.ppu_nametable_write(0, 0, 0x33);

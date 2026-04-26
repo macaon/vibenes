@@ -51,7 +51,7 @@ fn main() -> ExitCode {
     };
     println!("{}", cart.describe());
     if !cart.battery_backed {
-        println!("NOT battery-backed — saves will never be created for this cart.");
+        println!("NOT battery-backed - saves will never be created for this cart.");
         return ExitCode::from(0);
     }
     let crc = cart.prg_chr_crc32;
@@ -116,11 +116,11 @@ fn main() -> ExitCode {
     let mut n2 = Nes::from_cartridge(cart).expect("rebuild");
     n2.attach_save_metadata(path.clone(), crc);
     let loaded = n2.load_battery(&cfg).expect("reload");
-    println!("phase 2 — existing save loaded? {loaded}");
+    println!("phase 2 - existing save loaded? {loaded}");
     let roundtrip: Vec<u8> = (0..4).map(|i| n2.bus.peek(0x6000 + i)).collect();
     println!("roundtrip: {roundtrip:02X?}");
     if &roundtrip[..] == &probe[..] {
-        println!("OK — offline pipeline works.");
+        println!("OK - offline pipeline works.");
         ExitCode::from(0)
     } else {
         println!("FAIL");

@@ -6,7 +6,7 @@
 //! Why draw into the framebuffer instead of compositing in egui? The
 //! ruler needs to align pixel-perfect with NES coordinates so it can
 //! be used to identify rendering artifacts at exact scanline / dot
-//! positions. Doing the work in the framebuffer guarantees that —
+//! positions. Doing the work in the framebuffer guarantees that -
 //! scaling and PAR are applied uniformly to the labels and the image
 //! together.
 //!

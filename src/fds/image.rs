@@ -9,16 +9,16 @@
 //! (FamicomWorldNES):
 //!
 //! ```text
-//! 16-byte fwNES header (optional — some dumps skip it):
-//!   [0..4]   'F' 'D' 'S' 0x1A  — magic
+//! 16-byte fwNES header (optional - some dumps skip it):
+//!   [0..4]   'F' 'D' 'S' 0x1A  - magic
 //!   [4]      side_count (1..=4 typical; 2 is almost universal)
 //!   [5..16]  zero padding
 //!
 //! followed by side_count × 65500 bytes of disk data.
 //! ```
 //!
-//! A side contains a sequence of "blocks" on real hardware — header
-//! block, file-amount block, file-header blocks, file-data blocks —
+//! A side contains a sequence of "blocks" on real hardware - header
+//! block, file-amount block, file-header blocks, file-data blocks -
 //! each tagged with a block-type byte. We don't parse the block
 //! structure here; that's the disk-transport state machine's job in
 //! [`crate::mapper::fds`]. Phase 0 treats each side as an opaque 65500
@@ -27,10 +27,10 @@
 //! ## What we validate
 //!
 //! - Total file size matches (`side_count × 65500` + optional 16 B
-//!   header). Dumps with trailing garbage — rare but we've seen them —
+//!   header). Dumps with trailing garbage - rare but we've seen them -
 //!   get truncated to the declared side count with a warning hook.
 //! - Every side's first block tag is `0x01` (disk header marker). A
-//!   mismatch raises a warning but doesn't reject the file — some
+//!   mismatch raises a warning but doesn't reject the file - some
 //!   homebrew dumps are slightly off-spec and still work.
 //! - The disk-header string `*NINTENDO-HVC*` at side-offset 1 is
 //!   checked; mismatch → warning.
@@ -42,7 +42,7 @@
 //!
 //! This phase supports `.fds`. `.qd` (Quick Disk) format has the same
 //! game data in 65536-byte sides (vs. 65500 for `.fds`) and is
-//! deferred — none of the user's ROMs are `.qd`; adding support is a
+//! deferred - none of the user's ROMs are `.qd`; adding support is a
 //! drop-in extension to `from_bytes`.
 
 use std::fmt;
@@ -58,7 +58,7 @@ pub const SIDE_SIZE: usize = 65500;
 /// through before the first `0x80` sync marker on each side.
 const LEADING_GAP_BYTES: usize = 28300 / 8;
 
-/// Inter-block gap length — 976 bits / 8 = 122 bytes, matching Mesen2.
+/// Inter-block gap length - 976 bits / 8 = 122 bytes, matching Mesen2.
 const BLOCK_GAP_BYTES: usize = 976 / 8;
 
 /// Sync byte written before each block to signal the transport that
@@ -86,10 +86,10 @@ const FILE_HEADER_BLOCK_LEN: usize = 16;
 const FWNES_HEADER: [u8; 4] = *b"FDS\x1A";
 const FWNES_HEADER_SIZE: usize = 16;
 
-/// Disk-header block tag — the first byte of every well-formed side.
+/// Disk-header block tag - the first byte of every well-formed side.
 const BLOCK_TAG_DISK_HEADER: u8 = 0x01;
 
-/// "*NINTENDO-HVC*" (14 chars) — the magic string every legitimate
+/// "*NINTENDO-HVC*" (14 chars) - the magic string every legitimate
 /// Famicom disk's header block starts with, sitting at side-offset 1.
 const NINTENDO_HVC: &[u8] = b"*NINTENDO-HVC*";
 
@@ -171,7 +171,7 @@ impl std::error::Error for ImageError {}
 impl FdsImage {
     /// Parse a raw file byte slice into an [`FdsImage`]. Accepts both
     /// fwNES-headered and bare variants. Validation warnings land in
-    /// [`FdsImage::warnings`] rather than failing the load — none of
+    /// [`FdsImage::warnings`] rather than failing the load - none of
     /// our tested dumps are perfectly spec-clean.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ImageError> {
         let (data, had_header) = strip_optional_header(bytes)?;
@@ -238,7 +238,7 @@ impl FdsImage {
     /// Produce the scan-ready form of each side: prepend the leading
     /// gap, insert `0x80` sync bytes before each block, and append
     /// fake CRCs + inter-block gap after each block. The disk
-    /// transport runs over these "gapped" bytes during emulation —
+    /// transport runs over these "gapped" bytes during emulation -
     /// gap zeros keep `_gapEnded = false`, sync bytes flip it true so
     /// the BIOS sees a real byte on the read-data register.
     ///
@@ -328,7 +328,7 @@ pub fn gap_raw_sides(raw_sides: &[Vec<u8>]) -> Vec<Vec<u8>> {
 /// a `last_file_size` variable through the walk.
 ///
 /// Any unexpected tag bytes stop the structured walk and copy the
-/// remaining raw side data as-is (wrapped in a sync-byte prefix) —
+/// remaining raw side data as-is (wrapped in a sync-byte prefix) -
 /// homebrew dumps with non-standard trailer bytes still work.
 fn add_gaps(raw_side: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw_side.len() + 4096);
@@ -346,7 +346,7 @@ fn add_gaps(raw_side: &[u8]) -> Vec<u8> {
                 // File data. The preceding file-header block's bytes
                 // at offsets +0x0D and +0x0E (zero-indexed: 13 and 14)
                 // encode the file size. Mesen2 uses `i - 3` / `i - 2`
-                // — that's the position of those bytes RELATIVE to
+                // - that's the position of those bytes RELATIVE to
                 // `i`, which points at the next block's type tag.
                 // Walking the layout: the file-header block type is
                 // at `i - 16`, the size bytes at `i - 16 + 13` =
@@ -360,7 +360,7 @@ fn add_gaps(raw_side: &[u8]) -> Vec<u8> {
                 1 + (size_lo | (size_hi << 8))
             }
             _ => {
-                // Unexpected byte — copy the rest of the side raw,
+                // Unexpected byte - copy the rest of the side raw,
                 // prefixed with a sync marker. Matches Mesen2's
                 // fallback and accommodates non-standard dumps.
                 out.push(BLOCK_SYNC_BYTE);
@@ -370,7 +370,7 @@ fn add_gaps(raw_side: &[u8]) -> Vec<u8> {
         };
 
         if i + block_len > raw_side.len() {
-            // Block would run past the end of the side — stop
+            // Block would run past the end of the side - stop
             // emitting, leave remaining side as gap bytes. The
             // transport reads through them without asserting
             // transfer-complete.
@@ -388,8 +388,8 @@ fn add_gaps(raw_side: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Inverse of [`add_gaps`]. Given a gapped side — the scan-ready form
-/// the disk transport addresses — reconstruct the [`SIDE_SIZE`]-byte
+/// Inverse of [`add_gaps`]. Given a gapped side - the scan-ready form
+/// the disk transport addresses - reconstruct the [`SIDE_SIZE`]-byte
 /// raw representation by emitting only block-data bytes and dropping
 /// the leading gap, per-block sync markers, fake CRC bytes, and
 /// inter-block gaps.
@@ -417,7 +417,7 @@ fn add_gaps(raw_side: &[u8]) -> Vec<u8> {
 /// **Port note:** mirrors Mesen2's `FdsLoader::RebuildFdsFile`
 /// (`~/Git/Mesen2/Core/NES/Loaders/FdsLoader.cpp:93-158`) per-side
 /// logic. Byte-identical output for all block-type sequences we've
-/// tested, which is the interop guarantee — saved `.ips` files
+/// tested, which is the interop guarantee - saved `.ips` files
 /// round-trip between vibenes and Mesen2.
 pub fn rebuild_raw(gapped_side: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(SIDE_SIZE);
@@ -451,7 +451,7 @@ pub fn rebuild_raw(gapped_side: &[u8]) -> Vec<u8> {
             }
             4 => 1 + file_size,
             _ => {
-                // Non-standard tag — copy the rest of the gapped side
+                // Non-standard tag - copy the rest of the gapped side
                 // as-is. Matches Mesen2's recovery path for homebrew
                 // dumps with unexpected trailer bytes.
                 out.extend_from_slice(&gapped_side[i..]);
@@ -466,7 +466,7 @@ pub fn rebuild_raw(gapped_side: &[u8]) -> Vec<u8> {
             break;
         }
         if i + block_len > len {
-            // Guard against a truncated gapped buffer — shouldn't
+            // Guard against a truncated gapped buffer - shouldn't
             // happen in practice (gapped sides are always ≥ raw side
             // size) but defensive.
             break;
@@ -480,7 +480,7 @@ pub fn rebuild_raw(gapped_side: &[u8]) -> Vec<u8> {
     }
 
     // Pad (or truncate) to exactly SIDE_SIZE so concatenations across
-    // sides remain aligned on SIDE_SIZE boundaries — IPS offsets rely
+    // sides remain aligned on SIDE_SIZE boundaries - IPS offsets rely
     // on this.
     out.resize(SIDE_SIZE, 0);
     out
@@ -489,7 +489,7 @@ pub fn rebuild_raw(gapped_side: &[u8]) -> Vec<u8> {
 /// Build a `.fds` file-level byte stream from a set of gapped sides.
 /// Each side is passed through [`rebuild_raw`] to strip gaps/syncs/
 /// CRCs, then concatenated. If `need_header` is true, a 16-byte fwNES
-/// header is prepended — matching Mesen2's `RebuildFdsFile(needHeader=true)`
+/// header is prepended - matching Mesen2's `RebuildFdsFile(needHeader=true)`
 /// output byte-for-byte, which is what lets our saved `.ips` patches
 /// interoperate with Mesen2's.
 ///
@@ -522,7 +522,7 @@ pub fn build_raw_file_from_raw(raw_sides: &[Vec<u8>], need_header: bool) -> Vec<
         out.extend_from_slice(&FdsImage::fwnes_header_bytes(raw_sides.len() as u8));
     }
     for side in raw_sides {
-        // Each raw side must be exactly SIDE_SIZE — be defensive and
+        // Each raw side must be exactly SIDE_SIZE - be defensive and
         // pad/truncate so the output aligns.
         if side.len() >= SIDE_SIZE {
             out.extend_from_slice(&side[..SIDE_SIZE]);
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn non_aligned_size_rejects() {
-        // 65500 + some junk trailing bytes — not a whole side count.
+        // 65500 + some junk trailing bytes - not a whole side count.
         let mut bytes = synthetic_bare(1);
         bytes.extend_from_slice(&[0u8; 100]);
         match FdsImage::from_bytes(&bytes) {
@@ -715,7 +715,7 @@ mod tests {
     fn gapped_sides_structures_blocks_with_syncs_and_crcs() {
         // Build a side with disk header + file count + file header +
         // file data. add_gaps walks those four blocks, then hits the
-        // trailing zero bytes — which are an "unexpected tag" per the
+        // trailing zero bytes - which are an "unexpected tag" per the
         // block-type switch, so add_gaps falls back to raw-copy for
         // the tail. That's intentional behavior ported from Mesen2.
         let mut s = vec![0u8; SIDE_SIZE];
@@ -883,7 +883,7 @@ mod tests {
         let b = add_gaps(&vec![0u8; SIDE_SIZE]);
         let out = rebuild_raw_file(&[a, b], false);
         assert_eq!(out.len(), 2 * SIDE_SIZE);
-        // All zeros — gap-only side rebuilds to zeros.
+        // All zeros - gap-only side rebuilds to zeros.
         assert!(out.iter().all(|&b| b == 0));
     }
 

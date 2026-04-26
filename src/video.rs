@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! User-facing video settings: integer scale and pixel aspect ratio.
 //! The window is sized to exactly one integer multiple of the NES
-//! framebuffer scaled by PAR — drag-resize is disabled so the renderer
+//! framebuffer scaled by PAR - drag-resize is disabled so the renderer
 //! never has to deal with fractional scales.
 
 use crate::clock::Region;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelAspectRatio {
-    /// 1:1 — development / pixel-perfect output (256×240 at 1×).
+    /// 1:1 - development / pixel-perfect output (256×240 at 1×).
     Square,
-    /// 5:4 — the "standard" 4:3 TV aspect applied to 240-line content
+    /// 5:4 - the "standard" 4:3 TV aspect applied to 240-line content
     /// (320×240 at 1×).
     Standard,
-    /// 8:7 — true NTSC pixel ratio (≈293×240 at 1×).
+    /// 8:7 - true NTSC pixel ratio (≈293×240 at 1×).
     NtscTv,
-    /// 11:8 — PAL pixel ratio (352×240 at 1×).
+    /// 11:8 - PAL pixel ratio (352×240 at 1×).
     PalTv,
 }
 

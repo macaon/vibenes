@@ -8,7 +8,7 @@
 //! drives a simulated mechanical disk transport through a handful of
 //! registers at `$4020-$4033`.
 //!
-//! This is Phase 1 — enough to boot `fdsirqtests.fds` and single-
+//! This is Phase 1 - enough to boot `fdsirqtests.fds` and single-
 //! side games to their title screen. Features:
 //!
 //! - BIOS at `$E000-$FFFF` (read-only).
@@ -20,7 +20,7 @@
 //! - 16-bit IRQ timer at `$4020/$4021/$4022` plus the disk-transfer
 //!   IRQ at `$4025.7`, both OR'd into the mapper's `/IRQ` output.
 //! - Auto-insert side 0 on power-on (single-side games "just work").
-//! - `$4040-$4097` audio register window — writes stored, reads
+//! - `$4040-$4097` audio register window - writes stored, reads
 //!   return 0. Synthesis is deferred to the expansion-audio phase.
 //!
 //! **Deferred** (Phase 2+): multi-disk-side swap UI, $E445 header
@@ -59,7 +59,7 @@ const HEAD_RESET_DELAY: u32 = 50000;
 const INTER_BYTE_DELAY: u32 = 149;
 
 /// CPU cycles to spend in the ejected state before auto-inserting a
-/// pending side on a swap. ~280 ms at 1.79 MHz — enough frames for
+/// pending side on a swap. ~280 ms at 1.79 MHz - enough frames for
 /// the game's `$4032` polling loop to register the disk-removed edge
 /// before the new side becomes readable. Matches the "real physical
 /// swap takes a moment" UX and what Mesen2 does via its eject
@@ -96,7 +96,7 @@ pub struct Fds {
     /// detection: the rising edge stops CRC updates and latches the
     /// "bad CRC" flag.
     previous_crc_control: bool,
-    /// True once the first non-zero byte of a block has been read —
+    /// True once the first non-zero byte of a block has been read -
     /// gap-end sentinel. Cleared by a head reset / end-of-disk.
     gap_ended: bool,
     /// Set by the first timing-tick of a scan. Distinguishes "we're
@@ -160,7 +160,7 @@ pub struct Fds {
     /// swap while another side is loaded, we first simulate a
     /// physical eject for [`SWAP_EJECT_CYCLES`] CPU cycles, then
     /// auto-insert the pending side. Games check for the removed→
-    /// present transition on `$4032` — without the pause they'd see
+    /// present transition on `$4032` - without the pause they'd see
     /// no edge and reject the "swap."
     pending_insert_side: Option<u8>,
     pending_insert_cycles: u32,
@@ -283,7 +283,7 @@ impl Fds {
 
     /// Drive the pending-swap counter. When it reaches zero, insert
     /// the queued side. The counter only runs between `insert()` and
-    /// the actual re-insertion — off the hot path for non-FDS carts
+    /// the actual re-insertion - off the hot path for non-FDS carts
     /// (trait default `None`) and for FDS sessions without any pending
     /// swap (`pending_insert_side.is_none()`).
     fn tick_pending_insert(&mut self) {
@@ -292,7 +292,7 @@ impl Fds {
         };
         if self.pending_insert_cycles == 0 {
             self.pending_insert_side = None;
-            // Auto-insert — bypass the eject-first dance because we
+            // Auto-insert - bypass the eject-first dance because we
             // already ejected when the swap was scheduled.
             if (pending_side as usize) < self.disk_sides.len() {
                 self.disk_number = pending_side as u32;
@@ -334,7 +334,7 @@ impl Fds {
 
     fn clock_disk(&mut self) {
         if !self.is_disk_inserted() || !self.motor_on {
-            // Motor off or ejected — transport parks. The BIOS polls
+            // Motor off or ejected - transport parks. The BIOS polls
             // `$4032` to detect this state.
             self.end_of_head = true;
             self.scanning_disk = false;
@@ -360,7 +360,7 @@ impl Fds {
             return;
         }
 
-        // Inter-byte delay elapsed — process the next byte.
+        // Inter-byte delay elapsed - process the next byte.
         self.scanning_disk = true;
         let mut need_irq = self.disk_irq_enabled;
 
@@ -432,7 +432,7 @@ impl Fds {
             self.motor_on = false;
             if self.disk_irq_enabled {
                 // Kosodate Gokko disk copier expects an IRQ when the
-                // drive reaches end-of-disk — without it the software
+                // drive reaches end-of-disk - without it the software
                 // locks on a black screen.
                 self.disk_irq_line = true;
             }
@@ -469,7 +469,7 @@ impl Mapper for Fds {
                     *slot = data;
                 }
             }
-            // BIOS space — writes dropped.
+            // BIOS space - writes dropped.
             0xE000..=0xFFFF => {}
 
             // Disk registers at $4020-$4026 (only $4020-$4026 have
@@ -576,7 +576,7 @@ impl Mapper for Fds {
         self.clock_timer_irq();
         self.clock_disk();
         // The RP2C33 audio unit ticks every CPU cycle regardless of
-        // the $4023.1 enable gate — Mesen2 treats the gate as a
+        // the $4023.1 enable gate - Mesen2 treats the gate as a
         // register-write guard only. Reads and the CPU-visible
         // wavetable port ARE gated, but the DSP itself keeps running
         // so the wave accumulator's phase stays continuous across
@@ -604,7 +604,7 @@ impl Mapper for Fds {
         // Rebuild the current raw-file view from the live gapped
         // buffer, diff against the pristine snapshot, and IPS-encode
         // the delta. Empty deltas still produce a valid (8-byte)
-        // patch — the caller decides whether to persist it.
+        // patch - the caller decides whether to persist it.
         let original = build_raw_file_from_raw(&self.original_raw_sides, self.had_header);
         let current = rebuild_raw_file(&self.disk_sides, self.had_header);
         // Defensive: if lengths diverge (side count changed via some
@@ -617,7 +617,7 @@ impl Mapper for Fds {
     }
 
     fn load_disk_save(&mut self, ips_bytes: &[u8]) {
-        // Nothing to do on an empty / missing file — caller-side
+        // Nothing to do on an empty / missing file - caller-side
         // upstream already skipped the write in that case. Defensive
         // double-check so a zero-byte file from a crashed previous
         // run can't break boot.
@@ -635,14 +635,14 @@ impl Mapper for Fds {
         let raw_sides = split_raw_sides(&patched, self.had_header);
         if raw_sides.len() != self.original_raw_sides.len() {
             log::warn!(
-                "FDS: IPS save produced {} sides; expected {} — ignoring",
+                "FDS: IPS save produced {} sides; expected {} - ignoring",
                 raw_sides.len(),
                 self.original_raw_sides.len(),
             );
             return;
         }
         if raw_sides.iter().any(|s| s.len() != SIDE_SIZE) {
-            log::warn!("FDS: IPS save has a side of unexpected length — ignoring");
+            log::warn!("FDS: IPS save has a side of unexpected length - ignoring");
             return;
         }
         // Swap the runtime gapped buffer for a freshly-gapped version
@@ -704,7 +704,7 @@ impl Fds {
                 self.transfer_complete = false;
                 // Mesen2 notes "unsure about clearing irq here; FCEUX
                 // and Nintendulator don't do this, puNES does." We
-                // follow Mesen2 + puNES — cleared.
+                // follow Mesen2 + puNES - cleared.
                 self.disk_irq_line = false;
             }
             0x4025 => {
@@ -765,7 +765,7 @@ impl FdsControl for Fds {
             return;
         }
         if self.is_disk_inserted() {
-            // Currently loaded — eject first, schedule the new side
+            // Currently loaded - eject first, schedule the new side
             // to appear after the pause window. Games check the
             // removed→present transition on $4032 before accepting
             // a swap as valid.
@@ -892,7 +892,7 @@ mod tests {
         m.cpu_write(0x4023, 0x01); // disk on, sound off
         m.cpu_write(0x4040, 0x15);
         // Playback-mode read returns whatever `wave_position` points
-        // at — we haven't advanced the wave position, so it's
+        // at - we haven't advanced the wave position, so it's
         // whatever the pre-gate state was (zero).
         // Switch back on and confirm a write lands.
         m.cpu_write(0x4023, 0x03);
@@ -951,7 +951,7 @@ mod tests {
         m.cpu_write(0x4022, 0x02); // enable
         m.on_cpu_cycle(); // fires at counter=0
         assert!(m.timer_irq_line);
-        m.cpu_write(0x4022, 0x00); // disable — also acks
+        m.cpu_write(0x4022, 0x00); // disable - also acks
         assert!(!m.timer_irq_line);
     }
 
@@ -1006,7 +1006,7 @@ mod tests {
         for _ in 0..=HEAD_RESET_DELAY {
             m.on_cpu_cycle();
         }
-        m.on_cpu_cycle(); // first byte read — sets scanning_disk
+        m.on_cpu_cycle(); // first byte read - sets scanning_disk
         let v2 = m.cpu_read_ex(0x4032).unwrap();
         assert_eq!(v2 & 0x02, 0, "disk ready once scanning");
     }
@@ -1071,13 +1071,13 @@ mod tests {
 
     // ---- CRC accumulator ----
 
-    /// Build an FDS cart with two distinct sides — a minimum
+    /// Build an FDS cart with two distinct sides - a minimum
     /// fixture for exercising disk-swap semantics.
     fn make_two_side_cart() -> Cartridge {
         let mut cart = make_cart();
         let data = cart.fds_data.as_mut().unwrap();
         // Clone side 0 to give us a side 1. Actual contents don't
-        // matter for swap tests — only side-count presence does.
+        // matter for swap tests - only side-count presence does.
         let clone = data.gapped_sides[0].clone();
         data.gapped_sides.push(clone);
         let hdr_clone = data.headers[0].clone();
@@ -1125,7 +1125,7 @@ mod tests {
         assert_eq!(m.pending_insert_side, Some(1));
         assert_eq!(m.pending_insert_cycles, SWAP_EJECT_CYCLES);
 
-        // Tick through the pause. One cycle short — still ejected.
+        // Tick through the pause. One cycle short - still ejected.
         for _ in 0..SWAP_EJECT_CYCLES {
             m.on_cpu_cycle();
         }
@@ -1159,7 +1159,7 @@ mod tests {
 
     /// Starting state: no disk writes yet. `disk_save_dirty` is false
     /// and `disk_save_data` produces an IPS patch that is just
-    /// `"PATCH"` + `"EOF"` — 8 bytes, no records.
+    /// `"PATCH"` + `"EOF"` - 8 bytes, no records.
     #[test]
     fn disk_save_data_empty_when_nothing_written() {
         let m = Fds::new(make_cart());
@@ -1176,7 +1176,7 @@ mod tests {
     /// reproduces the write.
     #[test]
     fn disk_save_roundtrip_reproduces_write() {
-        // Tweak a byte inside the gapped buffer directly — simulates
+        // Tweak a byte inside the gapped buffer directly - simulates
         // a write done by the disk transport post-CRC.
         let mut m = Fds::new(make_cart());
         // Pick an arbitrary position inside the first block (after
@@ -1214,7 +1214,7 @@ mod tests {
     }
 
     /// `write_disk_byte` must NOT dirty when the underlying byte
-    /// already matches — the transport re-writes unchanged gap zeros
+    /// already matches - the transport re-writes unchanged gap zeros
     /// on every scan cycle, and we don't want that to flag saves.
     #[test]
     fn write_disk_byte_does_not_dirty_on_unchanged_value() {
@@ -1226,7 +1226,7 @@ mod tests {
     }
 
     /// Malformed IPS data (wrong magic / truncated) must not crash or
-    /// alter the current disk state — boot has to succeed even if the
+    /// alter the current disk state - boot has to succeed even if the
     /// save file was corrupted by an interrupted previous run.
     #[test]
     fn load_disk_save_ignores_malformed_patch() {
@@ -1236,7 +1236,7 @@ mod tests {
         assert_eq!(m.disk_sides, before);
     }
 
-    /// Non-FDS mappers must keep the default no-op behavior — the
+    /// Non-FDS mappers must keep the default no-op behavior - the
     /// save pipeline relies on `disk_save_data() == None` as its
     /// "this cart doesn't need IPS flushes" signal.
     #[test]
@@ -1266,7 +1266,7 @@ mod tests {
 
     // ---- FDS audio (RP2C33) integration ----
 
-    /// On reset the audio unit produces zero — no gain, all-zero
+    /// On reset the audio unit produces zero - no gain, all-zero
     /// wavetable, mix-sink sees `Some(0.0)` (Some because FDS has
     /// audio hardware).
     #[test]

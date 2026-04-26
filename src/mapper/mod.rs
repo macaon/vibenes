@@ -35,7 +35,7 @@ pub mod vrc7_opll;
 /// [`Mapper::on_ppu_addr`]. MMC5 needs this to pick the BG vs sprite
 /// CHR bank set (8×16 mode) and, in a later sub-phase, to detect
 /// scanlines via the 3-consecutive-same-NT-fetch signature. Mappers
-/// that don't care can ignore the kind entirely — MMC3's A12
+/// that don't care can ignore the kind entirely - MMC3's A12
 /// counter, for instance, looks only at bit 12 of the address.
 ///
 /// Sub-phases land progressively: B uses `BgPattern` / `SpritePattern`
@@ -61,7 +61,7 @@ pub enum PpuFetchKind {
     BgPattern,
     /// Garbage nametable fetch during the sprite pattern window
     /// (dots 257-320, slot cycle 1). Present on real hardware but
-    /// semantically idle — MMC5 does not count these toward its
+    /// semantically idle - MMC5 does not count these toward its
     /// scanline IRQ detector.
     SpriteNametable,
     /// Garbage attribute fetch in the sprite window (slot cycle 3).
@@ -75,18 +75,18 @@ pub enum PpuFetchKind {
 /// Source for a single nametable-slot read, returned by
 /// [`Mapper::ppu_nametable_read`]. The PPU uses this to decide which
 /// byte the fetch yields. Lets MMC5 route each of its four NT slots
-/// independently to CIRAM A, CIRAM B, ExRAM, or fill-mode — a
+/// independently to CIRAM A, CIRAM B, ExRAM, or fill-mode - a
 /// freedom the flat `Mirroring` enum can't express.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NametableSource {
-    /// No override — PPU falls through to CIRAM via `mirroring()`.
+    /// No override - PPU falls through to CIRAM via `mirroring()`.
     /// The default for every mapper except MMC5 + (future) FDS.
     Default,
     /// Force the slot to CIRAM bank A (the PPU's first 1 KB of VRAM).
     CiramA,
     /// Force the slot to CIRAM bank B (the PPU's second 1 KB).
     CiramB,
-    /// Mapper supplies the byte directly — ExRAM-as-NT or fill mode.
+    /// Mapper supplies the byte directly - ExRAM-as-NT or fill mode.
     Byte(u8),
 }
 
@@ -95,7 +95,7 @@ pub enum NametableSource {
 /// [`Mapper::ppu_nametable_write`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NametableWriteTarget {
-    /// No override — PPU writes to CIRAM via `mirroring()`.
+    /// No override - PPU writes to CIRAM via `mirroring()`.
     Default,
     /// Write to CIRAM bank A.
     CiramA,
@@ -154,7 +154,7 @@ pub trait Mapper: Send {
     /// `ppu_cycle` is a monotonic PPU-dot timestamp the mapper can
     /// use to filter glitches (e.g. MMC3's ≥10-PPU-cycle A12-low
     /// requirement before a rising edge counts). `kind` tags the
-    /// kind of fetch — see [`PpuFetchKind`]. Default no-op; MMC3 /
+    /// kind of fetch - see [`PpuFetchKind`]. Default no-op; MMC3 /
     /// MMC5 / MMC2 / MMC4 override.
     fn on_ppu_addr(&mut self, _addr: u16, _ppu_cycle: u64, _kind: PpuFetchKind) {}
     /// True when the cart is pulling /IRQ low. Wire-ORed with the APU
@@ -183,7 +183,7 @@ pub trait Mapper: Send {
     //
     // Wired through [`crate::nes::Nes::save_battery`] at app quit,
     // ROM swap, and periodic autosave. Default impls are "no
-    // battery" — mappers with battery-backed PRG-RAM
+    // battery" - mappers with battery-backed PRG-RAM
     // (nrom/mmc1/uxrom/cnrom/mmc3/mmc5 when the cart's flag6 bit 1
     // was set) override.
     //
@@ -202,7 +202,7 @@ pub trait Mapper: Send {
     //    case is a cheap no-op.
 
     /// Snapshot of battery-backed PRG-RAM, or `None` on non-battery
-    /// carts. Slice lifetime is borrowed from the mapper — copy the
+    /// carts. Slice lifetime is borrowed from the mapper - copy the
     /// bytes before calling any mutable mapper method.
     fn save_data(&self) -> Option<&[u8]> {
         None
@@ -231,7 +231,7 @@ pub trait Mapper: Send {
         None
     }
 
-    /// Immutable counterpart for status queries — building the disk-
+    /// Immutable counterpart for status queries - building the disk-
     /// submenu doesn't need mutation.
     fn as_fds(&self) -> Option<&dyn FdsControl> {
         None
@@ -251,7 +251,7 @@ pub trait Mapper: Send {
     //    mapper 20 returns an IPS patch (`PATCH` + records + `EOF`)
     //    encoding the delta between the current disk bytes and the
     //    pristine-on-load snapshot. Interop with Mesen2's `.ips`
-    //    format is the design goal — users can move `.ips` files
+    //    format is the design goal - users can move `.ips` files
     //    between emulators.
     //  * `load_disk_save` is invoked once, right after cart mount,
     //    before the CPU reset. The IPS patch is applied to the
@@ -270,7 +270,7 @@ pub trait Mapper: Send {
 
     /// Apply an IPS patch to restore disk state. Non-FDS mappers no-op.
     /// FDS mappers silently ignore malformed patches (the save file is
-    /// user data — surfacing a parse error would block the game from
+    /// user data - surfacing a parse error would block the game from
     /// booting with a known-working ROM).
     fn load_disk_save(&mut self, _ips_bytes: &[u8]) {}
 
@@ -302,7 +302,7 @@ pub trait FdsControl {
     fn eject(&mut self);
     /// Insert a specific side. If a disk is already inserted, ejects
     /// first and schedules the new side to appear after a short
-    /// pause — games check the `disk removed → disk present`
+    /// pause - games check the `disk removed → disk present`
     /// transition on `$4032`, so we can't jump directly from one
     /// side to another.
     fn insert(&mut self, side: u8);

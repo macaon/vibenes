@@ -1,4 +1,4 @@
-//! Cargo build script — compiles the vendored emu2413 OPLL core
+//! Cargo build script - compiles the vendored emu2413 OPLL core
 //! (`vendor/emu2413/`) into a static library that the VRC7 mapper FFI
 //! wrapper (`src/mapper/vrc7_opll.rs`) links against. Pure C, no
 //! configuration knobs; the `cc` crate picks up `$CC` / MSVC / clang
@@ -16,7 +16,7 @@ fn main() {
         .warnings(false)
         .extra_warnings(false);
 
-    // emu2413 is third-party C — silence the noisier diagnostics that
+    // emu2413 is third-party C - silence the noisier diagnostics that
     // would otherwise pollute our build output. These flags are GCC /
     // Clang only; MSVC ignores unknown `-W` flags by default but the
     // `flag_if_supported` gate keeps us safe across all toolchains.

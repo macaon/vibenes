@@ -88,7 +88,7 @@ impl Pulse {
         // clock fires this cycle AND the counter was non-zero at
         // write time. Sequencer-pos reset and envelope restart
         // happen immediately (nesdev: "duty cycle is NOT reset on
-        // $4003 write" is false — sequencer IS reset — but those
+        // $4003 write" is false - sequencer IS reset - but those
         // bits are not part of the same-cycle length race).
         self.length.stage_reload(data >> 3);
         self.sequencer_pos = 0;

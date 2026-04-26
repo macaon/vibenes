@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Konami VRC6 — iNES mappers 24 (VRC6a) and 26 (VRC6b).
+//! Konami VRC6 - iNES mappers 24 (VRC6a) and 26 (VRC6b).
 //!
 //! The VRC6 is a Konami-proprietary mapper/audio ASIC found on five
 //! Famicom titles, most notably Akumajō Densetsu (the JP Castlevania
 //! III) where the sawtooth channel drives the lead melody. The mapper
-//! logic is straightforward — PRG/CHR banking, scanline IRQ — while
+//! logic is straightforward - PRG/CHR banking, scanline IRQ - while
 //! the audio is the marquee feature (ported separately in
 //! [`crate::mapper::vrc6_audio`]).
 //!
@@ -63,7 +63,7 @@ const PRG_RAM_SIZE: usize = 8 * 1024;
 /// VRC scanline-mode IRQ prescaler reload (CPU cycles per scanline).
 /// Mesen2 and puNES both use 341; the wiki says "341 CPU cycles but
 /// gives 113.666 lines per frame when normalized against NTSC master
-/// clock" — close enough to a true scanline for the IRQ timing games
+/// clock" - close enough to a true scanline for the IRQ timing games
 /// that use this chip expect.
 const PRESCALER_RELOAD: i16 = 341;
 
@@ -71,7 +71,7 @@ const PRESCALER_RELOAD: i16 = 341;
 /// Per Mesen2 / puNES: 3 (matches the 3 PPU dots per CPU cycle).
 const PRESCALER_STEP: i16 = 3;
 
-/// Flavour of the chip — only differs in the A0/A1 address swap on
+/// Flavour of the chip - only differs in the A0/A1 address swap on
 /// register writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Variant {
@@ -91,7 +91,7 @@ enum Variant {
 ///
 /// Counter overflow (`0xFF → reload`) asserts the mapper IRQ line.
 /// Ack via `$F002` reloads the enable flag from `enable_after_ack`
-/// — the "auto-restart" trick used by title-screen fade-ins.
+/// - the "auto-restart" trick used by title-screen fade-ins.
 ///
 /// Port of Mesen2's `VrcIrq` with Rust idioms; state machine is
 /// byte-for-byte behavior-identical.
@@ -183,7 +183,7 @@ pub struct Vrc6 {
     prg_c000_8k: u8,
     /// `$D000-$E003` CHR bank registers (1 KiB each).
     chr_regs: [u8; 8],
-    /// `$B003` — banking mode + mirroring + PRG-RAM enable.
+    /// `$B003` - banking mode + mirroring + PRG-RAM enable.
     banking_mode: u8,
 
     mirroring: Mirroring,
@@ -323,15 +323,15 @@ impl Vrc6 {
     /// only specific bit combinations select a fixed mirroring; the
     /// "default" case reads the low bit of certain CHR registers to
     /// drive per-nametable-slot routing (split-screen). We don't
-    /// support the split-screen case — none of the commercial VRC6
-    /// titles use it — so "default" falls back to the cart's header
+    /// support the split-screen case - none of the commercial VRC6
+    /// titles use it - so "default" falls back to the cart's header
     /// mirroring.
     fn update_mirroring(&mut self) {
         if self.hardwired_four_screen {
             self.mirroring = Mirroring::FourScreen;
             return;
         }
-        // CHR-ROM-as-NT mode (bit 4) is also out-of-scope — treat as
+        // CHR-ROM-as-NT mode (bit 4) is also out-of-scope - treat as
         // CIRAM path. Real usage is homebrew-only.
         let masked = self.banking_mode & 0x2F;
         self.mirroring = match masked {
@@ -565,13 +565,13 @@ mod tests {
 
     /// VRC6b (mapper 26) swaps A0 and A1. Writing to `$8001` on a
     /// VRC6b cart should land on `$8002` semantically (still the
-    /// same PRG register) — but writing to `$F001` (IRQ control)
+    /// same PRG register) - but writing to `$F001` (IRQ control)
     /// vs `$F002` (IRQ ack) matters, because those are distinct
     /// sub-registers and the swap picks the wrong one if ignored.
     #[test]
     fn vrc6b_swaps_a0_a1_on_irq_registers() {
         let mut m = Vrc6::new_b(make_cart(8, 8, Variant::B));
-        // Enable IRQ in cycle mode via $F001 — which, on a VRC6b
+        // Enable IRQ in cycle mode via $F001 - which, on a VRC6b
         // cart, the CPU writes to $F002 (since A0/A1 are swapped).
         m.cpu_write(0xF000, 0xFE); // reload = 0xFE
         m.cpu_write(0xF002, 0x06); // swap → $F001: ctrl = cycle + enable

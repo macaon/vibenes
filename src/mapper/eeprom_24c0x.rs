@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Serial EEPROMs used by Bandai LZ93D50 boards — 24C01 (128 bytes) and
+//! Serial EEPROMs used by Bandai LZ93D50 boards - 24C01 (128 bytes) and
 //! 24C02 (256 bytes). Implements the I²C-style two-wire protocol
 //! (START / STOP / clock-transfer / ACK) that the cart exposes to the
 //! CPU via two pins wired through `$x00D`.
@@ -9,9 +9,9 @@
 //! - **SCL** is the clock, **SDA** the data line. The mapper drives both
 //!   as outputs on writes; the EEPROM can pull SDA low on ACK /
 //!   read-data cycles, which the CPU reads back via `$6000-$7FFF`.
-//! - **START** — SDA transitions high→low while SCL is stable high.
+//! - **START** - SDA transitions high→low while SCL is stable high.
 //!   Resets the state machine and begins a frame.
-//! - **STOP** — SDA transitions low→high while SCL is stable high.
+//! - **STOP** - SDA transitions low→high while SCL is stable high.
 //!   Returns to idle.
 //! - On each **SCL rising edge** the currently-selected side (master
 //!   or slave) shifts one bit; on each **falling edge** the state
@@ -24,14 +24,14 @@
 //! | size | 128 bytes | 256 bytes |
 //! | bit order | LSB-first | MSB-first |
 //! | chip-address preamble | none (START → Address) | yes (START → ChipAddress → Address) |
-//! | chip select | implicit — only one on the bus | slave addr `0xA0` + R/W bit |
+//! | chip select | implicit - only one on the bus | slave addr `0xA0` + R/W bit |
 //! | address mask | 7 bits (`& 0x7F`) | 8 bits (`& 0xFF`) |
 //!
 //! Used by:
-//! - **24C01** — iNES mapper 16 submapper 5 carts with a 128-byte
+//! - **24C01** - iNES mapper 16 submapper 5 carts with a 128-byte
 //!   NVRAM declaration (e.g. Famicom Jump II's internal battery);
 //!   also iNES mapper 159 (Bandai LZ93D50 + 24C01).
-//! - **24C02** — iNES mapper 16 submapper 3, submapper 5 with 256-byte
+//! - **24C02** - iNES mapper 16 submapper 3, submapper 5 with 256-byte
 //!   NVRAM, and the legacy iNES 1.0 default for battery carts; also
 //!   iNES mapper 157 (Datach, internal 256-byte chip).
 //!
@@ -44,10 +44,10 @@
 /// Which chip variant is on the cart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EepromChip {
-    /// 128-byte 24C01 — no slave-address preamble, LSB-first bit order.
+    /// 128-byte 24C01 - no slave-address preamble, LSB-first bit order.
     /// Mapper 16 submapper 5 with 128-byte NVRAM; mapper 159.
     C24C01,
-    /// 256-byte 24C02 — slave-address preamble (`0xA0`), MSB-first.
+    /// 256-byte 24C02 - slave-address preamble (`0xA0`), MSB-first.
     /// Mapper 16 submappers 3 and 5-with-256-byte-NVRAM; mapper 157.
     C24C02,
 }
@@ -155,7 +155,7 @@ impl Eeprom24C0X {
     /// Drive both pins simultaneously. Mapper calls this on every
     /// `$x00D` write, even if only one line changed.
     pub fn write(&mut self, scl: u8, sda: u8) {
-        // Normalize — real hardware only cares whether SCL/SDA are
+        // Normalize - real hardware only cares whether SCL/SDA are
         // above or below threshold. Anything non-zero counts as high.
         let scl = (scl != 0) as u8;
         let sda = (sda != 0) as u8;
@@ -190,7 +190,7 @@ impl Eeprom24C0X {
     fn on_clock_rise(&mut self, sda: u8) {
         match self.mode {
             Mode::ChipAddress => {
-                // 24C02 — shift slave address + R/W bit MSB-first.
+                // 24C02 - shift slave address + R/W bit MSB-first.
                 self.write_bit(sda, FieldKind::ChipAddress);
             }
             Mode::Address => {
@@ -226,7 +226,7 @@ impl Eeprom24C0X {
             Mode::WaitAck => {
                 if self.chip.has_chip_address() {
                     // 24C02: master ACK with SDA low signals "send me
-                    // another byte" — enter sequential read.
+                    // another byte" - enter sequential read.
                     if sda == 0 {
                         self.next_mode = Mode::Read;
                         self.data = self.bytes[self.address as usize];
@@ -251,7 +251,7 @@ impl Eeprom24C0X {
                         self.mode = Mode::SendAck;
                         self.counter = 0;
                         self.output = 1;
-                        // Bit 0 of the slave address is R/W — 1 = read.
+                        // Bit 0 of the slave address is R/W - 1 = read.
                         if self.chip_address & 0x01 != 0 {
                             self.next_mode = Mode::Read;
                             self.data = self.bytes[self.address as usize];
@@ -259,7 +259,7 @@ impl Eeprom24C0X {
                             self.next_mode = Mode::Address;
                         }
                     } else {
-                        // Not our chip — fall silent.
+                        // Not our chip - fall silent.
                         self.mode = Mode::Idle;
                         self.counter = 0;
                         self.output = 1;
@@ -375,13 +375,13 @@ enum FieldKind {
 mod tests {
     use super::*;
 
-    /// One I²C bit cycle — drops SCL first so SDA can safely transition
+    /// One I²C bit cycle - drops SCL first so SDA can safely transition
     /// while SCL is low (neither a START nor STOP can fire during the
     /// SDA change), then raises SCL for the bit sample. Ends at
     /// `(SCL=1, SDA=sda)`.
     fn pulse_clock(e: &mut Eeprom24C0X, sda: u8) {
         e.write(0, sda); // falling edge (no START/STOP possible)
-        e.write(1, sda); // rising edge — bit sampled
+        e.write(1, sda); // rising edge - bit sampled
     }
 
     fn start(e: &mut Eeprom24C0X) {
@@ -411,7 +411,7 @@ mod tests {
         }
     }
 
-    /// Clock out one 8-bit byte LSB-first — 24C01 order.
+    /// Clock out one 8-bit byte LSB-first - 24C01 order.
     fn send_byte_lsb(e: &mut Eeprom24C0X, byte: u8) {
         for i in 0..8 {
             let bit = (byte >> i) & 1;
@@ -436,7 +436,7 @@ mod tests {
         let mut byte = 0u8;
         for i in 0..8 {
             e.write(0, 1); // SCL low, SDA released
-            e.write(1, 1); // SCL high — slave clocks out bit
+            e.write(1, 1); // SCL high - slave clocks out bit
             byte |= (e.read() & 1) << (7 - i);
         }
         byte
@@ -482,7 +482,7 @@ mod tests {
     fn c24c02_write_then_read_single_byte() {
         let mut e = Eeprom24C0X::new(EepromChip::C24C02);
 
-        // Frame 1 — write 0x5A to address 0x10.
+        // Frame 1 - write 0x5A to address 0x10.
         start(&mut e);
         send_byte_msb(&mut e, 0xA0); // slave write
         ack(&mut e); // EEPROM ACK
@@ -492,13 +492,13 @@ mod tests {
         ack(&mut e);
         stop(&mut e);
 
-        // Frame 2 — random read from address 0x10.
+        // Frame 2 - random read from address 0x10.
         start(&mut e);
         send_byte_msb(&mut e, 0xA0); // dummy write to set address pointer
         ack(&mut e);
         send_byte_msb(&mut e, 0x10);
         ack(&mut e);
-        start(&mut e); // repeated start — switches to read
+        start(&mut e); // repeated start - switches to read
         send_byte_msb(&mut e, 0xA1); // slave read
         ack(&mut e);
         let byte = read_byte_msb(&mut e);
@@ -513,14 +513,14 @@ mod tests {
     fn c24c02_ignores_non_matching_slave_address() {
         let mut e = Eeprom24C0X::new(EepromChip::C24C02);
         start(&mut e);
-        // Wrong slave address — 0x80 doesn't match the `0xA0` pattern.
+        // Wrong slave address - 0x80 doesn't match the `0xA0` pattern.
         send_byte_msb(&mut e, 0x80);
         // The 8-bit address is latched on the ACK slot's falling edge,
         // not the 8th data bit's rising edge. Drive one more falling
         // edge to land the chip-select decision.
         e.write(0, 1);
         assert_eq!(e.mode, Mode::Idle);
-        // And the output stays released high — no ACK was asserted.
+        // And the output stays released high - no ACK was asserted.
         e.write(1, 1);
         assert_eq!(e.read(), 1);
     }
@@ -561,10 +561,10 @@ mod tests {
     #[test]
     fn c24c01_address_wraps_at_7_bits() {
         let mut e = Eeprom24C0X::new(EepromChip::C24C01);
-        // Write at "address 0x85" — 0x85 & 0x7F = 0x05.
+        // Write at "address 0x85" - 0x85 & 0x7F = 0x05.
         start(&mut e);
         send_byte_lsb(&mut e, 0x85 & 0xFE); // low bit 0 → write, rest of address
-        // Wait — this is confusing because the R/W bit is bit 7
+        // Wait - this is confusing because the R/W bit is bit 7
         // (last shifted). Let's just check the mask directly.
         // Actually easier: just write to 0x7F and 0x00, confirm they
         // are distinct addresses (no wrap below 128).

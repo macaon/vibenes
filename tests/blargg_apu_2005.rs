@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Integration tests for the pre-$6000 blargg APU suite. Drives each
 //! ROM through `Nes` in-process and uses `blargg_2005_scan` to pull
-//! the result code off the nametable — no subprocess, no
+//! the result code off the nametable - no subprocess, no
 //! `blargg_2005_report` binary involved. Keeps the regression gate
 //! self-contained.
 //!
@@ -29,7 +29,7 @@ fn rom_path(name: &str) -> PathBuf {
 fn run_rom(name: &str) -> (Option<u8>, String) {
     let path = rom_path(name);
     if !path.exists() {
-        panic!("missing test ROM: {} — clone https://github.com/christopherpow/nes-test-roms", path.display());
+        panic!("missing test ROM: {} - clone https://github.com/christopherpow/nes-test-roms", path.display());
     }
     let cart = Cartridge::load(&path).expect("load cartridge");
     let mut nes = Nes::from_cartridge(cart).expect("construct Nes");

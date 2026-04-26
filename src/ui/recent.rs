@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Most-recently-opened ROM list for the File menu. In-memory for
-//! sub-phase 2 — disk persistence (to `~/.config/vibenes/recent.json`)
+//! sub-phase 2 - disk persistence (to `~/.config/vibenes/recent.json`)
 //! is a follow-up.
 
 use std::collections::VecDeque;
@@ -62,7 +62,7 @@ mod tests {
         r.push(p("a.nes"));
         r.push(p("b.nes"));
         r.push(p("c.nes"));
-        // Re-push a — it should move to the front without losing b or c.
+        // Re-push a - it should move to the front without losing b or c.
         r.push(p("a.nes"));
         let got: Vec<_> = r.iter().cloned().collect();
         assert_eq!(got, vec![p("a.nes"), p("c.nes"), p("b.nes")]);

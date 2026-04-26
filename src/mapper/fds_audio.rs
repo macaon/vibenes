@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! FDS audio — RP2C33 wavetable + FM modulator synth.
+//! FDS audio - RP2C33 wavetable + FM modulator synth.
 //!
 //! Two DSP units, one sample output per CPU cycle:
 //!
@@ -17,7 +17,7 @@
 //!
 //! Mixed output: `wave_sample × min(gain,32) × WAVE_VOL_TABLE[master]`
 //! divided by 1152, giving a 0..63 level. The bus scales 0..63 to
-//! ~0..0.624 so the FDS signal sits ~2.4× APU pulse peak — matching
+//! ~0..0.624 so the FDS signal sits ~2.4× APU pulse peak - matching
 //! the nesdev "FDS audio" wiki mix ratio.
 //!
 //! ## References
@@ -27,7 +27,7 @@
 //! quirk, the 16-bit overflow semantics, and the envelope-clock
 //! formula (`8 × (speed+1) × master_speed`) are all protocol-exact,
 //! so reimplementing them from scratch is just a transcription
-//! hazard — we port Mesen2's logic with Rust idioms and credit it
+//! hazard - we port Mesen2's logic with Rust idioms and credit it
 //! here. Cross-checked against nesdev wiki's "FDS audio" page
 //! (register map + mixing ratio) and the skill's
 //! `reference/fds.md` §8.
@@ -55,8 +55,8 @@ const GAIN_CAP: u8 = 32;
 /// Per-raw-unit FDS → mix scale factor.
 ///
 /// The nesdev wiki says "FDS peak ≈ 2.4× APU pulse peak" for the raw
-/// analog signal on the cart connector. But Mesen2 — and every other
-/// emulator that sounds balanced — deliberately attenuates FDS well
+/// analog signal on the cart connector. But Mesen2 - and every other
+/// emulator that sounds balanced - deliberately attenuates FDS well
 /// below that so it doesn't drown the 2A03.
 ///
 /// Mesen2's `NesSoundMixer::GetOutputVolume` adds `fds × 20` into a
@@ -79,7 +79,7 @@ const FDS_MIX_SCALE: f32 = 0.2575 / 63.0;
 /// the common part; each concrete channel layers its own unit
 /// behavior on top.
 ///
-/// Port of Mesen2's `BaseFdsChannel` — the write-register
+/// Port of Mesen2's `BaseFdsChannel` - the write-register
 /// dispatch, the `8 × (speed+1) × master_speed` timer formula, and
 /// the 0..32 gain clamp all come straight from there.
 #[derive(Debug, Clone)]
@@ -91,7 +91,7 @@ pub(super) struct EnvelopeUnit {
     pub(super) frequency: u16,
     timer: u32,
     /// Global envelope-clock multiplier from `$408A`. BIOS boots with
-    /// `$E8` (232) — few NSFs touch it; we match Mesen2's default.
+    /// `$E8` (232) - few NSFs touch it; we match Mesen2's default.
     pub(super) master_speed: u8,
 }
 
@@ -109,7 +109,7 @@ impl EnvelopeUnit {
     }
 
     pub(super) fn reset_timer(&mut self) {
-        // 8 × (speed + 1) × master_speed — cycle count until the next
+        // 8 × (speed + 1) × master_speed - cycle count until the next
         // envelope tick. Writes to the channel's reg0 reset this
         // (puNES does the same), delaying the next tick slightly.
         self.timer = 8 * (self.speed as u32 + 1) * self.master_speed as u32;
@@ -219,7 +219,7 @@ impl ModChannel {
     /// Mod-table push via `$4088`. Only accepted when the modulator
     /// is halted (`$4087.7 = 1`); writes while running are silently
     /// dropped. Each write pushes the 3-bit value into TWO adjacent
-    /// slots — the mod table is actually 32 user entries presented as
+    /// slots - the mod table is actually 32 user entries presented as
     /// 64 on the read side, so writing a single entry advances the
     /// position by 2.
     fn write_mod_table(&mut self, value: u8) {
@@ -241,7 +241,7 @@ impl ModChannel {
                 if self.modulation_disabled {
                     // Halt drops the overflow counter so writes to
                     // the mod table enter at the known starting
-                    // offset. Mesen2 does the same — `_overflowCounter = 0`.
+                    // offset. Mesen2 does the same - `_overflowCounter = 0`.
                     self.overflow_counter = 0;
                 }
             }
@@ -283,7 +283,7 @@ impl ModChannel {
     ///
     /// 1. Multiply signed counter by mod gain, shift right 4 bits,
     ///    round in a peculiar half-rounding way when the low nibble
-    ///    is non-zero AND the shifted result's sign bit is clear —
+    ///    is non-zero AND the shifted result's sign bit is clear -
     ///    this is hardware-accurate, not a mistake.
     /// 2. Wrap the 9-bit result into `[-64, 191]`.
     /// 3. Multiply by the volume pitch, round to nearest across a
@@ -363,7 +363,7 @@ impl FdsAudio {
         self.last_output
     }
 
-    /// Mix-ready sample in approximately 0.0..0.624 — pre-scaled
+    /// Mix-ready sample in approximately 0.0..0.624 - pre-scaled
     /// against the APU's 0.0..≈0.98 range. Bus adds this directly
     /// to the APU sample.
     pub fn mix_sample(&self) -> f32 {
@@ -379,7 +379,7 @@ impl FdsAudio {
             if self.wave_write_enabled {
                 self.wave_table[(addr & 0x3F) as usize]
             } else {
-                // Playback mode — the whole $4040-$407F window
+                // Playback mode - the whole $4040-$407F window
                 // returns whatever sample the wave pointer is on.
                 self.wave_table[self.wave_position as usize]
             }
@@ -430,7 +430,7 @@ impl FdsAudio {
             0x4084 | 0x4085 | 0x4086 | 0x4087 => {
                 self.modulator.write_reg(addr, value);
                 if matches!(addr, 0x4084 | 0x4085) {
-                    // Gain or counter changed — refresh mod output.
+                    // Gain or counter changed - refresh mod output.
                     self.modulator.update_output(self.volume.frequency);
                 }
             }
@@ -448,7 +448,7 @@ impl FdsAudio {
     }
 
     /// Advance the audio unit by one CPU cycle. Safe to call
-    /// unconditionally — the unit does nothing audible until the
+    /// unconditionally - the unit does nothing audible until the
     /// BIOS enables sound at `$4023.1` and the game writes to
     /// `$4080` / `$4082` / `$4083`.
     pub fn clock(&mut self) {
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(a.wave_table[63], 0x3F);
     }
 
-    /// With `$4089.7=0` the wavetable window is read-only — writes
+    /// With `$4089.7=0` the wavetable window is read-only - writes
     /// are silently dropped (real hardware behavior).
     #[test]
     fn wavetable_writes_ignored_when_disabled() {
@@ -549,7 +549,7 @@ mod tests {
         // Pre-seed a value through the enabled path.
         a.write_register(0x4089, 0x80);
         a.write_register(0x4040, 0x20);
-        // Disable wave writes and try to overwrite — should drop.
+        // Disable wave writes and try to overwrite - should drop.
         a.write_register(0x4089, 0x00);
         a.write_register(0x4040, 0x01);
         assert_eq!(a.wave_table[0], 0x20);
@@ -575,7 +575,7 @@ mod tests {
 
     /// `$4083.7=1` halts the waveform and resets the wave position
     /// to zero so the next note starts from the beginning of the
-    /// table — the "retrigger" idiom.
+    /// table - the "retrigger" idiom.
     #[test]
     fn write_4083_halt_bit_resets_wave_position() {
         let mut a = FdsAudio::new();
@@ -628,7 +628,7 @@ mod tests {
     }
 
     /// Envelope in "off" mode (bit 7) freezes gain at the speed
-    /// value and stops the countdown — no ticks regardless of how
+    /// value and stops the countdown - no ticks regardless of how
     /// many cycles pass.
     #[test]
     fn envelope_off_mode_freezes_gain() {
@@ -687,7 +687,7 @@ mod tests {
         assert_eq!(a.modulator.mod_table[1], 3);
         assert_eq!(a.modulator.mod_table_position, 2);
         a.write_register(0x4088, 0x05);
-        // Mesen2 masks the value with 0x07 — 0x05 = -4 offset
+        // Mesen2 masks the value with 0x07 - 0x05 = -4 offset
         // interpretation on the output side but the stored byte is
         // still 5.
         assert_eq!(a.modulator.mod_table[2], 5);

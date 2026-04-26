@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Quick probe — runs `dma_4016_read.nes` to completion and prints
+//! Quick probe - runs `dma_4016_read.nes` to completion and prints
 //! the result line from the nametable. Used for verifying the
 //! `08 08 07 08 08` golden CRC `F0AB808C` after DMA-timing changes.
 

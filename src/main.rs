@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `vibenes` — the windowed emulator binary. Phase 6A.4 hooks the
+//! `vibenes` - the windowed emulator binary. Phase 6A.4 hooks the
 //! PPU's real framebuffer in: step the NES until a frame completes,
 //! upload the result, present, repeat. Pace is vsync via wgpu's Fifo
 //! present mode; NTSC 60.0988 Hz drift is a Phase 7 (audio-pacing)
@@ -34,7 +34,7 @@ const WINDOW_TITLE: &str = "vibenes";
 /// NTSC NES frame period: 1 / (master 21477272 Hz ÷ 4 dots ÷ 89342
 /// dots per frame) ≈ 16.639 ms. We pace the emulation loop to this
 /// explicitly rather than relying on wgpu's Fifo present mode, since
-/// Fifo caps to the *monitor* refresh rate — anything above 60 Hz
+/// Fifo caps to the *monitor* refresh rate - anything above 60 Hz
 /// (144 Hz gaming displays, 120 Hz laptops, etc.) would run the
 /// emulator faster than real hardware.
 const NTSC_FRAME_PERIOD: Duration = Duration::from_nanos(16_639_267);
@@ -61,7 +61,7 @@ fn run() -> Result<()> {
     // later loads a PAL ROM the sink is re-tuned inside swap_cartridge
     // so pitch stays correct. Opening up-front (before any ROM is
     // loaded) means the cpal device handle is ready the moment the
-    // first ROM is chosen from the File menu — no perceptible delay.
+    // first ROM is chosen from the File menu - no perceptible delay.
     let (audio_sink, audio_stream) = match audio::start(Region::Ntsc.cpu_clock_hz()) {
         Ok((sink, stream)) => {
             eprintln!("audio: {} Hz × {} ch", stream.sample_rate, stream.channels);
@@ -82,7 +82,7 @@ fn run() -> Result<()> {
                 // CRITICAL: the CLI-load path MUST attach save
                 // metadata before handing the Nes to App. Without
                 // this, `save_battery` early-returns on every
-                // trigger because `save_meta` is None — which is
+                // trigger because `save_meta` is None - which is
                 // exactly what slipped past review and caused
                 // Zelda (et al.) to never persist progress. The
                 // File-menu path does its own attach inside
@@ -101,7 +101,7 @@ fn run() -> Result<()> {
             }
         },
         None => {
-            eprintln!("vibenes: no ROM specified — use File → Open ROM…");
+            eprintln!("vibenes: no ROM specified - use File → Open ROM…");
             None
         }
     };
@@ -121,7 +121,7 @@ fn frame_period_for(region: Region) -> Duration {
 }
 
 /// Parsed command-line arguments. Add fields here when new flags
-/// land — keeping all CLI state in one struct keeps `run()` free of
+/// land - keeping all CLI state in one struct keeps `run()` free of
 /// arg-parsing tangles.
 struct CliArgs {
     rom_path: Option<PathBuf>,
@@ -174,14 +174,14 @@ struct App {
     /// inside `Nes` and is re-tuned via `swap_cartridge`.
     pending_audio_sink: Option<audio::AudioSink>,
     /// Keeps the cpal output stream alive. Dropping this silences the
-    /// device — hence why it lives on the App owner rather than a
+    /// device - hence why it lives on the App owner rather than a
     /// local inside `run()`.
     _audio_stream: Option<audio::AudioStream>,
     /// Most-recently-loaded ROMs, shown in the File menu. Seeded with
     /// the path passed on the command line (if any).
     recent_roms: RecentRoms,
     /// Integer scale + pixel aspect ratio. Window inner size equals
-    /// `video.content_size(region)` exactly — no chrome to subtract,
+    /// `video.content_size(region)` exactly - no chrome to subtract,
     /// no fractional scales.
     video: VideoSettings,
     /// Set when video settings or region change so the post-frame hook
@@ -195,12 +195,12 @@ struct App {
     config: Config,
     /// Frames since the last periodic safety flush. Reset on every
     /// `nes.save_battery()` call from the autosave hook (whether or
-    /// not it wrote — either way we've consulted the mapper). The
+    /// not it wrote - either way we've consulted the mapper). The
     /// authoritative save triggers are quit + ROM swap; this
     /// counter only exists to narrow the SIGKILL-data-loss window.
     frames_since_autosave: u32,
     /// Last deadline we handed to `ControlFlow::WaitUntil`. Used to
-    /// suppress redundant `set_control_flow` calls — winit's
+    /// suppress redundant `set_control_flow` calls - winit's
     /// calloop backend (Wayland) treats every call as a potential
     /// timer-source re-registration, and a timer that fires during
     /// the hand-over between "removed" and "added" logs
@@ -216,14 +216,14 @@ struct App {
     /// (see `poll_gamepad`). Re-sampled once per frame.
     gamepad_bits_p1: u8,
     /// gilrs runtime. `None` if initialization failed (headless
-    /// systems, missing permissions on evdev, etc.) — the
+    /// systems, missing permissions on evdev, etc.) - the
     /// keyboard path keeps working.
     gamepad: Option<gilrs::Gilrs>,
     /// Most-recently-active gamepad id. Set whenever an input event
     /// (button or axis) is drained from gilrs. This is how we avoid
     /// polling a phantom HID device (e.g. a Keychron keyboard dock
     /// that Linux classifies as a gamepad) that enumerates before
-    /// the real controller — the first device that actually reports
+    /// the real controller - the first device that actually reports
     /// input wins.
     active_pad: Option<gilrs::GamepadId>,
     /// Edge-triggered overlay toggle request from the gamepad's
@@ -231,7 +231,7 @@ struct App {
     /// "Home"). Set inside `poll_gamepad` on press, consumed by
     /// `advance_and_present` right before the overlay-open state is
     /// re-sampled. Steam may still grab the same button at the OS
-    /// level — this just gives the emulator its own binding.
+    /// level - this just gives the emulator its own binding.
     pending_menu_toggle: bool,
     /// Edge-triggered menu navigation events from the gamepad
     /// (D-pad + South/East face buttons). Drained after
@@ -242,7 +242,7 @@ struct App {
     pending_nav: Vec<NavKey>,
     /// When true, paint scanline + dot coordinate rulers directly
     /// into the NES framebuffer before upload. Toggled from the F12
-    /// Debug submenu — used to read off the exact line a rendering
+    /// Debug submenu - used to read off the exact line a rendering
     /// artifact lives on without counting pixels.
     show_scanline_ruler: bool,
     /// Scratch copy of the PPU framebuffer used to paint the debug
@@ -258,13 +258,13 @@ struct App {
     /// Simple FPS counter: number of presented frames since
     /// `fps_window_start`. Reported to stderr once per wall-clock
     /// second when `fps_print_enabled` is on (set via the
-    /// `VIBENES_FPS` env var). Used to diagnose frame-rate drift —
+    /// `VIBENES_FPS` env var). Used to diagnose frame-rate drift -
     /// e.g. PAL ROMs running at the host monitor's refresh rather
     /// than the 50 Hz target.
     fps_window_start: Option<Instant>,
     fps_frames: u32,
     /// CPU cycle count snapshot at `fps_window_start`. Diff'd with the
-    /// current value once per second to compute emulated cycles/sec —
+    /// current value once per second to compute emulated cycles/sec -
     /// should converge on the region's CPU clock (~1.79 MHz NTSC,
     /// ~1.66 MHz PAL).
     fps_cpu_cycles_at_window_start: u64,
@@ -344,7 +344,7 @@ impl App {
                 Some(g)
             }
             Err(e) => {
-                eprintln!("vibenes: gamepad init failed ({e}) — keyboard only");
+                eprintln!("vibenes: gamepad init failed ({e}) - keyboard only");
                 None
             }
         };
@@ -389,7 +389,7 @@ impl App {
         self.nes.as_ref().map(Nes::region)
     }
 
-    /// Physical inner size of the window — exactly the NES content
+    /// Physical inner size of the window - exactly the NES content
     /// area at the current scale + effective PAR. No menubar reserve;
     /// the in-game overlay paints on top of the framebuffer.
     fn desired_window_size(&self) -> PhysicalSize<u32> {
@@ -423,7 +423,7 @@ impl App {
         // the overlay via `pending_menu_toggle`, so it must work
         // from inside the menu as well as from gameplay. Held-state
         // bits are only committed to the NES when the overlay is
-        // closed — same discipline as the keyboard path.
+        // closed - same discipline as the keyboard path.
         self.poll_gamepad();
         if self.pending_menu_toggle {
             self.pending_menu_toggle = false;
@@ -497,7 +497,7 @@ impl App {
                 nes.end_audio_frame();
                 // OAM dump burst, armed via the Debug submenu. Each
                 // frame in the burst dumps the full visible OAM to
-                // stderr — covers 30 Hz sprite flicker so a single
+                // stderr - covers 30 Hz sprite flicker so a single
                 // probe doesn't miss the "on" cycle.
                 if self.oam_dump_frames > 0 {
                     self.oam_dump_frames -= 1;
@@ -527,7 +527,7 @@ impl App {
                 // stay on the frame-loop thread for now.
                 // Periodic safety flush (3 min @ 60 fps by default).
                 // The authoritative save triggers are quit + ROM
-                // swap — this just narrows the SIGKILL-data-loss
+                // swap - this just narrows the SIGKILL-data-loss
                 // window. Skip entirely when the interval is 0.
                 if self.config.save.autosave_every_n_frames > 0 {
                     self.frames_since_autosave =
@@ -688,7 +688,7 @@ impl ApplicationHandler for App {
         //
         // 1. **Always WaitUntil, never Poll.** `Poll` means the
         //    event loop busy-polls until we explicitly switch to
-        //    `WaitUntil` again — which we used to do for one frame
+        //    `WaitUntil` again - which we used to do for one frame
         //    each time the deadline had already passed. That single-
         //    frame mode flip is what churns calloop's timer source
         //    on Wayland ("Received an event for non-existence
@@ -723,7 +723,7 @@ impl ApplicationHandler for App {
             return;
         }
         // Initial inner size = NES content area at the current scale +
-        // effective PAR. No menubar reserve — the in-game overlay
+        // effective PAR. No menubar reserve - the in-game overlay
         // paints on top of the framebuffer when opened.
         let attrs = Window::default_attributes()
             .with_title(WINDOW_TITLE)
@@ -760,7 +760,7 @@ impl ApplicationHandler for App {
         // egui gets first look at every event so text fields, menu
         // navigation, clipboard, etc. work. If it consumes the event
         // we skip emulator-side handling entirely. Escape is a hard
-        // override — we always want it to exit the app.
+        // override - we always want it to exit the app.
         let consumed_by_ui = match (self.ui.as_mut(), self.window.as_ref()) {
             (Some(ui), Some(window)) => ui.on_window_event(window, &event).consumed,
             _ => false,
@@ -790,7 +790,7 @@ impl ApplicationHandler for App {
                     .as_ref()
                     .is_some_and(|ui| ui.is_overlay_open());
 
-                // F1 always toggles the overlay regardless of state —
+                // F1 always toggles the overlay regardless of state -
                 // the user expects a single "menu" key to work both
                 // ways.
                 if code == KeyCode::F1 && state == ElementState::Pressed {
@@ -806,7 +806,7 @@ impl ApplicationHandler for App {
                     }
                 } else if code == KeyCode::F4 && state == ElementState::Pressed {
                     // Jump straight into the Disk submenu. Only useful
-                    // on FDS carts — but harmless otherwise: the
+                    // on FDS carts - but harmless otherwise: the
                     // submenu will show "(not an FDS cart)" and Esc
                     // backs out.
                     if let Some(ui) = self.ui.as_mut() {
@@ -821,7 +821,7 @@ impl ApplicationHandler for App {
                             ui.back_or_close_overlay();
                         }
                     } else {
-                        // Escape is a shutdown path too — flush
+                        // Escape is a shutdown path too - flush
                         // battery RAM before exit like the X button
                         // and F1→Quit already do. Without this,
                         // Esc-to-quit silently loses progress even
@@ -850,7 +850,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.advance_and_present(event_loop);
-                // Do NOT immediately request another redraw here —
+                // Do NOT immediately request another redraw here -
                 // `about_to_wait` drives the next frame off
                 // `next_frame_deadline` so we stay pinned to
                 // NTSC/PAL rate regardless of monitor refresh.
@@ -879,7 +879,7 @@ impl App {
             UiCommand::SetScale(n) => {
                 self.video = self.video.with_scale(n);
                 self.pending_window_resize = true;
-                // Persist the post-clamp value, not the raw `n` —
+                // Persist the post-clamp value, not the raw `n` -
                 // `with_scale` already snapped it into MIN..=MAX.
                 let to_save = settings::Settings { scale: self.video.scale };
                 if let Err(e) = settings::save(&to_save) {
@@ -938,7 +938,7 @@ impl App {
             }
             Ok(false) => {
                 if nes.bus.mapper.save_data().is_some() {
-                    eprintln!("vibenes: {kind} — no battery RAM changes to save");
+                    eprintln!("vibenes: {kind} - no battery RAM changes to save");
                 }
             }
             Err(e) => eprintln!("vibenes: shutdown save failed: {e:#}"),
@@ -951,7 +951,7 @@ impl App {
             }
             Ok(false) => {
                 if nes.bus.mapper.disk_save_data().is_some() {
-                    eprintln!("vibenes: {kind} — no FDS disk changes to save");
+                    eprintln!("vibenes: {kind} - no FDS disk changes to save");
                 }
             }
             Err(e) => eprintln!("vibenes: shutdown disk save failed: {e:#}"),
@@ -962,7 +962,7 @@ impl App {
     /// dependency-safe order **before** the event loop tears down.
     ///
     /// Winit/wgpu/egui on Wayland has a recurring class of segfaults
-    /// during the implicit drop cascade at process exit — typically
+    /// during the implicit drop cascade at process exit - typically
     /// the cpal PipeWire stream's callback fires once more between
     /// the sink's producer dropping and the consumer stopping, or an
     /// egui-wgpu buffer releases into a device that's already gone.
@@ -972,7 +972,7 @@ impl App {
     /// post-exit crash the user has no handle on.
     ///
     /// Drop order (each `.take()` triggers the field's destructor):
-    ///  1. UI (egui-wgpu renderer — uses wgpu device/queue)
+    ///  1. UI (egui-wgpu renderer - uses wgpu device/queue)
     ///  2. Renderer (wgpu surface tied to the window)
     ///  3. Nes (audio sink = ringbuf producer)
     ///  4. Audio stream (cpal consumer; ring has no producer by now)
@@ -1001,7 +1001,7 @@ impl App {
             Some(nes) => {
                 // Flush the outgoing cart's battery RAM and FDS disk
                 // save before we drop its mapper. After this we can't
-                // recover the bytes — swap_cartridge consumes the
+                // recover the bytes - swap_cartridge consumes the
                 // mapper.
                 if let Err(e) = nes.save_battery(&self.config.save) {
                     eprintln!("vibenes: save before swap failed: {e:#}");
@@ -1155,7 +1155,7 @@ impl App {
     ///
     /// Note on North vs West: the user's 8BitDo Ultimate 2 emits
     /// `Button::North` for the physical X (left) face button under
-    /// gilrs' default mapping — opposite to the usual evdev
+    /// gilrs' default mapping - opposite to the usual evdev
     /// convention where `West = X`. Binding NES B to `North`
     /// matches this controller; a future remapping UI will handle
     /// pads that follow the other convention.
@@ -1168,7 +1168,7 @@ impl App {
         const DEADBAND: f32 = 0.5;
         let Some(g) = self.gamepad.as_mut() else { return };
         // Drain events. Track the most recent id that emitted an
-        // actual input event — this is the reliable signal for
+        // actual input event - this is the reliable signal for
         // "which of the enumerated HID devices is really the
         // player's gamepad". Both naive "pick first" and "has South
         // button mapped" fail here: Linux enumerates Keychron's

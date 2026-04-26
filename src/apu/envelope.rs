@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Envelope generator — shared by pulse 1, pulse 2, and noise.
+//! Envelope generator - shared by pulse 1, pulse 2, and noise.
 
 #[derive(Debug, Default)]
 pub struct Envelope {
@@ -19,7 +19,7 @@ impl Envelope {
         self.divider_period = data & 0x0F;
     }
 
-    /// Called when the channel's timer-high / length byte is written —
+    /// Called when the channel's timer-high / length byte is written -
     /// sets the envelope's start flag.
     pub fn restart(&mut self) {
         self.start = true;

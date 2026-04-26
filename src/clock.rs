@@ -48,7 +48,7 @@ impl Region {
         }
     }
 
-    /// CPU-side clock rate in Hz — the rate at which the APU emits one
+    /// CPU-side clock rate in Hz - the rate at which the APU emits one
     /// mixer sample per bus tick. Used by the host audio resampler to
     /// convert APU output to the sound device's sample rate.
     /// NTSC master = 21.477272 MHz ÷ 12; PAL master = 26.601712 MHz ÷ 16.
@@ -69,21 +69,21 @@ impl Region {
 /// Each CPU cycle is split into a **start** phase (before the CPU's
 /// bus access) and an **end** phase (after it). The split of master
 /// cycles between the two is asymmetric and depends on whether the
-/// CPU is reading or writing — mirroring Mesen2's
+/// CPU is reading or writing - mirroring Mesen2's
 /// `_startClockCount`/`_endClockCount` model (`NesCpu.cpp:73-75`):
 ///
 /// - **Read**:  start = `_startClockCount - 1` = 5, end = `_endClockCount + 1` = 7.
 /// - **Write**: start = `_startClockCount + 1` = 7, end = `_endClockCount - 1` = 5.
 ///
-/// (Both add to 12 on NTSC / 16 on PAL — total per CPU cycle.) The
+/// (Both add to 12 on NTSC / 16 on PAL - total per CPU cycle.) The
 /// asymmetry means that within a single CPU cycle the PPU runs 1 or 2
 /// dots during the start phase and 1 or 2 during the end phase,
-/// determined by master-clock parity + read/write — producing the
+/// determined by master-clock parity + read/write - producing the
 /// dynamic 2/1 or 1/2 split that our old fixed 2/1 model couldn't
 /// reproduce. Required for `dmc_dma_during_read4`-class tests whose
 /// iter alignment converges on the exact sub-cycle PPU state.
 ///
-/// A `ppu_offset` shifts the PPU's master-clock "view" — the PPU is
+/// A `ppu_offset` shifts the PPU's master-clock "view" - the PPU is
 /// run to `master_cycles - ppu_offset` rather than `master_cycles`
 /// directly, matching Mesen2's default `_ppuOffset = 1`
 /// (`NesCpu.cpp:154`). This is what makes a CPU cycle starting at
@@ -104,7 +104,7 @@ pub struct MasterClock {
 impl MasterClock {
     pub fn new(region: Region) -> Self {
         // Mesen2 initialises `_masterClock = cpuDivider + cpuOffset`
-        // (`NesCpu.cpp:158`) — master starts at one full CPU cycle
+        // (`NesCpu.cpp:158`) - master starts at one full CPU cycle
         // ahead of zero, so the first CPU cycle's start/end phases
         // land at master = cpuDivider+5 then +12 on a read. We match
         // that priming so phase math lines up with Mesen from the

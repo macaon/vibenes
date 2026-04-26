@@ -5,7 +5,7 @@
 //! CPU cycle (~1.789 MHz NTSC / ~1.662 MHz PAL). We need to feed that
 //! into the host's audio device (typically 48 kHz) without aliasing.
 //!
-//! Resampling is done with Blargg's `blip_buf` — a band-limited step
+//! Resampling is done with Blargg's `blip_buf` - a band-limited step
 //! synthesizer designed for exactly this problem: you hand it signal
 //! *deltas* at the high clock rate and it reads out properly
 //! bandlimited samples at the target rate. It handles anti-aliasing,
@@ -51,7 +51,7 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 /// chips (FDS ≈ 0.26, VRC6 ≈ 0.91, MMC5/N163/Sunsoft 5B/VRC7 TBD)
 /// add on top linearly, so the bus sum can comfortably exceed 1.0
 /// when an FDS or VRC6 cart hits its loud spots. `20000` gives us
-/// 32768/20000 ≈ 1.64× headroom — enough to keep APU + VRC6 +
+/// 32768/20000 ≈ 1.64× headroom - enough to keep APU + VRC6 +
 /// FDS peaks below the i16 ceiling without clipping into the
 /// harmonic-distortion regime that was making our output sound
 /// louder than Mesen2.
@@ -60,7 +60,7 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 /// reference and users get a proper slider.
 const AMP_SCALE: f32 = 20_000.0;
 
-/// Ring-buffer depth in milliseconds — upper bound on audio latency
+/// Ring-buffer depth in milliseconds - upper bound on audio latency
 /// and the size of the stall this path can absorb without silencing.
 /// 300 ms handles a Wayland compositor's occasional 60-Hz hitch or a
 /// wgpu swapchain stall without a pop.
@@ -72,9 +72,9 @@ const RING_MILLIS: u32 = 300;
 const PREFILL_MILLIS: u32 = 100;
 
 /// BlipBuf→ring flush cadence in milliseconds (converted to CPU
-/// cycles at stream-open). 5 ms smooths out per-frame burstiness —
+/// cycles at stream-open). 5 ms smooths out per-frame burstiness -
 /// samples trickle into the ring rather than arriving in one
-/// 16.6 ms lump per emulator frame — which keeps the consumer from
+/// 16.6 ms lump per emulator frame - which keeps the consumer from
 /// oscillating near the empty end of the ring.
 const FLUSH_MILLIS: u32 = 5;
 
@@ -84,7 +84,7 @@ const FLUSH_MILLIS: u32 = 5;
 pub struct AudioSink {
     blip: blip_buf::BlipBuf,
     /// Cycles accumulated since the last `blip.end_frame()` call. Reset
-    /// by `flush`. Must stay below the BlipBuf's internal capacity —
+    /// by `flush`. Must stay below the BlipBuf's internal capacity -
     /// see `cycles_per_flush`.
     cycles: u32,
     /// Previous sample value in scaled integer space. BlipBuf consumes
@@ -147,7 +147,7 @@ impl AudioSink {
         // full-ring flushes `avail` would eventually exceed the
         // internal `samples` vector and `end_frame` would panic. We
         // silently drop samples the consumer can't keep up with
-        // instead — back-pressure manifests as occasional clicks, not
+        // instead - back-pressure manifests as occasional clicks, not
         // a dead audio thread.
         loop {
             let n = self.blip.read_samples(&mut self.scratch, false);

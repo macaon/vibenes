@@ -11,9 +11,9 @@
 //! Writes are atomic: we stage to a `<path>.tmp` file, `fsync`, then
 //! [`std::fs::rename`]. POSIX rename is atomic over the same
 //! filesystem, so a crash mid-write leaves either the old save or the
-//! new one — never a torn half-written file.
+//! new one - never a torn half-written file.
 //!
-//! No `dirs` crate dependency today — XDG resolution is hand-rolled
+//! No `dirs` crate dependency today - XDG resolution is hand-rolled
 //! against `XDG_CONFIG_HOME` + `HOME` because those are all we need
 //! on Linux. When macOS / Windows support matters, swap in `dirs`
 //! and update [`saves_dir`].
@@ -104,7 +104,7 @@ pub fn load(path: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 /// Atomic-write `data` to `path`. Parent directory is created if
-/// missing (one-level only — we don't try to build a deep tree).
+/// missing (one-level only - we don't try to build a deep tree).
 /// A preexisting `<path>.tmp` from an interrupted previous write is
 /// overwritten.
 pub fn write(path: &Path, data: &[u8]) -> Result<()> {
@@ -207,7 +207,7 @@ mod tests {
     }
 }
 
-// Tiny self-contained temp-dir helper — avoid adding a dev-dep just
+// Tiny self-contained temp-dir helper - avoid adding a dev-dep just
 // for tests. Drop cleans up the directory recursively.
 #[cfg(test)]
 mod tempdir {

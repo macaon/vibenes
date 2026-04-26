@@ -12,7 +12,7 @@
 //! 1. **Halt after clock** (`blargg_apu_2005.07.30/10.len_halt_timing`):
 //!    if a channel's halt bit is written on the same cycle as the
 //!    half-frame clock, the length counter must still be decremented
-//!    by that clock — the halt change takes effect on the *next*
+//!    by that clock - the halt change takes effect on the *next*
 //!    clock, not this one.
 //! 2. **Reload ignored during clock** (`.../11.len_reload_timing`):
 //!    if the length counter is written on the same cycle as the
@@ -31,7 +31,7 @@ pub struct LengthCounter {
     counter: u8,
     halt: bool,
     enabled: bool,
-    /// Staged halt value — a channel `write_ctrl` records the new
+    /// Staged halt value - a channel `write_ctrl` records the new
     /// halt here; `commit_pending` applies it after any same-cycle
     /// half-frame clock has run. `None` = no change pending.
     pending_halt: Option<bool>,
@@ -57,7 +57,7 @@ impl LengthCounter {
     /// `$4015` write of the channel-enable bit. Clearing enable forces
     /// the counter to 0 and prevents reloads; setting enable just opens
     /// the gate (the counter keeps its current value). Clearing also
-    /// drops any pending reload — a disabled channel can't load.
+    /// drops any pending reload - a disabled channel can't load.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
         if !enabled {
@@ -68,7 +68,7 @@ impl LengthCounter {
 
     /// Warm-reset equivalent of clearing the `$4015` enable latch without
     /// triggering the "force counter to 0" side effect. On real hardware,
-    /// a /RES pulse clears the latch directly — the counter value is
+    /// a /RES pulse clears the latch directly - the counter value is
     /// retained (see blargg `apu_reset/len_ctrs_enabled`).
     pub fn clear_enable_latch_only(&mut self) {
         self.enabled = false;
@@ -87,7 +87,7 @@ impl LengthCounter {
     }
 
     /// Half-frame clock: decrement if not halted and not already zero.
-    /// Uses the `halt` value *as of this cycle's start* — a same-cycle
+    /// Uses the `halt` value *as of this cycle's start* - a same-cycle
     /// halt write is not visible yet because `commit_pending` runs
     /// strictly after this.
     pub fn clock_half_frame(&mut self) {

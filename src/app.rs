@@ -11,7 +11,7 @@ use crate::rom::Cartridge;
 /// Where completed PPU frames are delivered for presentation.
 ///
 /// `push_frame` receives a borrow of a 256×240 RGBA8 buffer. Implementations
-/// must either copy it synchronously or drop it — the PPU owns the buffer
+/// must either copy it synchronously or drop it - the PPU owns the buffer
 /// and will overwrite it during the next frame.
 pub trait FrameSink: Send {
     fn push_frame(&mut self, framebuffer: &[u8]);

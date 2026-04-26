@@ -46,7 +46,7 @@ struct PendingWrite {
 impl FrameCounter {
     pub fn new(region: Region) -> Self {
         // Power-on matches puNES's model: no pending $4017 apply delay
-        // — the divider simply starts counting from cycle 0. `Cpu::reset`
+        // - the divider simply starts counting from cycle 0. `Cpu::reset`
         // then burns 7 bus ticks before the first opcode fetch, which
         // places the first step-4 event (counter == 29828) 29821 CPU
         // cycles after the first instruction. That lands inside the
@@ -69,7 +69,7 @@ impl FrameCounter {
     /// Restart the divider on warm reset. Mesen2 model: the stored mode
     /// (5-step vs 4-step) is preserved, but IRQ-inhibit is forced off
     /// (the test ROM `apu_reset/4017_written` relies on this behavior
-    /// — "At reset, $4017 mode is unchanged, but IRQ inhibit flag is
+    /// - "At reset, $4017 mode is unchanged, but IRQ inhibit flag is
     /// sometimes cleared"). The 3-cycle apply delay kicks in as for a
     /// normal $4017 write.
     pub fn reset_on_cpu_reset(&mut self, cycle: u64) {

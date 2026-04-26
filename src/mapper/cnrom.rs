@@ -2,7 +2,7 @@
 //! CNROM (mapper 3).
 //!
 //! PRG-ROM is fixed (16KB or 32KB mapped into $8000-$FFFF, 16KB mirrors
-//! at $C000-$FFFF). Writes to $8000-$FFFF select an 8KB CHR-ROM bank —
+//! at $C000-$FFFF). Writes to $8000-$FFFF select an 8KB CHR-ROM bank -
 //! this is the entire programming model. A handful of CNROM boards only
 //! honor the low 2 bits, others decode all 8; most games don't notice.
 

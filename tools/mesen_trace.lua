@@ -1,8 +1,8 @@
--- tools/mesen_trace.lua — per-instruction + DMA-event trace for Mesen2.
+-- tools/mesen_trace.lua - per-instruction + DMA-event trace for Mesen2.
 --
 -- Mesen2's Lua sandbox strips the `os` module, so trace bounds are baked in
 -- by `tools/trace_mesen.sh` via sed on @@LIMIT_CYCLES@@ / @@START_CYCLES@@.
--- Don't edit those tokens manually — use the wrapper.
+-- Don't edit those tokens manually - use the wrapper.
 --
 -- Usage (direct):
 --   mesen --testRunner tools/mesen_trace.lua <rom> --enableStdout \

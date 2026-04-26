@@ -6,11 +6,11 @@
 //! at `$XDG_CONFIG_HOME/vibenes/settings.kv` (falling back to
 //! `$HOME/.config/vibenes/settings.kv`). TOML + serde is the
 //! eventual destination once the settings UI lands and the field
-//! count grows — pulling those two crates in for one `u8` was
+//! count grows - pulling those two crates in for one `u8` was
 //! overkill. The loader ignores unknown keys, so adding fields
 //! later is forward-compatible without bumping a schema version.
 //!
-//! Errors are deliberately swallowed on read — a missing,
+//! Errors are deliberately swallowed on read - a missing,
 //! permission-denied, or malformed file falls through to
 //! [`Settings::default`] so a broken settings file can never block
 //! the emulator from starting. Write errors are surfaced so the
@@ -23,7 +23,7 @@ use anyhow::{Context, Result};
 use crate::video::VideoSettings;
 
 const FILE_NAME: &str = "settings.kv";
-const HEADER: &str = "# vibenes settings — auto-managed by the emulator. Safe to edit.\n";
+const HEADER: &str = "# vibenes settings - auto-managed by the emulator. Safe to edit.\n";
 
 /// Persisted user preferences. Add fields here as more settings need
 /// to survive across launches; extend [`parse`] and [`serialize`] to
@@ -42,7 +42,7 @@ impl Default for Settings {
 }
 
 /// Default file path. `None` only when neither `$XDG_CONFIG_HOME`
-/// nor `$HOME` is set — shouldn't happen in a real user session,
+/// nor `$HOME` is set - shouldn't happen in a real user session,
 /// but we don't assume.
 pub fn default_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -65,7 +65,7 @@ pub fn load() -> Settings {
 /// directory if missing.
 pub fn save(settings: &Settings) -> Result<()> {
     let path = default_path()
-        .context("no XDG_CONFIG_HOME or HOME — cannot resolve settings path")?;
+        .context("no XDG_CONFIG_HOME or HOME - cannot resolve settings path")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating settings dir {}", parent.display()))?;

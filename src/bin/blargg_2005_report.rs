@@ -40,7 +40,7 @@ fn main() -> ExitCode {
                     overall = 1;
                 }
                 // Always dump the nametable if `VERBOSE=1`, otherwise
-                // only on failure — useful for debugging tests that
+                // only on failure - useful for debugging tests that
                 // print raw data without a pass/fail keyword.
                 let verbose = std::env::var_os("VERBOSE").is_some();
                 if !outcome.transcript.is_empty() && (!outcome.passed || verbose) {
@@ -106,7 +106,7 @@ fn run_one(rom_path: &Path, cycle_limit: u64) -> Result<Outcome> {
         let pc_stuck = detector.observe(nes.cpu.pc);
         if pc_stuck {
             let text = read_nametable_ascii(&nes);
-            // Gate on a recognized marker — otherwise a long test like
+            // Gate on a recognized marker - otherwise a long test like
             // `cpu_timing_test6` fires the stuck-PC heuristic during
             // its 16-second NMI-wait loop while only the "6502 TIMING
             // TEST" header is on screen, and the first-digit fallback
