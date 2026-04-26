@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Clean-room, cycle-accurate NES emulator in Rust"
+build = "build.rs"
+
+[build-dependencies]
+# Compiles the vendored emu2413 (YM2413/VRC7 OPLL) C source into a
+# static lib that we link against — see build.rs and vendor/emu2413/.
+cc = "1"
 
 [dependencies]
 anyhow = "1"
