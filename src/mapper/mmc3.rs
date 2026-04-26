@@ -279,8 +279,10 @@ impl Mmc3 {
         self.prg_bank_count_8k.saturating_sub(1)
     }
 
-    /// Resolve `$8000-$FFFF` to an 8 KB PRG bank index.
-    fn prg_bank_for(&self, addr: u16) -> usize {
+    /// Resolve `$8000-$FFFF` to an 8 KB PRG bank index. Crate-public
+    /// so multicart wrappers (e.g. mapper 37) can intercept the bank
+    /// number and re-route through their own outer-bank logic.
+    pub(crate) fn prg_bank_for(&self, addr: u16) -> usize {
         let r6 = (self.bank_regs[6] & 0x3F) as usize;
         let r7 = (self.bank_regs[7] & 0x3F) as usize;
         let second_last = self.second_last_prg_bank();
@@ -311,8 +313,9 @@ impl Mmc3 {
         bank * PRG_BANK_8K + offset
     }
 
-    /// Resolve `$0000-$1FFF` to a 1 KB CHR bank index.
-    fn chr_bank_for(&self, addr: u16) -> usize {
+    /// Resolve `$0000-$1FFF` to a 1 KB CHR bank index. Crate-public
+    /// for the same reason as [`Mmc3::prg_bank_for`].
+    pub(crate) fn chr_bank_for(&self, addr: u16) -> usize {
         // R0 and R1 are 2 KB banks; their stored value already has bit 0
         // masked, so pairing `r` with `r | 1` gives the two 1 KB halves.
         let r0 = self.bank_regs[0] as usize;
@@ -353,6 +356,47 @@ impl Mmc3 {
         let bank = self.chr_bank_for(addr);
         let offset = (addr as usize) & (CHR_BANK_1K - 1);
         bank * CHR_BANK_1K + offset
+    }
+
+    /// True when `$6000-$7FFF` writes would land in PRG-RAM (chip
+    /// enabled, write-protect clear). Crate-public so multicart
+    /// wrappers can gate their outer-bank latch on the same signal —
+    /// mapper 37 in particular uses `$6000-$7FFF` for the latch and
+    /// per the wiki "you will need to enable writes to PRG-RAM to
+    /// update it". MMC6's 4-bit-per-half gate is intentionally NOT
+    /// covered here; wrappers built on MMC6 would need their own
+    /// query. Returns true on plain MMC3 even if the cart never
+    /// touched `$A001` (power-on default = enabled, unprotected).
+    pub(crate) fn cpu_can_write_wram(&self) -> bool {
+        !self.is_mmc6 && self.prg_ram_enabled && !self.prg_ram_write_protected
+    }
+
+    /// Borrow the PRG-ROM image. Crate-public for multicart wrappers
+    /// that translate the [`Mmc3::prg_bank_for`] result through their
+    /// own outer-bank logic and then index the underlying bytes
+    /// directly.
+    pub(crate) fn prg_rom(&self) -> &[u8] {
+        &self.prg_rom
+    }
+
+    /// Borrow the CHR image (ROM or RAM, depending on cart). Same
+    /// rationale as [`Mmc3::prg_rom`] for multicart wrappers.
+    pub(crate) fn chr(&self) -> &[u8] {
+        &self.chr
+    }
+
+    /// Mutable CHR borrow for the CHR-RAM write path. Mapper 37
+    /// is CHR-ROM-only per spec, so this is unused there, but the
+    /// wrapper keeps it available for future multicarts that ship
+    /// CHR-RAM.
+    pub(crate) fn chr_mut(&mut self) -> &mut [u8] {
+        &mut self.chr
+    }
+
+    /// True when CHR is RAM (writable). Mirror of the constructor's
+    /// `is_chr_ram` decision.
+    pub(crate) fn chr_is_ram(&self) -> bool {
+        self.chr_ram
     }
 
     /// MMC6 `$6000-$7FFF` read. `$6000-$6FFF` is not mapped — returns 0.
