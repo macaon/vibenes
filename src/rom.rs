@@ -372,6 +372,21 @@ impl Cartridge {
             ) {
                 cart.tv_system = TvSystem::Ntsc;
             }
+            // iNES 1.0 dumps frequently mis-report the mapper number,
+            // especially for multicarts that look like plain MMC3 in
+            // the header (mapper 4 → mapper 37 for the SMB+Tetris+
+            // World Cup PAL-ZZ board, etc.). Trust the curated DB
+            // when the header is iNES 1.0; leave NES 2.0 headers
+            // alone since byte 8 carries the authoritative mapper
+            // high nibble + submapper.
+            if !cart.is_nes2 {
+                if entry.mapper_id != 0 && entry.mapper_id != cart.mapper_id {
+                    cart.mapper_id = entry.mapper_id;
+                }
+                if let Some(sub) = entry.submapper_id {
+                    cart.submapper = sub;
+                }
+            }
         }
 
         Ok(cart)
