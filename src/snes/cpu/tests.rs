@@ -285,6 +285,263 @@ fn stz_writes_zero() {
 }
 
 #[test]
+fn and_ora_eor_immediate_8bit() {
+    let (mut cpu, mut bus) = boot_with(
+        0x8000,
+        &[
+            0xA9, 0xF0, // LDA #$F0
+            0x29, 0x0F, // AND #$0F -> $00
+            0xA9, 0x12, // LDA #$12
+            0x09, 0x80, // ORA #$80 -> $92
+            0x49, 0xFF, // EOR #$FF -> $6D
+        ],
+    );
+    cpu.step(&mut bus); // LDA #$F0
+    cpu.step(&mut bus); // AND #$0F
+    assert_eq!(cpu.a(), 0x00);
+    assert!(cpu.p.z);
+    assert!(!cpu.p.n);
+    cpu.step(&mut bus); // LDA #$12
+    cpu.step(&mut bus); // ORA #$80
+    assert_eq!(cpu.a(), 0x92);
+    assert!(cpu.p.n);
+    cpu.step(&mut bus); // EOR #$FF
+    assert_eq!(cpu.a(), 0x6D);
+    assert!(!cpu.p.n);
+    assert!(!cpu.p.z);
+}
+
+#[test]
+fn adc_8bit_binary_carry_overflow() {
+    // CLC; LDA #$50; ADC #$50 -> $A0, V=1, C=0, N=1
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0x18, 0xA9, 0x50, 0x69, 0x50]);
+    cpu.step(&mut bus); // CLC
+    cpu.step(&mut bus); // LDA #$50
+    cpu.step(&mut bus); // ADC #$50
+    assert_eq!(cpu.a(), 0xA0);
+    assert!(cpu.p.v);
+    assert!(!cpu.p.c);
+    assert!(cpu.p.n);
+}
+
+#[test]
+fn sbc_8bit_binary_borrow() {
+    // SEC; LDA #$50; SBC #$30 -> $20, C=1 (no borrow)
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0x38, 0xA9, 0x50, 0xE9, 0x30]);
+    cpu.step(&mut bus); // SEC
+    cpu.step(&mut bus); // LDA #$50
+    cpu.step(&mut bus); // SBC #$30
+    assert_eq!(cpu.a(), 0x20);
+    assert!(cpu.p.c);
+    // SEC; LDA #$30; SBC #$50 -> $E0 (borrow), C=0, N=1
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0x38, 0xA9, 0x30, 0xE9, 0x50]);
+    cpu.step(&mut bus); // SEC
+    cpu.step(&mut bus); // LDA #$30
+    cpu.step(&mut bus); // SBC #$50
+    assert_eq!(cpu.a(), 0xE0);
+    assert!(!cpu.p.c);
+    assert!(cpu.p.n);
+}
+
+#[test]
+fn adc_16bit_carry_propagates() {
+    // Native, 16-bit A: $00FF + $0001 = $0100
+    let (mut cpu, mut bus) = boot_with(
+        0x8000,
+        &[0x18, 0xFB, 0xC2, 0x30, 0xA9, 0xFF, 0x00, 0x18, 0x69, 0x01, 0x00],
+    );
+    cpu.step(&mut bus); // CLC
+    cpu.step(&mut bus); // XCE
+    cpu.step(&mut bus); // REP #$30
+    cpu.step(&mut bus); // LDA #$00FF
+    cpu.step(&mut bus); // CLC
+    cpu.step(&mut bus); // ADC #$0001
+    assert_eq!(cpu.c, 0x0100);
+    assert!(!cpu.p.c);
+    assert!(!cpu.p.z);
+}
+
+#[test]
+fn cmp_sets_carry_when_a_ge_operand() {
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xA9, 0x42, 0xC9, 0x42, 0xC9, 0x10, 0xC9, 0x80]);
+    cpu.step(&mut bus); // LDA #$42
+    cpu.step(&mut bus); // CMP #$42 -> Z=1, C=1
+    assert!(cpu.p.z);
+    assert!(cpu.p.c);
+    cpu.step(&mut bus); // CMP #$10 -> A>op, Z=0, C=1
+    assert!(!cpu.p.z);
+    assert!(cpu.p.c);
+    cpu.step(&mut bus); // CMP #$80 -> A<op, Z=0, C=0
+    assert!(!cpu.p.c);
+}
+
+#[test]
+fn cpx_cpy_immediate() {
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xA2, 0x10, 0xE0, 0x10, 0xA0, 0x05, 0xC0, 0x10]);
+    cpu.step(&mut bus); // LDX #$10
+    cpu.step(&mut bus); // CPX #$10
+    assert!(cpu.p.z);
+    cpu.step(&mut bus); // LDY #$05
+    cpu.step(&mut bus); // CPY #$10 -> Y<op, C=0
+    assert!(!cpu.p.c);
+}
+
+#[test]
+fn bit_immediate_only_updates_z() {
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xA9, 0xF0, 0x89, 0x0F, 0x89, 0x80]);
+    cpu.step(&mut bus); // LDA #$F0 -> N=1
+    assert!(cpu.p.n);
+    cpu.step(&mut bus); // BIT #$0F -> Z=1, N unchanged from prior LDA
+    assert!(cpu.p.z);
+    assert!(cpu.p.n);
+    cpu.step(&mut bus); // BIT #$80 -> A&op = $80, Z=0
+    assert!(!cpu.p.z);
+}
+
+#[test]
+fn bit_absolute_pulls_n_v_from_operand() {
+    // LDA #$FF; STA $7E00 ($FF stored); LDA #$00; BIT $7E00 -> N=1, V=1, Z=1.
+    let (mut cpu, mut bus) = boot_with(
+        0x8000,
+        &[0xA9, 0xFF, 0x8D, 0x00, 0x7E, 0xA9, 0x00, 0x2C, 0x00, 0x7E],
+    );
+    cpu.step(&mut bus); // LDA #$FF
+    cpu.step(&mut bus); // STA $7E00
+    cpu.step(&mut bus); // LDA #$00
+    cpu.step(&mut bus); // BIT $7E00
+    assert!(cpu.p.n);
+    assert!(cpu.p.v);
+    assert!(cpu.p.z);
+}
+
+#[test]
+fn asl_lsr_rol_ror_accumulator() {
+    // A = $81; ASL -> $02 with C=1, N=0
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xA9, 0x81, 0x0A]);
+    cpu.step(&mut bus); // LDA #$81
+    cpu.step(&mut bus); // ASL
+    assert_eq!(cpu.a(), 0x02);
+    assert!(cpu.p.c);
+    // A = $02; LSR -> $01, C=0
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xA9, 0x02, 0x4A]);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert_eq!(cpu.a(), 0x01);
+    assert!(!cpu.p.c);
+    // A = $80; SEC; ROL -> $01, C=1
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xA9, 0x80, 0x38, 0x2A]);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert_eq!(cpu.a(), 0x01);
+    assert!(cpu.p.c);
+    // A = $01; SEC; ROR -> $80, C=1, N=1
+    let (mut cpu, mut bus) = boot_with(0x8000, &[0xA9, 0x01, 0x38, 0x6A]);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert_eq!(cpu.a(), 0x80);
+    assert!(cpu.p.c);
+    assert!(cpu.p.n);
+}
+
+#[test]
+fn inc_dec_memory_round_trip() {
+    let (mut cpu, mut bus) = boot_with(
+        0x8000,
+        &[0xA9, 0x10, 0x8D, 0x00, 0x7E, 0xEE, 0x00, 0x7E, 0xCE, 0x00, 0x7E, 0xCE, 0x00, 0x7E],
+    );
+    cpu.step(&mut bus); // LDA #$10
+    cpu.step(&mut bus); // STA $7E00
+    cpu.step(&mut bus); // INC $7E00
+    assert_eq!(bus.peek(0x7E00), 0x11);
+    cpu.step(&mut bus); // DEC $7E00
+    cpu.step(&mut bus); // DEC $7E00 -> $0F
+    assert_eq!(bus.peek(0x7E00), 0x0F);
+}
+
+#[test]
+fn tsb_trb_set_and_clear_bits() {
+    // STA stores $0F at $7E00. TSB $7E00 with A=$F0 -> mem becomes
+    // $FF, Z = (A & mem) == 0, with mem-pre = $0F so Z=1.
+    let (mut cpu, mut bus) = boot_with(
+        0x8000,
+        &[
+            0xA9, 0x0F, 0x8D, 0x00, 0x7E, // mem = $0F
+            0xA9, 0xF0, 0x0C, 0x00, 0x7E, // TSB $7E00 (A=$F0)
+            0xA9, 0x0F, 0x1C, 0x00, 0x7E, // TRB $7E00 (A=$0F)
+        ],
+    );
+    for _ in 0..4 {
+        cpu.step(&mut bus); // LDA, STA, LDA, TSB
+    }
+    // After TSB: mem = $FF; A & pre = $F0 & $0F = 0 -> Z=1.
+    // Asserting before the next LDA so the freshly-loaded A
+    // doesn't overwrite the flag we care about.
+    assert_eq!(bus.peek(0x7E00), 0xFF);
+    assert!(cpu.p.z);
+    cpu.step(&mut bus); // LDA #$0F
+    cpu.step(&mut bus); // TRB
+    // After TRB: A & pre = $0F & $FF = $0F (nonzero) -> Z=0,
+    // mem = $FF & ~$0F = $F0
+    assert_eq!(bus.peek(0x7E00), 0xF0);
+    assert!(!cpu.p.z);
+}
+
+#[test]
+fn mvn_copies_block_forward() {
+    // Native, 16-bit X/Y/A. Source $7E:1000..1003 = "ABCD".
+    // A = 3 (4 bytes - 1), X = $1000, Y = $2000, MVN bank $7E -> $7E.
+    // After: $7E:2000..2003 == ABCD; X=$1004, Y=$2004; A=$FFFF.
+    let mut bus = FlatBus::new();
+    bus.poke(0x00FFFC, 0x00);
+    bus.poke(0x00FFFD, 0x80);
+    bus.poke_slice(
+        0x008000,
+        &[
+            0x18, 0xFB, // CLC; XCE -> native
+            0xC2, 0x30, // REP #$30
+            0xA9, 0x03, 0x00, // LDA #$0003
+            0xA2, 0x00, 0x10, // LDX #$1000
+            0xA0, 0x00, 0x20, // LDY #$2000
+            0x54, 0x7E, 0x7E, // MVN $7E,$7E
+            0xEA,
+        ],
+    );
+    bus.poke_slice(0x7E1000, b"ABCD");
+    let mut cpu = Cpu::new();
+    cpu.reset(&mut bus);
+    cpu.step(&mut bus); // CLC
+    cpu.step(&mut bus); // XCE
+    cpu.step(&mut bus); // REP
+    cpu.step(&mut bus); // LDA
+    cpu.step(&mut bus); // LDX
+    cpu.step(&mut bus); // LDY
+    cpu.step(&mut bus); // MVN (loops internally)
+    assert_eq!(&bus.ram[0x7E2000..0x7E2004], b"ABCD");
+    assert_eq!(cpu.x, 0x1004);
+    assert_eq!(cpu.y, 0x2004);
+    assert_eq!(cpu.c, 0xFFFF);
+    assert_eq!(cpu.dbr, 0x7E);
+}
+
+#[test]
+fn brk_pushes_state_and_loads_emulation_vector() {
+    let mut bus = FlatBus::new();
+    bus.poke(0x00FFFC, 0x00);
+    bus.poke(0x00FFFD, 0x80);
+    bus.poke(0x00FFFE, 0x00); // BRK/IRQ vector
+    bus.poke(0x00FFFF, 0x90);
+    bus.poke_slice(0x008000, &[0x00, 0xAA]); // BRK + signature
+    let mut cpu = Cpu::new();
+    cpu.reset(&mut bus);
+    cpu.step(&mut bus);
+    assert_eq!(cpu.pc, 0x9000);
+    assert!(cpu.p.i);
+    assert_eq!(cpu.pbr, 0);
+}
+
+#[test]
 fn nmi_pushes_and_loads_emulation_vector() {
     let mut bus = FlatBus::new();
     bus.poke(0x00FFFC, 0x00);

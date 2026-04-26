@@ -1137,6 +1137,185 @@ impl Cpu {
                 self.set_nz_x(self.read_y_width());
             }
 
+            // === AND / ORA / EOR (width-aware) ===
+            0x29 => { let v = self.imm_a_width(bus); self.do_and(v); }
+            0x25 => { let a = self.addr_direct(bus); self.alu_a(bus, a, AluOp::And); }
+            0x35 => { let a = self.addr_direct_x(bus); self.alu_a(bus, a, AluOp::And); }
+            0x32 => { let a = self.addr_direct_indirect(bus); self.alu_a(bus, a, AluOp::And); }
+            0x27 => { let a = self.addr_direct_indirect_long(bus); self.alu_a(bus, a, AluOp::And); }
+            0x21 => { let a = self.addr_direct_x_indirect(bus); self.alu_a(bus, a, AluOp::And); }
+            0x31 => { let a = self.addr_direct_indirect_y(bus); self.alu_a(bus, a, AluOp::And); }
+            0x37 => { let a = self.addr_direct_indirect_long_y(bus); self.alu_a(bus, a, AluOp::And); }
+            0x2D => { let a = self.addr_absolute(bus); self.alu_a(bus, a, AluOp::And); }
+            0x3D => { let a = self.addr_absolute_x(bus); self.alu_a(bus, a, AluOp::And); }
+            0x39 => { let a = self.addr_absolute_y(bus); self.alu_a(bus, a, AluOp::And); }
+            0x2F => { let a = self.addr_long(bus); self.alu_a(bus, a, AluOp::And); }
+            0x3F => { let a = self.addr_long_x(bus); self.alu_a(bus, a, AluOp::And); }
+            0x23 => { let a = self.addr_stack_rel(bus); self.alu_a(bus, a, AluOp::And); }
+            0x33 => { let a = self.addr_stack_rel_indirect_y(bus); self.alu_a(bus, a, AluOp::And); }
+
+            0x09 => { let v = self.imm_a_width(bus); self.do_ora(v); }
+            0x05 => { let a = self.addr_direct(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x15 => { let a = self.addr_direct_x(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x12 => { let a = self.addr_direct_indirect(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x07 => { let a = self.addr_direct_indirect_long(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x01 => { let a = self.addr_direct_x_indirect(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x11 => { let a = self.addr_direct_indirect_y(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x17 => { let a = self.addr_direct_indirect_long_y(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x0D => { let a = self.addr_absolute(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x1D => { let a = self.addr_absolute_x(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x19 => { let a = self.addr_absolute_y(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x0F => { let a = self.addr_long(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x1F => { let a = self.addr_long_x(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x03 => { let a = self.addr_stack_rel(bus); self.alu_a(bus, a, AluOp::Ora); }
+            0x13 => { let a = self.addr_stack_rel_indirect_y(bus); self.alu_a(bus, a, AluOp::Ora); }
+
+            0x49 => { let v = self.imm_a_width(bus); self.do_eor(v); }
+            0x45 => { let a = self.addr_direct(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x55 => { let a = self.addr_direct_x(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x52 => { let a = self.addr_direct_indirect(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x47 => { let a = self.addr_direct_indirect_long(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x41 => { let a = self.addr_direct_x_indirect(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x51 => { let a = self.addr_direct_indirect_y(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x57 => { let a = self.addr_direct_indirect_long_y(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x4D => { let a = self.addr_absolute(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x5D => { let a = self.addr_absolute_x(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x59 => { let a = self.addr_absolute_y(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x4F => { let a = self.addr_long(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x5F => { let a = self.addr_long_x(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x43 => { let a = self.addr_stack_rel(bus); self.alu_a(bus, a, AluOp::Eor); }
+            0x53 => { let a = self.addr_stack_rel_indirect_y(bus); self.alu_a(bus, a, AluOp::Eor); }
+
+            // === ADC / SBC (binary mode; BCD adjustment lands in 2c) ===
+            0x69 => { let v = self.imm_a_width(bus); self.do_adc(v); }
+            0x65 => { let a = self.addr_direct(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x75 => { let a = self.addr_direct_x(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x72 => { let a = self.addr_direct_indirect(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x67 => { let a = self.addr_direct_indirect_long(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x61 => { let a = self.addr_direct_x_indirect(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x71 => { let a = self.addr_direct_indirect_y(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x77 => { let a = self.addr_direct_indirect_long_y(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x6D => { let a = self.addr_absolute(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x7D => { let a = self.addr_absolute_x(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x79 => { let a = self.addr_absolute_y(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x6F => { let a = self.addr_long(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x7F => { let a = self.addr_long_x(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x63 => { let a = self.addr_stack_rel(bus); self.alu_a(bus, a, AluOp::Adc); }
+            0x73 => { let a = self.addr_stack_rel_indirect_y(bus); self.alu_a(bus, a, AluOp::Adc); }
+
+            0xE9 => { let v = self.imm_a_width(bus); self.do_sbc(v); }
+            0xE5 => { let a = self.addr_direct(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xF5 => { let a = self.addr_direct_x(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xF2 => { let a = self.addr_direct_indirect(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xE7 => { let a = self.addr_direct_indirect_long(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xE1 => { let a = self.addr_direct_x_indirect(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xF1 => { let a = self.addr_direct_indirect_y(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xF7 => { let a = self.addr_direct_indirect_long_y(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xED => { let a = self.addr_absolute(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xFD => { let a = self.addr_absolute_x(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xF9 => { let a = self.addr_absolute_y(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xEF => { let a = self.addr_long(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xFF => { let a = self.addr_long_x(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xE3 => { let a = self.addr_stack_rel(bus); self.alu_a(bus, a, AluOp::Sbc); }
+            0xF3 => { let a = self.addr_stack_rel_indirect_y(bus); self.alu_a(bus, a, AluOp::Sbc); }
+
+            // === CMP / CPX / CPY ===
+            0xC9 => { let v = self.imm_a_width(bus); self.do_cmp_a(v); }
+            0xC5 => { let a = self.addr_direct(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xD5 => { let a = self.addr_direct_x(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xD2 => { let a = self.addr_direct_indirect(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xC7 => { let a = self.addr_direct_indirect_long(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xC1 => { let a = self.addr_direct_x_indirect(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xD1 => { let a = self.addr_direct_indirect_y(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xD7 => { let a = self.addr_direct_indirect_long_y(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xCD => { let a = self.addr_absolute(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xDD => { let a = self.addr_absolute_x(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xD9 => { let a = self.addr_absolute_y(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xCF => { let a = self.addr_long(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xDF => { let a = self.addr_long_x(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xC3 => { let a = self.addr_stack_rel(bus); self.alu_a(bus, a, AluOp::Cmp); }
+            0xD3 => { let a = self.addr_stack_rel_indirect_y(bus); self.alu_a(bus, a, AluOp::Cmp); }
+
+            0xE0 => { let v = self.imm_x_width(bus); self.do_cmp_x(v); }
+            0xE4 => { let a = self.addr_direct(bus); let v = self.load_x_width(bus, a); self.do_cmp_x(v); }
+            0xEC => { let a = self.addr_absolute(bus); let v = self.load_x_width(bus, a); self.do_cmp_x(v); }
+
+            0xC0 => { let v = self.imm_x_width(bus); self.do_cmp_y(v); }
+            0xC4 => { let a = self.addr_direct(bus); let v = self.load_x_width(bus, a); self.do_cmp_y(v); }
+            0xCC => { let a = self.addr_absolute(bus); let v = self.load_x_width(bus, a); self.do_cmp_y(v); }
+
+            // === BIT (immediate is Z-only, others are full N/V/Z) ===
+            0x89 => {
+                let v = self.imm_a_width(bus);
+                let masked = self.read_a_width() & v;
+                self.p.z = masked == 0;
+            }
+            0x24 => { let a = self.addr_direct(bus); self.do_bit(bus, a); }
+            0x34 => { let a = self.addr_direct_x(bus); self.do_bit(bus, a); }
+            0x2C => { let a = self.addr_absolute(bus); self.do_bit(bus, a); }
+            0x3C => { let a = self.addr_absolute_x(bus); self.do_bit(bus, a); }
+
+            // === ASL / LSR / ROL / ROR (accumulator + memory) ===
+            0x0A => self.do_asl_a(),
+            0x06 => { let a = self.addr_direct(bus); self.rmw(bus, a, RmwOp::Asl); }
+            0x16 => { let a = self.addr_direct_x(bus); self.rmw(bus, a, RmwOp::Asl); }
+            0x0E => { let a = self.addr_absolute(bus); self.rmw(bus, a, RmwOp::Asl); }
+            0x1E => { let a = self.addr_absolute_x(bus); self.rmw(bus, a, RmwOp::Asl); }
+
+            0x4A => self.do_lsr_a(),
+            0x46 => { let a = self.addr_direct(bus); self.rmw(bus, a, RmwOp::Lsr); }
+            0x56 => { let a = self.addr_direct_x(bus); self.rmw(bus, a, RmwOp::Lsr); }
+            0x4E => { let a = self.addr_absolute(bus); self.rmw(bus, a, RmwOp::Lsr); }
+            0x5E => { let a = self.addr_absolute_x(bus); self.rmw(bus, a, RmwOp::Lsr); }
+
+            0x2A => self.do_rol_a(),
+            0x26 => { let a = self.addr_direct(bus); self.rmw(bus, a, RmwOp::Rol); }
+            0x36 => { let a = self.addr_direct_x(bus); self.rmw(bus, a, RmwOp::Rol); }
+            0x2E => { let a = self.addr_absolute(bus); self.rmw(bus, a, RmwOp::Rol); }
+            0x3E => { let a = self.addr_absolute_x(bus); self.rmw(bus, a, RmwOp::Rol); }
+
+            0x6A => self.do_ror_a(),
+            0x66 => { let a = self.addr_direct(bus); self.rmw(bus, a, RmwOp::Ror); }
+            0x76 => { let a = self.addr_direct_x(bus); self.rmw(bus, a, RmwOp::Ror); }
+            0x6E => { let a = self.addr_absolute(bus); self.rmw(bus, a, RmwOp::Ror); }
+            0x7E => { let a = self.addr_absolute_x(bus); self.rmw(bus, a, RmwOp::Ror); }
+
+            // === INC / DEC memory ===
+            0xE6 => { let a = self.addr_direct(bus); self.rmw(bus, a, RmwOp::Inc); }
+            0xF6 => { let a = self.addr_direct_x(bus); self.rmw(bus, a, RmwOp::Inc); }
+            0xEE => { let a = self.addr_absolute(bus); self.rmw(bus, a, RmwOp::Inc); }
+            0xFE => { let a = self.addr_absolute_x(bus); self.rmw(bus, a, RmwOp::Inc); }
+            0xC6 => { let a = self.addr_direct(bus); self.rmw(bus, a, RmwOp::Dec); }
+            0xD6 => { let a = self.addr_direct_x(bus); self.rmw(bus, a, RmwOp::Dec); }
+            0xCE => { let a = self.addr_absolute(bus); self.rmw(bus, a, RmwOp::Dec); }
+            0xDE => { let a = self.addr_absolute_x(bus); self.rmw(bus, a, RmwOp::Dec); }
+
+            // === TSB / TRB ===
+            0x04 => { let a = self.addr_direct(bus); self.rmw(bus, a, RmwOp::Tsb); }
+            0x0C => { let a = self.addr_absolute(bus); self.rmw(bus, a, RmwOp::Tsb); }
+            0x14 => { let a = self.addr_direct(bus); self.rmw(bus, a, RmwOp::Trb); }
+            0x1C => { let a = self.addr_absolute(bus); self.rmw(bus, a, RmwOp::Trb); }
+
+            // === MVN / MVP (block move) ===
+            0x54 => self.do_block_move(bus, false),
+            0x44 => self.do_block_move(bus, true),
+
+            // === BRK / COP (software interrupts) ===
+            0x00 => self.do_brk(bus),
+            0x02 => self.do_cop(bus),
+
+            // === WAI / STP ===
+            0xCB => {
+                self.waiting = true;
+                bus.idle();
+                bus.idle();
+            }
+            0xDB => {
+                self.stopped = true;
+                bus.idle();
+                bus.idle();
+            }
+
             // === Misc ===
             0xEA => {} // NOP
             0x42 => {
@@ -1144,14 +1323,6 @@ impl Cpu {
                 let _ = self.fetch_u8(bus);
             }
 
-            other => {
-                panic!(
-                    "snes::cpu: unimplemented opcode {:#04X} at {:02X}:{:04X}",
-                    other,
-                    self.pbr,
-                    self.pc.wrapping_sub(1)
-                );
-            }
         }
     }
 
@@ -1197,6 +1368,410 @@ impl Cpu {
         self.store_a_width(bus, addr, 0);
     }
 
+    /// Width-aware immediate-operand fetch tied to the m flag.
+    fn imm_a_width(&mut self, bus: &mut impl SnesBus) -> u16 {
+        if self.p.m {
+            self.fetch_u8(bus) as u16
+        } else {
+            self.fetch_u16(bus)
+        }
+    }
+
+    /// Width-aware immediate-operand fetch tied to the x flag (for
+    /// CPX/CPY immediate).
+    fn imm_x_width(&mut self, bus: &mut impl SnesBus) -> u16 {
+        if self.p.x {
+            self.fetch_u8(bus) as u16
+        } else {
+            self.fetch_u16(bus)
+        }
+    }
+
+    /// AND/ORA/EOR/ADC/SBC/CMP common: load operand at `addr` with
+    /// m-width, dispatch the ALU op.
+    fn alu_a(&mut self, bus: &mut impl SnesBus, addr: u32, op: AluOp) {
+        let v = self.load_a_width(bus, addr);
+        match op {
+            AluOp::And => self.do_and(v),
+            AluOp::Ora => self.do_ora(v),
+            AluOp::Eor => self.do_eor(v),
+            AluOp::Adc => self.do_adc(v),
+            AluOp::Sbc => self.do_sbc(v),
+            AluOp::Cmp => self.do_cmp_a(v),
+        }
+    }
+
+    fn do_and(&mut self, v: u16) {
+        let a = self.read_a_width();
+        let r = a & v;
+        self.write_a_width(r);
+        self.set_nz_m(r);
+    }
+
+    fn do_ora(&mut self, v: u16) {
+        let a = self.read_a_width();
+        let r = a | v;
+        self.write_a_width(r);
+        self.set_nz_m(r);
+    }
+
+    fn do_eor(&mut self, v: u16) {
+        let a = self.read_a_width();
+        let r = a ^ v;
+        self.write_a_width(r);
+        self.set_nz_m(r);
+    }
+
+    /// ADC. Binary mode only for now; BCD adjustment lands in 2c.
+    /// Width follows P.m.
+    fn do_adc(&mut self, v: u16) {
+        let a = self.read_a_width();
+        let c = self.p.c as u32;
+        if self.p.m {
+            let lhs = a as u8 as u32;
+            let rhs = v as u8 as u32;
+            let r = lhs + rhs + c;
+            let r8 = r as u8;
+            self.p.c = r > 0xFF;
+            self.p.v = ((!(lhs ^ rhs)) & (lhs ^ r) & 0x80) != 0;
+            self.write_a_width(r8 as u16);
+            self.set_nz_u8(r8);
+        } else {
+            let lhs = a as u32;
+            let rhs = v as u32;
+            let r = lhs + rhs + c;
+            let r16 = r as u16;
+            self.p.c = r > 0xFFFF;
+            self.p.v = ((!(lhs ^ rhs)) & (lhs ^ r) & 0x8000) != 0;
+            self.write_a_width(r16);
+            self.set_nz_u16(r16);
+        }
+    }
+
+    fn do_sbc(&mut self, v: u16) {
+        // Binary SBC = ADC of the one's complement with the C flag
+        // acting as the borrow-in (set means "no borrow").
+        let inverted = !v;
+        let mask = if self.p.m { 0x00FF } else { 0xFFFF };
+        self.do_adc(inverted & mask);
+    }
+
+    fn do_cmp_a(&mut self, v: u16) {
+        let a = self.read_a_width();
+        if self.p.m {
+            let lhs = a as u8;
+            let rhs = v as u8;
+            let r = lhs.wrapping_sub(rhs);
+            self.p.c = lhs >= rhs;
+            self.set_nz_u8(r);
+        } else {
+            let r = a.wrapping_sub(v);
+            self.p.c = a >= v;
+            self.set_nz_u16(r);
+        }
+    }
+
+    fn do_cmp_x(&mut self, v: u16) {
+        let x = self.read_x_width();
+        if self.p.x {
+            let lhs = x as u8;
+            let rhs = v as u8;
+            let r = lhs.wrapping_sub(rhs);
+            self.p.c = lhs >= rhs;
+            self.set_nz_u8(r);
+        } else {
+            let r = x.wrapping_sub(v);
+            self.p.c = x >= v;
+            self.set_nz_u16(r);
+        }
+    }
+
+    fn do_cmp_y(&mut self, v: u16) {
+        let y = self.read_y_width();
+        if self.p.x {
+            let lhs = y as u8;
+            let rhs = v as u8;
+            let r = lhs.wrapping_sub(rhs);
+            self.p.c = lhs >= rhs;
+            self.set_nz_u8(r);
+        } else {
+            let r = y.wrapping_sub(v);
+            self.p.c = y >= v;
+            self.set_nz_u16(r);
+        }
+    }
+
+    /// BIT against memory: N = bit (m_width - 1) of operand,
+    /// V = bit (m_width - 2) of operand, Z = (a AND operand) == 0.
+    fn do_bit(&mut self, bus: &mut impl SnesBus, addr: u32) {
+        let v = self.load_a_width(bus, addr);
+        let a = self.read_a_width();
+        if self.p.m {
+            let v8 = v as u8;
+            self.p.n = v8 & 0x80 != 0;
+            self.p.v = v8 & 0x40 != 0;
+            self.p.z = (a as u8 & v8) == 0;
+        } else {
+            self.p.n = v & 0x8000 != 0;
+            self.p.v = v & 0x4000 != 0;
+            self.p.z = (a & v) == 0;
+        }
+    }
+
+    fn do_asl_a(&mut self) {
+        let a = self.read_a_width();
+        if self.p.m {
+            let a8 = a as u8;
+            self.p.c = a8 & 0x80 != 0;
+            let r = a8 << 1;
+            self.write_a_width(r as u16);
+            self.set_nz_u8(r);
+        } else {
+            self.p.c = a & 0x8000 != 0;
+            let r = a << 1;
+            self.write_a_width(r);
+            self.set_nz_u16(r);
+        }
+    }
+
+    fn do_lsr_a(&mut self) {
+        let a = self.read_a_width();
+        if self.p.m {
+            let a8 = a as u8;
+            self.p.c = a8 & 1 != 0;
+            let r = a8 >> 1;
+            self.write_a_width(r as u16);
+            self.set_nz_u8(r);
+        } else {
+            self.p.c = a & 1 != 0;
+            let r = a >> 1;
+            self.write_a_width(r);
+            self.set_nz_u16(r);
+        }
+    }
+
+    fn do_rol_a(&mut self) {
+        let a = self.read_a_width();
+        let cin = self.p.c as u16;
+        if self.p.m {
+            let a8 = a as u8;
+            self.p.c = a8 & 0x80 != 0;
+            let r = ((a8 << 1) as u16 | cin) as u8;
+            self.write_a_width(r as u16);
+            self.set_nz_u8(r);
+        } else {
+            self.p.c = a & 0x8000 != 0;
+            let r = (a << 1) | cin;
+            self.write_a_width(r);
+            self.set_nz_u16(r);
+        }
+    }
+
+    fn do_ror_a(&mut self) {
+        let a = self.read_a_width();
+        if self.p.m {
+            let a8 = a as u8;
+            let cin = (self.p.c as u8) << 7;
+            self.p.c = a8 & 1 != 0;
+            let r = (a8 >> 1) | cin;
+            self.write_a_width(r as u16);
+            self.set_nz_u8(r);
+        } else {
+            let cin = (self.p.c as u16) << 15;
+            self.p.c = a & 1 != 0;
+            let r = (a >> 1) | cin;
+            self.write_a_width(r);
+            self.set_nz_u16(r);
+        }
+    }
+
+    /// Read-modify-write to memory at `addr` with m-width. The real
+    /// 65C816 does read, internal cycle, write; we model the
+    /// internal cycle with one `bus.idle()`.
+    fn rmw(&mut self, bus: &mut impl SnesBus, addr: u32, op: RmwOp) {
+        let v = self.load_a_width(bus, addr);
+        bus.idle();
+        let r = match op {
+            RmwOp::Asl => {
+                if self.p.m {
+                    self.p.c = v & 0x80 != 0;
+                    let r = (v as u8) << 1;
+                    self.set_nz_u8(r);
+                    r as u16
+                } else {
+                    self.p.c = v & 0x8000 != 0;
+                    let r = v << 1;
+                    self.set_nz_u16(r);
+                    r
+                }
+            }
+            RmwOp::Lsr => {
+                self.p.c = v & 1 != 0;
+                let r = v >> 1;
+                if self.p.m {
+                    self.set_nz_u8(r as u8);
+                } else {
+                    self.set_nz_u16(r);
+                }
+                r
+            }
+            RmwOp::Rol => {
+                let cin = self.p.c as u16;
+                if self.p.m {
+                    self.p.c = v & 0x80 != 0;
+                    let r = (((v as u8) << 1) as u16 | cin) as u8;
+                    self.set_nz_u8(r);
+                    r as u16
+                } else {
+                    self.p.c = v & 0x8000 != 0;
+                    let r = (v << 1) | cin;
+                    self.set_nz_u16(r);
+                    r
+                }
+            }
+            RmwOp::Ror => {
+                if self.p.m {
+                    let cin = (self.p.c as u8) << 7;
+                    self.p.c = v & 1 != 0;
+                    let r = ((v as u8) >> 1) | cin;
+                    self.set_nz_u8(r);
+                    r as u16
+                } else {
+                    let cin = (self.p.c as u16) << 15;
+                    self.p.c = v & 1 != 0;
+                    let r = (v >> 1) | cin;
+                    self.set_nz_u16(r);
+                    r
+                }
+            }
+            RmwOp::Inc => {
+                let r = v.wrapping_add(1);
+                let r = if self.p.m { r & 0xFF } else { r };
+                self.set_nz_m(r);
+                r
+            }
+            RmwOp::Dec => {
+                let r = v.wrapping_sub(1);
+                let r = if self.p.m { r & 0xFF } else { r };
+                self.set_nz_m(r);
+                r
+            }
+            RmwOp::Tsb => {
+                let a = self.read_a_width();
+                self.p.z = (a & v) == 0;
+                a | v
+            }
+            RmwOp::Trb => {
+                let a = self.read_a_width();
+                self.p.z = (a & v) == 0;
+                v & !a
+            }
+        };
+        self.store_a_width(bus, addr, r);
+    }
+
+    /// MVN ($54) and MVP ($44). Operand byte order in the
+    /// instruction stream is `[opcode] [destbank] [srcbank]`.
+    /// Iterates A+1 times: copy one byte, advance/retreat X and Y,
+    /// decrement A. DBR persists at the destination bank after
+    /// completion.
+    fn do_block_move(&mut self, bus: &mut impl SnesBus, decrement: bool) {
+        let dest_bank = self.fetch_u8(bus);
+        let src_bank = self.fetch_u8(bus);
+        self.dbr = dest_bank;
+        loop {
+            let src = ((src_bank as u32) << 16) | self.x as u32;
+            let dest = ((dest_bank as u32) << 16) | self.y as u32;
+            let v = self.read8(bus, src);
+            self.write8(bus, dest, v);
+            bus.idle();
+            bus.idle();
+            if decrement {
+                self.x = if self.p.x {
+                    (self.x & 0xFF00) | ((self.x.wrapping_sub(1)) & 0xFF)
+                } else {
+                    self.x.wrapping_sub(1)
+                };
+                self.y = if self.p.x {
+                    (self.y & 0xFF00) | ((self.y.wrapping_sub(1)) & 0xFF)
+                } else {
+                    self.y.wrapping_sub(1)
+                };
+            } else {
+                self.x = if self.p.x {
+                    (self.x & 0xFF00) | ((self.x.wrapping_add(1)) & 0xFF)
+                } else {
+                    self.x.wrapping_add(1)
+                };
+                self.y = if self.p.x {
+                    (self.y & 0xFF00) | ((self.y.wrapping_add(1)) & 0xFF)
+                } else {
+                    self.y.wrapping_add(1)
+                };
+            }
+            self.c = self.c.wrapping_sub(1);
+            if self.c == 0xFFFF {
+                break;
+            }
+        }
+    }
+
+    /// BRK ($00). Two-byte instruction (opcode + signature byte).
+    /// Advances PC past the signature, pushes PBR (native only),
+    /// PC, P (with B = 1), then loads the BRK vector.
+    fn do_brk(&mut self, bus: &mut impl SnesBus) {
+        let _sig = self.fetch_u8(bus);
+        let p_pushed = self.p.pack(self.mode) | 0x10; // software push sets B
+        match self.mode {
+            Mode::Native => {
+                self.push8(bus, self.pbr);
+                self.push16(bus, self.pc);
+                self.push8(bus, p_pushed);
+            }
+            Mode::Emulation => {
+                self.push16(bus, self.pc);
+                self.push8(bus, p_pushed);
+            }
+        }
+        self.p.d = false;
+        self.p.i = true;
+        self.pbr = 0;
+        let vec_addr = match self.mode {
+            Mode::Native => 0x00FFE6,
+            Mode::Emulation => 0x00FFFE,
+        };
+        let lo = bus.read(vec_addr) as u16;
+        let hi = bus.read(vec_addr + 1) as u16;
+        self.pc = (hi << 8) | lo;
+    }
+
+    /// COP ($02). Same shape as BRK but its own vector pair.
+    fn do_cop(&mut self, bus: &mut impl SnesBus) {
+        let _sig = self.fetch_u8(bus);
+        let p_pushed = self.p.pack(self.mode) | 0x10;
+        match self.mode {
+            Mode::Native => {
+                self.push8(bus, self.pbr);
+                self.push16(bus, self.pc);
+                self.push8(bus, p_pushed);
+            }
+            Mode::Emulation => {
+                self.push16(bus, self.pc);
+                self.push8(bus, p_pushed);
+            }
+        }
+        self.p.d = false;
+        self.p.i = true;
+        self.pbr = 0;
+        let vec_addr = match self.mode {
+            Mode::Native => 0x00FFE4,
+            Mode::Emulation => 0x00FFF4,
+        };
+        let lo = bus.read(vec_addr) as u16;
+        let hi = bus.read(vec_addr + 1) as u16;
+        self.pc = (hi << 8) | lo;
+    }
+
     fn branch(&mut self, bus: &mut impl SnesBus, taken: bool) {
         let off = self.fetch_u8(bus) as i8 as i32;
         if taken {
@@ -1210,6 +1785,34 @@ impl Cpu {
         bus.idle();
         self.pc = (self.pc as i32).wrapping_add(off) as u16;
     }
+}
+
+/// Tag the binary ALU opcode the dispatch table is invoking.
+/// Lets the load/operate/store sequence share `alu_a` instead of
+/// duplicating it per mnemonic.
+#[derive(Debug, Clone, Copy)]
+enum AluOp {
+    And,
+    Ora,
+    Eor,
+    Adc,
+    Sbc,
+    Cmp,
+}
+
+/// Tag the read-modify-write opcode the dispatch table is invoking.
+/// `rmw` does the load + idle + width-specific op + store with the
+/// per-op variation living inside the match.
+#[derive(Debug, Clone, Copy)]
+enum RmwOp {
+    Asl,
+    Lsr,
+    Rol,
+    Ror,
+    Inc,
+    Dec,
+    Tsb,
+    Trb,
 }
 
 #[cfg(test)]
