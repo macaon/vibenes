@@ -19,6 +19,7 @@
 //! for the per-cycle scheduling skeleton.
 
 pub mod brr;
+pub mod echo;
 pub mod envelope;
 pub mod mixer;
 pub mod voice;
@@ -295,6 +296,13 @@ impl DspRegs {
     /// Echo buffer start address in ARAM (page-aligned).
     pub fn echo_start_addr(&self) -> u16 {
         (self.read(global_reg::ESA) as u16) << 8
+    }
+
+    /// Raw ESA register byte (high byte of the echo buffer base
+    /// address). Convenience for the echo unit which keeps its own
+    /// 1-sample-delayed cache of this value.
+    pub fn echo_start_byte(&self) -> u8 {
+        self.read(global_reg::ESA)
     }
 
     /// Echo delay length in 2 KiB units. Multiply by 2048 to get

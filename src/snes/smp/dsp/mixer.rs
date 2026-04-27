@@ -10,11 +10,14 @@
 //! 4. Applying master volume (MVOLL / MVOLR, signed 8-bit / 128).
 //! 5. Returning the final stereo pair.
 //!
+//! Echo is wired here (5c.6): voices flagged in EON feed a parallel
+//! echo bus, the [`super::echo::EchoUnit`] runs the FIR + delay-line
+//! + feedback writeback into ARAM, and the resulting echo output
+//! (already EVOL-scaled) is added to the dry mix before the final
+//! s16 clamp.
+//!
 //! ## Deferred for future sub-phases
 //!
-//! - **5c.6** echo: The mixer outputs the dry main mix; echo
-//!   feedback / FIR / EVOL routing lands later. Voices flagged in
-//!   EON will be summed into a separate echo bus then.
 //! - **5c.7** noise + pitch modulation: per-voice noise replacement
 //!   + per-voice PMON of the previous voice's last_raw_sample.
 //! - **KON polling cadence**: Mesen2 / hardware polls KON / KOFF
@@ -29,6 +32,7 @@
 //!   pipeline" + §"Voice DSP pipeline".
 
 use super::super::state::DspRegs;
+use super::echo::EchoUnit;
 use super::envelope::EnvelopeCounter;
 use super::voice::Voice;
 
@@ -37,6 +41,7 @@ use super::voice::Voice;
 pub struct Mixer {
     pub voices: [Voice; 8],
     pub counter: EnvelopeCounter,
+    pub echo: EchoUnit,
     /// Bitmask of voices that need KON priming on the next tick.
     /// Latched from the global `KON` register; cleared after each
     /// voice has been started.
@@ -57,6 +62,7 @@ impl Mixer {
                 Voice::new(),
             ],
             counter: EnvelopeCounter::new(),
+            echo: EchoUnit::new(),
             kon_pending: 0,
         }
     }
@@ -81,13 +87,14 @@ impl Mixer {
     /// `aram`. The caller is responsible for keeping the DSP
     /// register file in sync with what the SMP has written and for
     /// providing a 64 KiB ARAM slice.
-    pub fn step_sample(&mut self, dsp: &DspRegs, aram: &[u8; 0x10000]) -> (i16, i16) {
+    pub fn step_sample(&mut self, dsp: &DspRegs, aram: &mut [u8; 0x10000]) -> (i16, i16) {
         // Tick the global counter once per output sample, BEFORE
         // running any voice (so all voices see the same value).
         self.counter.tick();
 
         // Resolve KOFF bitmask.
         let koff = dsp.koff();
+        let eon = dsp.eon();
 
         // Dispatch any pending KONs - now (after the counter tick so
         // attack rate computations see this sample's counter).
@@ -108,9 +115,12 @@ impl Mixer {
         // continue to step (envelopes / BRR keep advancing).
         let muted = dsp.muted();
 
-        // Sum per-voice contributions.
+        // Sum per-voice contributions; collect EON-flagged voices
+        // separately for the echo feedback path.
         let mut sum_l: i32 = 0;
         let mut sum_r: i32 = 0;
+        let mut eon_sum_l: i32 = 0;
+        let mut eon_sum_r: i32 = 0;
         for v in 0..8 {
             let pitch = dsp.voice_pitch(v);
             let voll = dsp.voice_volume_left(v);
@@ -130,18 +140,52 @@ impl Mixer {
             );
             sum_l = sum_l.saturating_add(l);
             sum_r = sum_r.saturating_add(r);
+            if eon & (1u8 << v) != 0 {
+                eon_sum_l = eon_sum_l.saturating_add(l);
+                eon_sum_r = eon_sum_r.saturating_add(r);
+            }
         }
+
+        // Run the echo pipeline. Returns the echo contribution that
+        // is added to the dry mix; also writes the feedback back to
+        // ARAM (unless FLG.5 is set).
+        let fir = [
+            dsp.fir_coefficient(0),
+            dsp.fir_coefficient(1),
+            dsp.fir_coefficient(2),
+            dsp.fir_coefficient(3),
+            dsp.fir_coefficient(4),
+            dsp.fir_coefficient(5),
+            dsp.fir_coefficient(6),
+            dsp.fir_coefficient(7),
+        ];
+        let (echo_l, echo_r) = self.echo.step_sample(
+            eon_sum_l,
+            eon_sum_r,
+            dsp.echo_start_byte(),
+            dsp.echo_delay(),
+            dsp.echo_volume_left(),
+            dsp.echo_volume_right(),
+            dsp.echo_feedback(),
+            fir,
+            dsp.echo_write_disabled(),
+            aram,
+        );
 
         if muted {
             return (0, 0);
         }
 
-        // Apply master volume (signed 8-bit / 128).
+        // Apply master volume (signed 8-bit / 128) to the dry voice
+        // mix, then add the echo contribution (already EVOL-scaled by
+        // the echo unit). Final clamp to s16.
         let mvol_l = dsp.master_volume_left() as i32;
         let mvol_r = dsp.master_volume_right() as i32;
-        let final_l = (sum_l * mvol_l) >> 7;
-        let final_r = (sum_r * mvol_r) >> 7;
-        (clamp16(final_l), clamp16(final_r))
+        let dry_l = (sum_l * mvol_l) >> 7;
+        let dry_r = (sum_r * mvol_r) >> 7;
+        let final_l = clamp16(dry_l + echo_l as i32);
+        let final_r = clamp16(dry_r + echo_r as i32);
+        (final_l, final_r)
     }
 }
 
@@ -176,8 +220,8 @@ mod tests {
         assert_eq!(mixer_pre.counter.value, 0);
         let mut mixer = Mixer::new();
         let dsp = dsp_with_master_volume(0x40, 0x40);
-        let aram = Box::new([0u8; 0x10000]);
-        let (l, r) = mixer.step_sample(&dsp, &aram);
+        let mut aram = Box::new([0u8; 0x10000]);
+        let (l, r) = mixer.step_sample(&dsp, &mut aram);
         assert_eq!(l, 0);
         assert_eq!(r, 0);
     }
@@ -186,9 +230,9 @@ mod tests {
     fn counter_ticks_once_per_sample() {
         let mut mixer = Mixer::new();
         let dsp = dsp_with_master_volume(0x40, 0x40);
-        let aram = Box::new([0u8; 0x10000]);
+        let mut aram = Box::new([0u8; 0x10000]);
         for _ in 0..5 {
-            let _ = mixer.step_sample(&dsp, &aram);
+            let _ = mixer.step_sample(&dsp, &mut aram);
         }
         // Counter started at 0, ticked 5 times: 0 -> 0x77FF -> 0x77FE -> ... -> 0x77FB.
         assert_eq!(mixer.counter.value, 0x77FB);
@@ -220,7 +264,7 @@ mod tests {
         aram[0x0600] = 0x03;
 
         mixer.latch_kon(0x01); // bit 0 -> voice 0
-        let _ = mixer.step_sample(&dsp, &aram);
+        let _ = mixer.step_sample(&dsp, &mut aram);
         assert!(mixer.voices[0].active, "voice 0 should be active after KON");
         assert_eq!(mixer.voices[0].brr_addr, 0x0600);
         assert_eq!(mixer.voices[0].envelope.mode, EnvelopeMode::Attack);
@@ -234,8 +278,8 @@ mod tests {
         mixer.voices[0].active = true;
         mixer.voices[0].envelope.mode = EnvelopeMode::Attack;
         dsp.write(global_reg::KOFF, 0x01);
-        let aram = Box::new([0u8; 0x10000]);
-        let _ = mixer.step_sample(&dsp, &aram);
+        let mut aram = Box::new([0u8; 0x10000]);
+        let _ = mixer.step_sample(&dsp, &mut aram);
         assert_eq!(mixer.voices[0].envelope.mode, EnvelopeMode::Release);
     }
 
@@ -267,7 +311,7 @@ mod tests {
 
         mixer.latch_kon(0x01);
         for _ in 0..50 {
-            let (l, r) = mixer.step_sample(&dsp, &aram);
+            let (l, r) = mixer.step_sample(&dsp, &mut aram);
             assert_eq!(l, 0, "muted output is zero");
             assert_eq!(r, 0);
         }
@@ -316,8 +360,8 @@ mod tests {
         let mut acc1: i64 = 0;
         let mut acc2: i64 = 0;
         for _ in 0..256 {
-            let (l1, _) = m1.step_sample(&dsp_full, &aram);
-            let (l2, _) = m2.step_sample(&dsp_half, &aram);
+            let (l1, _) = m1.step_sample(&dsp_full, &mut aram);
+            let (l2, _) = m2.step_sample(&dsp_half, &mut aram);
             acc1 += (l1 as i64).abs();
             acc2 += (l2 as i64).abs();
         }
@@ -366,8 +410,8 @@ mod tests {
         let mut found_pos = 0i32;
         let mut found_neg = 0i32;
         for _ in 0..512 {
-            let (lp, _) = m_pos.step_sample(&dsp_pos, &aram);
-            let (ln, _) = m_neg.step_sample(&dsp_neg, &aram);
+            let (lp, _) = m_pos.step_sample(&dsp_pos, &mut aram);
+            let (ln, _) = m_neg.step_sample(&dsp_neg, &mut aram);
             if lp != 0 && found_pos == 0 {
                 found_pos = lp as i32;
             }
@@ -383,5 +427,85 @@ mod tests {
             (found_pos > 0 && found_neg < 0) || (found_pos < 0 && found_neg > 0),
             "negative MVOL should flip sign: pos={found_pos} neg={found_neg}"
         );
+    }
+
+    #[test]
+    fn echo_writeback_lands_in_aram_when_eon_voice_active() {
+        // EON-flagged voice 0 producing audible output should make
+        // the echo unit write non-zero feedback bytes into ARAM at
+        // ESA<<8.
+        let mut mixer = Mixer::new();
+        let mut dsp = DspRegs::new();
+        dsp.write(global_reg::MVOLL, 0x7F);
+        dsp.write(global_reg::MVOLR, 0x7F);
+        dsp.write(global_reg::DIR, 0x05); // sample dir at $0500
+        dsp.write(global_reg::ESA, 0x40); // echo buffer at $4000
+        dsp.write(global_reg::EDL, 1); // 2048-byte buffer
+        dsp.write(global_reg::EON, 0x01); // voice 0 in echo bus
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLL), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLR), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::PH), 0x10);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::ADSR1), 0x8F); // fast attack
+
+        let mut aram = Box::new([0u8; 0x10000]);
+        // Sample directory at $0500 -> start=$0600, loop=$0600.
+        aram[0x0500] = 0x00;
+        aram[0x0501] = 0x06;
+        aram[0x0502] = 0x00;
+        aram[0x0503] = 0x06;
+        // BRR block: range=8, filter=0, end+loop, all positive nibbles.
+        aram[0x0600] = 0x83;
+        for i in 1..9 {
+            aram[0x0600 + i] = 0x77;
+        }
+
+        mixer.latch_kon(0x01);
+        // Run enough samples for the buffer offset to advance past
+        // address 0x4000 so we can inspect a slot the echo wrote.
+        for _ in 0..16 {
+            let _ = mixer.step_sample(&dsp, &mut aram);
+        }
+
+        // Some bytes in the echo buffer region should now be non-zero
+        // (the feedback writeback path).
+        let touched = aram[0x4000..0x4040].iter().any(|&b| b != 0);
+        assert!(touched, "echo writeback should have populated ARAM");
+    }
+
+    #[test]
+    fn echo_write_disabled_flag_freezes_buffer() {
+        // FLG.5 set -> writeback is suppressed even though offset
+        // still advances.
+        let mut mixer = Mixer::new();
+        let mut dsp = DspRegs::new();
+        dsp.write(global_reg::MVOLL, 0x7F);
+        dsp.write(global_reg::MVOLR, 0x7F);
+        dsp.write(global_reg::DIR, 0x05);
+        dsp.write(global_reg::ESA, 0x40);
+        dsp.write(global_reg::EDL, 1);
+        dsp.write(global_reg::EON, 0x01);
+        dsp.write(global_reg::FLG, 0x20); // bit 5 = echo writes disabled
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLL), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLR), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::PH), 0x10);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::ADSR1), 0x8F);
+
+        let mut aram = Box::new([0u8; 0x10000]);
+        aram[0x0500] = 0x00;
+        aram[0x0501] = 0x06;
+        aram[0x0502] = 0x00;
+        aram[0x0503] = 0x06;
+        aram[0x0600] = 0x83;
+        for i in 1..9 {
+            aram[0x0600 + i] = 0x77;
+        }
+
+        mixer.latch_kon(0x01);
+        for _ in 0..16 {
+            let _ = mixer.step_sample(&dsp, &mut aram);
+        }
+
+        let untouched = aram[0x4000..0x4040].iter().all(|&b| b == 0);
+        assert!(untouched, "FLG.5 must suppress echo writeback");
     }
 }
