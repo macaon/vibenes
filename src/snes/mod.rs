@@ -9,6 +9,7 @@
 pub mod bus;
 pub mod cpu;
 pub mod rom;
+pub mod smp;
 
 use std::path::{Path, PathBuf};
 
