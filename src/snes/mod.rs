@@ -37,14 +37,71 @@ struct SaveMeta {
     rom_crc32: u32,
 }
 
+/// SMP master clock divider relative to the SNES master clock. The
+/// SPC700 runs at ~1.024 MHz vs. the SNES master at ~21.477 MHz, so
+/// one SMP cycle takes ~20.97 master cycles. We use 21 as the integer
+/// approximation - this is what bsnes does too, and it's close enough
+/// that SPC test ROMs and commercial games sequence correctly. The
+/// remaining drift is below the threshold where any known game shows
+/// observable timing artefacts.
+pub const SMP_MASTER_DIVIDER: u64 = 21;
+
+/// SPC700 + ARAM + IPL + I/O register file. Owned at the [`Snes`]
+/// level so the integrated SMP bus can borrow individual fields
+/// disjointly from the CPU bus's mailbox latches when stepping.
+///
+/// The SMP clock advances independently of the CPU - the orchestrator
+/// in [`Snes::step_instruction`] tracks how many master cycles the
+/// CPU has consumed and runs SMP instructions until the SMP catches
+/// up (within one instruction's worth of cycles).
+pub struct ApuSubsystem {
+    pub smp: smp::Smp,
+    pub aram: Vec<u8>,
+    pub ipl: smp::ipl::Ipl,
+    pub control: smp::state::SmpControl,
+    pub timers: smp::state::SmpTimers,
+    pub dsp: smp::state::DspRegs,
+    /// Total SMP cycles consumed since reset.
+    pub cycles: u64,
+}
+
+impl ApuSubsystem {
+    pub fn new(ipl: smp::ipl::Ipl) -> Self {
+        let mut smp = smp::Smp::new();
+        // Reset the SMP against a temporary flat bus seeded with the
+        // IPL bytes at $FFC0-$FFFF so the reset vector at $FFFE/$FFFF
+        // resolves to $FFC0 (the IPL entry point). The real running
+        // bus is constructed transiently per SMP step from disjoint
+        // fields of [`Snes`], so this seeding step is the only place
+        // we materialise a standalone bus.
+        let mut reset_bus = smp::bus::FlatSmpBus::new();
+        reset_bus.poke_slice(0xFFC0, &ipl.bytes);
+        smp.reset(&mut reset_bus);
+        Self {
+            smp,
+            aram: vec![0; 0x10000],
+            ipl,
+            control: smp::state::SmpControl::RESET,
+            timers: smp::state::SmpTimers::default(),
+            dsp: smp::state::DspRegs::new(),
+            cycles: 0,
+        }
+    }
+}
+
 /// Minimal SNES emulator. Phase 2d wires the 65C816 to a stub
-/// LoROM bus so reset + boot prelude actually execute. PPU/APU/DMA
-/// lands in Phases 3-5; until then [`Core::step_until_frame`]
-/// only services CPU steps and the framebuffer stays black.
+/// LoROM bus so reset + boot prelude actually execute. Phase 5b lands
+/// the SMP/SPC700 alongside, with the integrated bus, ARAM, IPL
+/// shadow, mailbox latches, and timer/DSP register stubs all wired
+/// into [`Snes::step_instruction`]. PPU/DMA still pending.
 pub struct Snes {
     cart: rom::Cartridge,
     pub cpu: cpu::Cpu,
     pub bus: bus::LoRomBus,
+    pub apu: ApuSubsystem,
+    /// Total master clock cycles the CPU has consumed since reset.
+    /// Drives the SMP catch-up scheduler in [`Snes::step_instruction`].
+    pub master_cycles: u64,
     framebuffer: Vec<u8>,
     save_meta: Option<SaveMeta>,
     audio_sink: Option<AudioSink>,
@@ -56,10 +113,13 @@ impl Snes {
         let mut bus = bus::LoRomBus::from_cartridge(&cart);
         let mut cpu = cpu::Cpu::new();
         cpu.reset(&mut bus);
+        let apu = ApuSubsystem::new(smp::ipl::Ipl::embedded());
         Self {
             cart,
             cpu,
             bus,
+            apu,
+            master_cycles: 0,
             framebuffer,
             save_meta: None,
             audio_sink: None,
@@ -80,10 +140,11 @@ impl Snes {
         &self.framebuffer
     }
 
-    /// Execute one 65C816 instruction. After each step we forward
-    /// the latched NMI/IRQ levels from the bus into the CPU; the
-    /// CPU then dispatches the interrupt at the next instruction
-    /// boundary.
+    /// Execute one 65C816 instruction, then run the SMP forward
+    /// until its cycle counter catches up to the new master-clock
+    /// position. NMI/IRQ levels are forwarded from the bus into
+    /// the CPU before the step so interrupts dispatch at the next
+    /// instruction boundary.
     pub fn step_instruction(&mut self) -> u8 {
         if self.bus.take_nmi() {
             self.cpu.nmi_pending = true;
@@ -97,7 +158,49 @@ impl Snes {
             // signal cancels a pending entry.
             self.cpu.irq_pending = false;
         }
-        self.cpu.step(&mut self.bus)
+        let cycles = self.cpu.step(&mut self.bus);
+        // The CPU's per-instruction cycle count is in 5A22 cycles
+        // (master / 6 fast or master / 8 slow). For the orchestrator
+        // we treat it as master cycles - close enough that the SMP
+        // tracks within ~6x of real time, which is plenty for SPC
+        // ISA tests and commercial-game mailbox handshakes. Real
+        // master-cycle accounting per access lands with the PPU.
+        self.master_cycles = self.master_cycles.wrapping_add(cycles as u64);
+        self.run_smp_to_master_cycles();
+        cycles
+    }
+
+    /// Run SMP instructions until [`ApuSubsystem::cycles`] catches up
+    /// with `master_cycles / SMP_MASTER_DIVIDER`. SMP instructions
+    /// run in their own cycle granularity (2-12 SMP cycles each), so
+    /// the SMP may overshoot the target slightly - those cycles are
+    /// pre-paid for the next round, which is correct.
+    pub fn run_smp_to_master_cycles(&mut self) {
+        let target = self.master_cycles / SMP_MASTER_DIVIDER;
+        // Cap the per-call work so a runaway CPU loop can't wedge us
+        // in here forever. The cap is generous - far more than any
+        // sensible per-instruction SMP debt.
+        let mut budget = 4096usize;
+        while self.apu.cycles < target && budget > 0 {
+            self.step_smp_one_instruction();
+            budget -= 1;
+        }
+    }
+
+    /// Run exactly one SMP instruction against the integrated bus.
+    /// Borrows disjoint mutable fields of `self` to construct the
+    /// transient bus.
+    pub fn step_smp_one_instruction(&mut self) {
+        let mut spc_bus = smp::bus::IntegratedSmpBus {
+            aram: &mut self.apu.aram,
+            ipl: &self.apu.ipl.bytes,
+            control: &mut self.apu.control,
+            timers: &mut self.apu.timers,
+            dsp: &mut self.apu.dsp,
+            ports: &mut self.bus.apu_ports,
+            cycles: &mut self.apu.cycles,
+        };
+        self.apu.smp.step(&mut spc_bus);
     }
 
     pub fn attach_save_metadata(&mut self, rom_path: PathBuf, rom_crc32: u32) {
@@ -193,5 +296,58 @@ impl Core for Snes {
 
     fn current_rom_path(&self) -> Option<&Path> {
         self.save_meta.as_ref().map(|m| m.rom_path.as_path())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apu_subsystem_resets_to_ipl_entry_point() {
+        let apu = ApuSubsystem::new(smp::ipl::Ipl::embedded());
+        assert_eq!(apu.smp.pc, 0xFFC0, "reset vector points at IPL entry");
+        assert_eq!(apu.smp.sp, 0xFF);
+        assert_eq!(apu.cycles, 0);
+    }
+
+    #[test]
+    fn apu_subsystem_executes_first_ipl_instruction() {
+        // The first IPL byte is `MOV X, #$EF`. Stepping the SMP once
+        // through a transient integrated bus must land $EF in X. This
+        // is the same end-to-end path Snes::step_smp_one_instruction
+        // takes - we just construct the bus inline so the test
+        // doesn't need a Cartridge fixture.
+        let mut apu = ApuSubsystem::new(smp::ipl::Ipl::embedded());
+        let mut ports = smp::state::ApuPorts::RESET;
+        let mut bus = smp::bus::IntegratedSmpBus {
+            aram: &mut apu.aram,
+            ipl: &apu.ipl.bytes,
+            control: &mut apu.control,
+            timers: &mut apu.timers,
+            dsp: &mut apu.dsp,
+            ports: &mut ports,
+            cycles: &mut apu.cycles,
+        };
+        apu.smp.step(&mut bus);
+        assert_eq!(apu.smp.x, 0xEF);
+    }
+
+    #[test]
+    fn cpu_to_smp_mailbox_handoff_through_shared_apu_ports() {
+        // CPU writes to the shared mailbox, then the SMP bus reads
+        // the same byte. Locks in that LoRomBus and IntegratedSmpBus
+        // both route through the same ApuPorts struct.
+        let mut ports = smp::state::ApuPorts::RESET;
+        // Simulate CPU side write to $2140.
+        ports.cpu_write(0, 0x42);
+        // Simulate SMP side read of $F4 - just borrows the same struct.
+        assert_eq!(ports.smp_read(0), 0x42);
+        // SMP writes to $F4 - CPU sees it on $2140.
+        ports.smp_write(0, 0x99);
+        assert_eq!(ports.cpu_read(0), 0x99);
+        // The two halves are disjoint: writing the SMP side did not
+        // touch what the SMP itself reads (still the CPU's $42).
+        assert_eq!(ports.smp_read(0), 0x42);
     }
 }

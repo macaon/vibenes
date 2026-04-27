@@ -133,16 +133,12 @@ pub struct LoRomBus {
     // the SMP. Each direction has its own register. The CPU's
     // **read** of $214x sees what the SMP last wrote there; the
     // CPU's **write** to $214x deposits a byte into a separate
-    // latch the SMP reads. Without a real SMP we hardcode the
-    // SMP-side latch to the IPL boot signature ($AA $BB 00 00) so
-    // commercial games' "WaitForAPUReady" loop clears, even after
-    // they STZ the ports as part of reset clean-up.
-    /// What the CPU sees on read - SMP-side latch.
-    apu_smp_to_cpu: [u8; 4],
-    /// What the SMP would see on read - CPU-side latch. Ignored
-    /// for now; lives here so CPU writes have somewhere to land
-    /// instead of stomping the boot signature.
-    apu_cpu_to_smp: [u8; 4],
+    // latch the SMP reads. As of Phase 5b.2 the SMP runs alongside
+    // the CPU and writes the boot signature itself during IPL
+    // execution; we still pre-seed `smp_to_cpu` with `$AA $BB $00
+    // $00` at construction so commercial games that poll the ports
+    // *before* enough SMP cycles have elapsed don't hang.
+    pub apu_ports: super::smp::state::ApuPorts,
 
     /// Eight DMA channels. $4300-$437F is laid out as 8 channels x
     /// 16 bytes; we collapse it into per-channel state so the
@@ -249,8 +245,7 @@ impl LoRomBus {
             // Games' WaitForAPUReady loop checks these to know the
             // SMP is alive. Without a real SMP we hardcode the
             // magic so commercial ROMs clear the handshake.
-            apu_smp_to_cpu: [0xAA, 0xBB, 0x00, 0x00],
-            apu_cpu_to_smp: [0; 4],
+            apu_ports: super::smp::state::ApuPorts::RESET,
             dma: [DmaChannel::default(); 8],
             mmio_writes: MmioCounters::default(),
         }
@@ -504,7 +499,7 @@ impl LoRomBus {
             }
             (0x00..=0x3F | 0x80..=0xBF, 0x2100..=0x213F) => self.open_bus,
             (0x00..=0x3F | 0x80..=0xBF, 0x2140..=0x217F) => {
-                let v = self.apu_smp_to_cpu[(off as usize) & 3];
+                let v = self.apu_ports.cpu_read((off as usize) & 3);
                 self.open_bus = v;
                 v
             }
@@ -597,16 +592,11 @@ impl LoRomBus {
             (0x00..=0x3F | 0x80..=0xBF, 0x2140..=0x217F) => {
                 self.mmio_writes.apu_ports += 1;
                 let port = (off as usize) & 3;
-                // CPU writes go to the CPU->SMP latch only. The
-                // SMP->CPU latch keeps the IPL boot signature
-                // ($AA/$BB) so commercial games that poll for it
-                // see the magic - but CPU writes do NOT echo back.
-                // Faking SMP responses gets us deeper into game
-                // boots but lies in ways that break game state
-                // later. Real SMP/DSP lands in Phase 5; commercial
-                // games hang at the block-transfer protocol until
-                // then, which is the honest behavior.
-                self.apu_cpu_to_smp[port] = value;
+                // CPU writes deposit into the CPU->SMP half of the
+                // mailbox. The SMP picks them up on its next read of
+                // `$F4 + port`. Replies from the SMP land in the
+                // SMP->CPU half via the integrated SMP bus.
+                self.apu_ports.cpu_write(port, value);
             }
             (0x00..=0x3F | 0x80..=0xBF, 0x2180..=0x21FF) => {
                 self.mmio_writes.ppu_b_bus += 1;
