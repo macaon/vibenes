@@ -455,6 +455,249 @@ fn stop_halts_smp_permanently() {
     assert!(smp.stopped);
 }
 
+// ----- ADC family ------------------------------------------------------
+//
+// Flag semantics are verified once on `adc A,#imm` (the simplest
+// addressing mode) and the remaining 11 modes get a single round-
+// trip test each to lock in cycle count + correct effective-address
+// resolution. The byte-level helper does the math; the per-mode
+// tests exist to catch addressing bugs.
+
+#[test]
+fn adc_imm_no_carry_zero_result_sets_zero_clears_n_v_h() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x00;
+    smp.psw.c = false;
+    let cycles = run_one(&mut smp, &mut bus, &[0x88, 0x00]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.z);
+    assert!(!smp.psw.n);
+    assert!(!smp.psw.c);
+    assert!(!smp.psw.v);
+    assert!(!smp.psw.h);
+}
+
+#[test]
+fn adc_imm_carry_in_propagates() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x00;
+    smp.psw.c = true;
+    run_one(&mut smp, &mut bus, &[0x88, 0x00]);
+    assert_eq!(smp.a, 0x01);
+    assert!(!smp.psw.z);
+    assert!(!smp.psw.c);
+}
+
+#[test]
+fn adc_imm_unsigned_overflow_sets_carry() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0xFF;
+    smp.psw.c = false;
+    run_one(&mut smp, &mut bus, &[0x88, 0x01]);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.z);
+    assert!(smp.psw.c);
+    assert!(!smp.psw.n);
+    // V is signed-overflow; 0xFF (-1) + 0x01 (+1) = 0 has no signed
+    // overflow.
+    assert!(!smp.psw.v);
+}
+
+#[test]
+fn adc_imm_signed_overflow_sets_v() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    // 0x7F + 0x01 = 0x80: positive + positive -> negative is V.
+    smp.a = 0x7F;
+    smp.psw.c = false;
+    run_one(&mut smp, &mut bus, &[0x88, 0x01]);
+    assert_eq!(smp.a, 0x80);
+    assert!(smp.psw.n);
+    assert!(smp.psw.v);
+    assert!(!smp.psw.c);
+}
+
+#[test]
+fn adc_imm_signed_overflow_negative_to_positive() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    // 0x80 + 0x80 = 0x100: negative + negative -> positive (with
+    // carry out). V is set; C is set; result is 0.
+    smp.a = 0x80;
+    smp.psw.c = false;
+    run_one(&mut smp, &mut bus, &[0x88, 0x80]);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.v);
+    assert!(smp.psw.c);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn adc_imm_half_carry_when_low_nibble_overflows() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x0F;
+    smp.psw.c = false;
+    run_one(&mut smp, &mut bus, &[0x88, 0x01]);
+    assert_eq!(smp.a, 0x10);
+    assert!(smp.psw.h, "low-nibble carry must set H");
+}
+
+#[test]
+fn adc_imm_no_half_carry_when_only_top_nibble_carries() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.psw.c = false;
+    run_one(&mut smp, &mut bus, &[0x88, 0x10]);
+    assert_eq!(smp.a, 0x20);
+    assert!(!smp.psw.h);
+}
+
+#[test]
+fn adc_a_dp_three_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    bus.poke(0x0020, 0x05);
+    let cycles = run_one(&mut smp, &mut bus, &[0x84, 0x20]);
+    assert_eq!(cycles, 3);
+    assert_eq!(smp.a, 0x15);
+}
+
+#[test]
+fn adc_a_abs_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x40;
+    bus.poke(0x1234, 0x02);
+    let cycles = run_one(&mut smp, &mut bus, &[0x85, 0x34, 0x12]);
+    assert_eq!(cycles, 4);
+    assert_eq!(smp.a, 0x42);
+}
+
+#[test]
+fn adc_a_dp_x_direct_three_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x01;
+    smp.x = 0x10;
+    bus.poke(0x0010, 0x07);
+    let cycles = run_one(&mut smp, &mut bus, &[0x86]);
+    assert_eq!(cycles, 3);
+    assert_eq!(smp.a, 0x08);
+}
+
+#[test]
+fn adc_a_dp_plus_x_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.x = 0x05;
+    // dp=$20, X=$05 -> read $0025
+    bus.poke(0x0025, 0x03);
+    let cycles = run_one(&mut smp, &mut bus, &[0x94, 0x20]);
+    assert_eq!(cycles, 4);
+    assert_eq!(smp.a, 0x13);
+}
+
+#[test]
+fn adc_a_abs_plus_x_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x40;
+    smp.x = 0x10;
+    bus.poke(0x1244, 0x02);
+    let cycles = run_one(&mut smp, &mut bus, &[0x95, 0x34, 0x12]);
+    assert_eq!(cycles, 5);
+    assert_eq!(smp.a, 0x42);
+}
+
+#[test]
+fn adc_a_abs_plus_y_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x40;
+    smp.y = 0x10;
+    bus.poke(0x1244, 0x02);
+    let cycles = run_one(&mut smp, &mut bus, &[0x96, 0x34, 0x12]);
+    assert_eq!(cycles, 5);
+    assert_eq!(smp.a, 0x42);
+}
+
+#[test]
+fn adc_a_dp_x_indirect_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.x = 0x02;
+    // [dp+X] mode: dp=$20, X=$02 -> ptr at $0022/$0023
+    bus.poke(0x0022, 0x00);
+    bus.poke(0x0023, 0x12); // ptr -> $1200
+    bus.poke(0x1200, 0x05);
+    let cycles = run_one(&mut smp, &mut bus, &[0x87, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(smp.a, 0x15);
+}
+
+#[test]
+fn adc_a_dp_indirect_plus_y_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.y = 0x05;
+    // [dp]+Y mode: dp=$20 -> ptr at $0020/$0021, then +Y
+    bus.poke(0x0020, 0x00);
+    bus.poke(0x0021, 0x12); // ptr -> $1200; +5 = $1205
+    bus.poke(0x1205, 0x03);
+    let cycles = run_one(&mut smp, &mut bus, &[0x97, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(smp.a, 0x13);
+}
+
+#[test]
+fn adc_x_y_indirect_writes_to_x_address_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0xCC;
+    smp.x = 0x10;
+    smp.y = 0x20;
+    bus.poke(0x0010, 0x40); // (X)
+    bus.poke(0x0020, 0x02); // (Y)
+    let cycles = run_one(&mut smp, &mut bus, &[0x99]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0010), 0x42);
+    // A is NOT touched by the memory-destination ADC.
+    assert_eq!(smp.a, 0xCC);
+}
+
+#[test]
+fn adc_dp_dp_six_cycles_src_first_in_stream() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0010, 0x40); // src
+    bus.poke(0x0020, 0x02); // dst (and result destination)
+    // Stream: opcode src_dp dst_dp -> ADC $20, $10 in mnemonic.
+    let cycles = run_one(&mut smp, &mut bus, &[0x89, 0x10, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(bus.peek(0x0020), 0x42);
+}
+
+#[test]
+fn adc_dp_imm_five_cycles_imm_first_in_stream() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x40);
+    // Stream: opcode imm dp -> ADC $20, #$02 in mnemonic.
+    let cycles = run_one(&mut smp, &mut bus, &[0x98, 0x02, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0020), 0x42);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

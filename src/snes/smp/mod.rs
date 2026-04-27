@@ -259,6 +259,97 @@ impl Smp {
         self.psw.z = value == 0;
     }
 
+    // ----- Addressing-mode resolvers ----------------------------------
+    //
+    // Each helper consumes the addressing-mode operand bytes from the
+    // instruction stream (when applicable) and returns the effective
+    // 16-bit address. Bus reads of the OPERAND BYTES are charged here;
+    // the data read/write is done by the caller so RMW ops can see the
+    // address before reading the value.
+
+    /// `(X)` - direct page indexed by X. No idle, no operand fetch:
+    /// the addressing mode is implicit, charged 1 idle cycle by
+    /// callers (e.g. `MOV A,(X)` is 3 cycles = opcode + idle + read).
+    fn addr_dp_x_direct(&self) -> u16 {
+        self.dp_addr(self.x)
+    }
+
+    /// `(Y)` - direct page indexed by Y. Same pattern as `(X)`.
+    fn addr_dp_y_direct(&self) -> u16 {
+        self.dp_addr(self.y)
+    }
+
+    /// `dp+X` - direct page plus X (no indirection). Spec charges an
+    /// extra idle cycle for the X-add in addition to the base dp
+    /// access cost. Returns the effective dp page address.
+    fn addr_dp_plus_x(&mut self, bus: &mut impl SmpBus) -> u16 {
+        let dp = self.fetch_u8(bus);
+        bus.idle();
+        self.dp_addr(dp.wrapping_add(self.x))
+    }
+
+    /// `dp+Y` - direct page plus Y (no indirection).
+    #[allow(dead_code)]
+    fn addr_dp_plus_y(&mut self, bus: &mut impl SmpBus) -> u16 {
+        let dp = self.fetch_u8(bus);
+        bus.idle();
+        self.dp_addr(dp.wrapping_add(self.y))
+    }
+
+    /// `!abs+X` - absolute plus X. Idle cycle for the index add.
+    fn addr_abs_plus_x(&mut self, bus: &mut impl SmpBus) -> u16 {
+        let base = self.fetch_u16(bus);
+        bus.idle();
+        base.wrapping_add(self.x as u16)
+    }
+
+    /// `!abs+Y` - absolute plus Y.
+    fn addr_abs_plus_y(&mut self, bus: &mut impl SmpBus) -> u16 {
+        let base = self.fetch_u16(bus);
+        bus.idle();
+        base.wrapping_add(self.y as u16)
+    }
+
+    /// `[dp+X]` - indirect via dp word at `dp+X` (read 2 bytes from
+    /// dp page). Spec: opcode + dp_fetch + idle + ptr_lo + ptr_hi +
+    /// read_target. The pointer read crosses inside the dp page; the
+    /// high byte's offset wraps modulo 256 within the page (Mesen2
+    /// `Spc::GetIndIndexedDpAddr`).
+    fn addr_dp_x_indirect(&mut self, bus: &mut impl SmpBus) -> u16 {
+        let dp = self.fetch_u8(bus);
+        bus.idle();
+        let ptr_offset = dp.wrapping_add(self.x);
+        let lo = self.read_dp(bus, ptr_offset) as u16;
+        let hi = self.read_dp(bus, ptr_offset.wrapping_add(1)) as u16;
+        (hi << 8) | lo
+    }
+
+    /// `[dp]+Y` - indirect via dp word at `dp`, then Y added to the
+    /// pointer. Spec: opcode + dp_fetch + ptr_lo + ptr_hi + idle +
+    /// read_target.
+    fn addr_dp_indirect_plus_y(&mut self, bus: &mut impl SmpBus) -> u16 {
+        let dp = self.fetch_u8(bus);
+        let lo = self.read_dp(bus, dp) as u16;
+        let hi = self.read_dp(bus, dp.wrapping_add(1)) as u16;
+        bus.idle();
+        ((hi << 8) | lo).wrapping_add(self.y as u16)
+    }
+
+    /// ADC byte-level core. Performs `a + b + C`, sets N/V/H/Z/C
+    /// per the SPC700 spec. Returns the 8-bit result.
+    fn adc_byte(&mut self, a: u8, b: u8) -> u8 {
+        let c = if self.psw.c { 1u16 } else { 0 };
+        let sum = a as u16 + b as u16 + c;
+        self.psw.c = sum > 0xFF;
+        let result = sum as u8;
+        // Half-carry: low nibble overflow into bit 4.
+        self.psw.h = ((a & 0x0F) + (b & 0x0F) + c as u8) > 0x0F;
+        // Signed overflow: operands share sign, result differs.
+        self.psw.v = ((a ^ result) & (b ^ result) & 0x80) != 0;
+        self.set_nz(result);
+        result
+    }
+
     /// Take a signed 8-bit branch. Charged 2 extra cycles when the
     /// branch is taken (Mesen2 `BranchRelative`); the not-taken path
     /// already paid for the operand fetch.
@@ -354,6 +445,20 @@ impl Smp {
             // --- JMP / RET ---
             0x5F => self.op_jmp_abs(bus),
             0x6F => self.op_ret(bus),
+
+            // --- ADC family (12 addressing modes) ---
+            0x88 => self.op_adc_a_imm(bus),
+            0x84 => self.op_adc_a_dp(bus),
+            0x85 => self.op_adc_a_abs(bus),
+            0x86 => self.op_adc_a_dp_x_direct(bus),
+            0x94 => self.op_adc_a_dp_plus_x(bus),
+            0x95 => self.op_adc_a_abs_plus_x(bus),
+            0x96 => self.op_adc_a_abs_plus_y(bus),
+            0x87 => self.op_adc_a_dp_x_indirect(bus),
+            0x97 => self.op_adc_a_dp_indirect_plus_y(bus),
+            0x99 => self.op_adc_x_indirect_y_indirect(bus),
+            0x89 => self.op_adc_dp_dp(bus),
+            0x98 => self.op_adc_dp_imm(bus),
 
             other => panic!(
                 "snes/smp: unimplemented opcode ${other:02X} at PC=${:04X}",
@@ -705,6 +810,105 @@ impl Smp {
         bus.idle();
         bus.idle();
         self.pc = self.pop16(bus);
+    }
+
+    // ----- ADC family --------------------------------------------------
+    //
+    // All 12 addressing modes share the same byte-level operation
+    // (`adc_byte`), differing only in how the operand bytes are
+    // located and (for the three memory-destination variants) where
+    // the result is written. Cycle counts follow Mesen2 / Anomie's
+    // SPC700 timing tables: imm=2, dp=3, abs=4, dp+X=4, abs+X=5,
+    // abs+Y=5, (X)=3, [dp+X]=6, [dp]+Y=6, (X),(Y)=5, dp,#imm=5,
+    // dp,dp=6.
+
+    fn op_adc_a_imm(&mut self, bus: &mut impl SmpBus) {
+        let v = self.fetch_u8(bus);
+        self.a = self.adc_byte(self.a, v);
+    }
+
+    fn op_adc_a_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.a = self.adc_byte(self.a, v);
+    }
+
+    fn op_adc_a_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        self.a = self.adc_byte(self.a, v);
+    }
+
+    fn op_adc_a_dp_x_direct(&mut self, bus: &mut impl SmpBus) {
+        // ADC A,(X): direct page indexed by X register. 3 cycles =
+        // opcode + idle + read.
+        bus.idle();
+        let v = bus.read(self.addr_dp_x_direct());
+        self.a = self.adc_byte(self.a, v);
+    }
+
+    fn op_adc_a_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.adc_byte(self.a, v);
+    }
+
+    fn op_adc_a_abs_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.adc_byte(self.a, v);
+    }
+
+    fn op_adc_a_abs_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.adc_byte(self.a, v);
+    }
+
+    fn op_adc_a_dp_x_indirect(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_x_indirect(bus);
+        let v = bus.read(addr);
+        self.a = self.adc_byte(self.a, v);
+    }
+
+    fn op_adc_a_dp_indirect_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_indirect_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.adc_byte(self.a, v);
+    }
+
+    fn op_adc_x_indirect_y_indirect(&mut self, bus: &mut impl SmpBus) {
+        // ADC (X),(Y): 5 cycles. Opcode + idle + read_y + read_x +
+        // write_x. Memory destination - A is unchanged.
+        bus.idle();
+        let y_val = bus.read(self.addr_dp_y_direct());
+        let x_addr = self.addr_dp_x_direct();
+        let x_val = bus.read(x_addr);
+        let result = self.adc_byte(x_val, y_val);
+        bus.write(x_addr, result);
+    }
+
+    fn op_adc_dp_dp(&mut self, bus: &mut impl SmpBus) {
+        // ADC dp,dp: 6 cycles. Opcode + src_dp + read_src + dst_dp +
+        // read_dst + write_dst. Operand byte order in stream is
+        // `src dst` (Mesen2 + fullsnes - the source byte is at the
+        // LOWER address in the instruction stream).
+        let src_dp = self.fetch_u8(bus);
+        let src_val = self.read_dp(bus, src_dp);
+        let dst_dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dst_dp);
+        let result = self.adc_byte(dst_val, src_val);
+        self.write_dp(bus, dst_dp, result);
+    }
+
+    fn op_adc_dp_imm(&mut self, bus: &mut impl SmpBus) {
+        // ADC dp,#imm: 5 cycles. Opcode + imm + dp_fetch + read_dp +
+        // write_dp. Operand byte order in stream is `imm dp`.
+        let imm = self.fetch_u8(bus);
+        let dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dp);
+        let result = self.adc_byte(dst_val, imm);
+        self.write_dp(bus, dp, result);
     }
 }
 
