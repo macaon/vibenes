@@ -31,6 +31,7 @@
 //! direct-page wrap).
 
 pub mod bus;
+pub mod dsp;
 pub mod ipl;
 pub mod state;
 

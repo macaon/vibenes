@@ -186,50 +186,11 @@ impl SmpTimers {
     }
 }
 
-/// 128-byte DSP register file with `$F2` address latch + `$F3` data
-/// port. Phase 5b ships this as a passthrough array - reads return the
-/// stored value, writes deposit it - so SPC code that pokes the DSP
-/// for envelope/echo state doesn't trap. The actual DSP voice
-/// arithmetic + sample mixing land in Phase 5c.
-#[derive(Debug, Clone)]
-pub struct DspRegs {
-    pub address: u8,
-    pub regs: [u8; 128],
-}
-
-impl DspRegs {
-    pub const fn new() -> Self {
-        Self {
-            address: 0,
-            regs: [0; 128],
-        }
-    }
-
-    /// Read whatever is at the currently-selected DSP register. The
-    /// address byte's low 7 bits index the register; bit 7 selects
-    /// the read mirror on real hardware (Mesen2 `Dsp::ReadRam`); for
-    /// the passthrough stub we just mask to 7 bits so writes followed
-    /// by reads round-trip.
-    pub fn read_data(&self) -> u8 {
-        self.regs[(self.address & 0x7F) as usize]
-    }
-
-    /// Write the data port. On real hardware writes to `$80-$FF`
-    /// of the DSP address space are no-ops (the high bit is the
-    /// read-mirror select, not a writable register). We still honour
-    /// the mask so a passthrough test write-then-read sequence works.
-    pub fn write_data(&mut self, value: u8) {
-        if self.address & 0x80 == 0 {
-            self.regs[(self.address & 0x7F) as usize] = value;
-        }
-    }
-}
-
-impl Default for DspRegs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// `DspRegs` lives in [`super::dsp`] now - moved out of `state` because
+// the DSP grew its own substantial submodules (BRR, voice runtime,
+// envelope). Re-exported for callers that imported it from here so
+// existing call sites keep working.
+pub use super::dsp::DspRegs;
 
 /// Bidirectional 4-byte latches between the host 5A22 (CPU) and the
 /// SPC700 (SMP). Same bytes show up at `$2140-$2143` on the CPU side
@@ -387,23 +348,9 @@ mod tests {
         assert_eq!(ts.t0.stage2, 0x0A, "no reset on no-op");
     }
 
-    #[test]
-    fn dsp_regs_passthrough_round_trip() {
-        let mut d = DspRegs::new();
-        d.address = 0x12;
-        d.write_data(0xAB);
-        assert_eq!(d.read_data(), 0xAB);
-    }
-
-    #[test]
-    fn dsp_regs_high_bit_writes_are_silenced() {
-        let mut d = DspRegs::new();
-        d.address = 0x82; // mirror page
-        d.write_data(0xFF);
-        // Reads of the mirror page mask down to the same low-7-bit
-        // index, so it reads back the underlying register (still 0).
-        assert_eq!(d.read_data(), 0x00);
-    }
+    // DspRegs tests moved to [`super::super::dsp`] alongside the
+    // expanded register layout - re-export keeps `state::DspRegs`
+    // valid as a path but the canonical home is `dsp.rs`.
 
     #[test]
     fn apu_ports_reset_holds_boot_signature() {
