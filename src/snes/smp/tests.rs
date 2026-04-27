@@ -1930,6 +1930,127 @@ fn mov1_bit_c_writes_carry_to_memory_six_cycles() {
     assert_eq!(bus.peek(0x1234), 0xDF, "bit 5 cleared by C=0");
 }
 
+// ----- BBS / BBC / CBNE / DBNZ ----------------------------------------
+//
+// All four families touch no flags - they read or RMW memory and
+// optionally take the branch. Cycle counts (not_taken / taken):
+//   BBS / BBC dp.bit       5 / 7
+//   CBNE dp                5 / 7
+//   CBNE dp+X              6 / 8
+//   DBNZ dp                5 / 7  (RMW)
+//   DBNZ Y                 4 / 6
+
+#[test]
+fn bbs_dp_branch_taken_when_bit_set_seven_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x80); // bit 7 set
+    let cycles = run_one(&mut smp, &mut bus, &[0xE3, 0x20, 0x05]); // BBS dp.7
+    assert_eq!(cycles, 7);
+    assert_eq!(smp.pc, 0x0208, "0x0203 (post-fetch) + 5 = 0x0208");
+}
+
+#[test]
+fn bbs_dp_not_taken_when_bit_clear_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x00);
+    let cycles = run_one(&mut smp, &mut bus, &[0xE3, 0x20, 0x05]);
+    assert_eq!(cycles, 5);
+    assert_eq!(smp.pc, 0x0203, "no branch -> PC just past the rel byte");
+}
+
+#[test]
+fn bbc_dp_branch_taken_when_bit_clear() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0xFE); // bit 0 clear
+    let cycles = run_one(&mut smp, &mut bus, &[0x13, 0x20, 0xFB]); // BBC dp.0, -5
+    assert_eq!(cycles, 7);
+    // PC after fetching all 3 bytes is 0x0203; -5 -> 0x01FE
+    assert_eq!(smp.pc, 0x01FE);
+}
+
+#[test]
+fn cbne_dp_branch_when_a_differs() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x42;
+    bus.poke(0x0020, 0x43); // differs
+    let cycles = run_one(&mut smp, &mut bus, &[0x2E, 0x20, 0x10]);
+    assert_eq!(cycles, 7);
+    assert_eq!(smp.pc, 0x0213);
+}
+
+#[test]
+fn cbne_dp_no_branch_when_equal_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x42;
+    bus.poke(0x0020, 0x42);
+    let cycles = run_one(&mut smp, &mut bus, &[0x2E, 0x20, 0x10]);
+    assert_eq!(cycles, 5);
+    assert_eq!(smp.pc, 0x0203);
+}
+
+#[test]
+fn cbne_dp_plus_x_six_cycles_not_taken() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.x = 0x05;
+    bus.poke(0x0025, 0x10);
+    let cycles = run_one(&mut smp, &mut bus, &[0xDE, 0x20, 0x10]);
+    assert_eq!(cycles, 6);
+    assert_eq!(smp.pc, 0x0203);
+}
+
+#[test]
+fn dbnz_dp_decrements_and_branches_seven_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x05);
+    let cycles = run_one(&mut smp, &mut bus, &[0x6E, 0x20, 0x10]);
+    assert_eq!(cycles, 7);
+    assert_eq!(bus.peek(0x0020), 0x04);
+    assert_eq!(smp.pc, 0x0213);
+}
+
+#[test]
+fn dbnz_dp_no_branch_when_reaches_zero() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x01);
+    let cycles = run_one(&mut smp, &mut bus, &[0x6E, 0x20, 0x10]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0020), 0x00);
+    assert_eq!(smp.pc, 0x0203);
+}
+
+#[test]
+fn dbnz_y_six_cycles_when_taken() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x05;
+    let cycles = run_one(&mut smp, &mut bus, &[0xFE, 0x10]);
+    assert_eq!(cycles, 6);
+    assert_eq!(smp.y, 0x04);
+    assert_eq!(smp.pc, 0x0212);
+}
+
+#[test]
+fn dbnz_y_four_cycles_when_not_taken_does_not_touch_flags() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x01;
+    smp.psw.z = false; // would be set by a register-DEC, but DBNZ Y must not
+    let cycles = run_one(&mut smp, &mut bus, &[0xFE, 0x10]);
+    assert_eq!(cycles, 4);
+    assert_eq!(smp.y, 0x00);
+    assert!(!smp.psw.z, "DBNZ Y must not touch PSW");
+    assert_eq!(smp.pc, 0x0202);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

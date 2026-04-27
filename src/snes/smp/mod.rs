@@ -432,6 +432,30 @@ impl Smp {
             0x0E => self.op_tset1_abs(bus),
             0x4E => self.op_tclr1_abs(bus),
 
+            // --- BBS / BBC dp.bit, rel (16 ops) ---
+            0x03 => self.op_bbs_dp(bus, 0),
+            0x23 => self.op_bbs_dp(bus, 1),
+            0x43 => self.op_bbs_dp(bus, 2),
+            0x63 => self.op_bbs_dp(bus, 3),
+            0x83 => self.op_bbs_dp(bus, 4),
+            0xA3 => self.op_bbs_dp(bus, 5),
+            0xC3 => self.op_bbs_dp(bus, 6),
+            0xE3 => self.op_bbs_dp(bus, 7),
+            0x13 => self.op_bbc_dp(bus, 0),
+            0x33 => self.op_bbc_dp(bus, 1),
+            0x53 => self.op_bbc_dp(bus, 2),
+            0x73 => self.op_bbc_dp(bus, 3),
+            0x93 => self.op_bbc_dp(bus, 4),
+            0xB3 => self.op_bbc_dp(bus, 5),
+            0xD3 => self.op_bbc_dp(bus, 6),
+            0xF3 => self.op_bbc_dp(bus, 7),
+
+            // --- CBNE / DBNZ ---
+            0x2E => self.op_cbne_dp(bus),
+            0xDE => self.op_cbne_dp_plus_x(bus),
+            0x6E => self.op_dbnz_dp(bus),
+            0xFE => self.op_dbnz_y(bus),
+
             // --- Carry/memory bit ops (13/3 split address) ---
             0x4A => self.op_and1_c_bit(bus),
             0x6A => self.op_and1_c_notbit(bus),
@@ -1194,6 +1218,78 @@ impl Smp {
         let mask = 1 << bit;
         let new = (data & !mask) | (if self.psw.c { mask } else { 0 });
         bus.write(addr, new);
+    }
+
+    // ----- BBS / BBC / CBNE / DBNZ (branch-on-condition) --------------
+    //
+    // BBS dp.bit, rel: branch if mem[dp].bit is set.   5 / 7 cycles.
+    // BBC dp.bit, rel: branch if mem[dp].bit is clear. 5 / 7 cycles.
+    // CBNE dp, rel:    branch if A != mem[dp].         5 / 7 cycles.
+    // CBNE dp+X, rel:  same with X-indexed dp.         6 / 8 cycles.
+    // DBNZ dp, rel:    decrement mem[dp]; branch != 0. 5 / 7 cycles (RMW).
+    // DBNZ Y, rel:     decrement Y; branch if != 0.    4 / 6 cycles.
+    // None of these touch any flag (Anomie / bsnes); they only read or
+    // RMW memory and possibly take the branch.
+
+    fn op_bbs_dp(&mut self, bus: &mut impl SmpBus, bit: u8) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        bus.idle();
+        let offset = self.fetch_u8(bus) as i8;
+        if (v & (1 << bit)) != 0 {
+            self.branch_taken(bus, offset);
+        }
+    }
+
+    fn op_bbc_dp(&mut self, bus: &mut impl SmpBus, bit: u8) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        bus.idle();
+        let offset = self.fetch_u8(bus) as i8;
+        if (v & (1 << bit)) == 0 {
+            self.branch_taken(bus, offset);
+        }
+    }
+
+    fn op_cbne_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        bus.idle();
+        let offset = self.fetch_u8(bus) as i8;
+        if self.a != v {
+            self.branch_taken(bus, offset);
+        }
+    }
+
+    fn op_cbne_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        bus.idle();
+        let v = self.read_dp(bus, dp.wrapping_add(self.x));
+        bus.idle();
+        let offset = self.fetch_u8(bus) as i8;
+        if self.a != v {
+            self.branch_taken(bus, offset);
+        }
+    }
+
+    fn op_dbnz_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp).wrapping_sub(1);
+        self.write_dp(bus, dp, v);
+        let offset = self.fetch_u8(bus) as i8;
+        if v != 0 {
+            self.branch_taken(bus, offset);
+        }
+    }
+
+    fn op_dbnz_y(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        bus.idle();
+        let offset = self.fetch_u8(bus) as i8;
+        self.y = self.y.wrapping_sub(1);
+        if self.y != 0 {
+            self.branch_taken(bus, offset);
+        }
     }
 
     fn op_div_ya_x(&mut self, bus: &mut impl SmpBus) {
