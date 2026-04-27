@@ -1152,6 +1152,123 @@ fn cmp_y_imm_dp_abs_cycle_counts() {
     assert!(smp.psw.z);
 }
 
+// ----- AND / OR / EOR families ----------------------------------------
+//
+// Logical ops touch only N/Z. Memory-destination forms (dp,dp /
+// dp,#imm / (X),(Y)) write the result back to the destination - they
+// do NOT discard like CMP does. Carry/V/H must survive untouched.
+
+#[test]
+fn or_a_imm_sets_n_preserves_carry_and_overflow() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x40;
+    smp.psw.c = true;
+    smp.psw.v = true;
+    smp.psw.h = true;
+    let cycles = run_one(&mut smp, &mut bus, &[0x08, 0x80]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0xC0);
+    assert!(smp.psw.n);
+    assert!(!smp.psw.z);
+    assert!(smp.psw.c, "OR must not touch C");
+    assert!(smp.psw.v, "OR must not touch V");
+    assert!(smp.psw.h, "OR must not touch H");
+}
+
+#[test]
+fn and_a_imm_zero_result_sets_z() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x0F;
+    let cycles = run_one(&mut smp, &mut bus, &[0x28, 0xF0]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.z);
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn eor_a_imm_clears_matching_bits() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0xFF;
+    let cycles = run_one(&mut smp, &mut bus, &[0x48, 0x0F]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0xF0);
+    assert!(smp.psw.n);
+    assert!(!smp.psw.z);
+}
+
+#[test]
+fn or_a_dp_three_cycles_and_or_a_abs_four() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    bus.poke(0x0020, 0x01);
+    let cycles = run_one(&mut smp, &mut bus, &[0x04, 0x20]);
+    assert_eq!(cycles, 3);
+    assert_eq!(smp.a, 0x11);
+
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    bus.poke(0x1234, 0x01);
+    let cycles = run_one(&mut smp, &mut bus, &[0x05, 0x34, 0x12]);
+    assert_eq!(cycles, 4);
+    assert_eq!(smp.a, 0x11);
+}
+
+#[test]
+fn and_a_dp_x_direct_four_cycles() {
+    // AND A,(X): 3-cycle on paper, but the (X)-direct mode adds the
+    // dummy idle that op_*_a_dp_x_direct issues -> 3 cycles total
+    // (opcode + idle + read). Mirrors ADC/SBC/CMP timings.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0xF0;
+    smp.x = 0x10;
+    bus.poke(0x0010, 0x3F);
+    let cycles = run_one(&mut smp, &mut bus, &[0x26]);
+    assert_eq!(cycles, 3);
+    assert_eq!(smp.a, 0x30);
+}
+
+#[test]
+fn or_x_indirect_y_indirect_writes_to_x_address_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x10;
+    smp.y = 0x20;
+    bus.poke(0x0010, 0x0F); // (X)
+    bus.poke(0x0020, 0xF0); // (Y)
+    let cycles = run_one(&mut smp, &mut bus, &[0x19]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0010), 0xFF, "OR (X),(Y) writes back to (X)");
+}
+
+#[test]
+fn and_dp_dp_six_cycles_writes_to_destination() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0010, 0x0F); // src
+    bus.poke(0x0020, 0xFF); // dst
+    let cycles = run_one(&mut smp, &mut bus, &[0x29, 0x10, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(bus.peek(0x0020), 0x0F);
+    assert_eq!(bus.peek(0x0010), 0x0F, "src untouched");
+}
+
+#[test]
+fn eor_dp_imm_five_cycles_writes_back() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0xAA);
+    let cycles = run_one(&mut smp, &mut bus, &[0x58, 0xFF, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0020), 0x55);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

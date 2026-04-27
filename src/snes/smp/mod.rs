@@ -498,6 +498,48 @@ impl Smp {
             0x7E => self.op_cmp_y_dp(bus),
             0x5E => self.op_cmp_y_abs(bus),
 
+            // --- OR family (12 modes, base $00) ---
+            0x08 => self.op_or_a_imm(bus),
+            0x04 => self.op_or_a_dp(bus),
+            0x05 => self.op_or_a_abs(bus),
+            0x06 => self.op_or_a_dp_x_direct(bus),
+            0x14 => self.op_or_a_dp_plus_x(bus),
+            0x15 => self.op_or_a_abs_plus_x(bus),
+            0x16 => self.op_or_a_abs_plus_y(bus),
+            0x07 => self.op_or_a_dp_x_indirect(bus),
+            0x17 => self.op_or_a_dp_indirect_plus_y(bus),
+            0x19 => self.op_or_x_indirect_y_indirect(bus),
+            0x09 => self.op_or_dp_dp(bus),
+            0x18 => self.op_or_dp_imm(bus),
+
+            // --- AND family (12 modes, base $20) ---
+            0x28 => self.op_and_a_imm(bus),
+            0x24 => self.op_and_a_dp(bus),
+            0x25 => self.op_and_a_abs(bus),
+            0x26 => self.op_and_a_dp_x_direct(bus),
+            0x34 => self.op_and_a_dp_plus_x(bus),
+            0x35 => self.op_and_a_abs_plus_x(bus),
+            0x36 => self.op_and_a_abs_plus_y(bus),
+            0x27 => self.op_and_a_dp_x_indirect(bus),
+            0x37 => self.op_and_a_dp_indirect_plus_y(bus),
+            0x39 => self.op_and_x_indirect_y_indirect(bus),
+            0x29 => self.op_and_dp_dp(bus),
+            0x38 => self.op_and_dp_imm(bus),
+
+            // --- EOR family (12 modes, base $40) ---
+            0x48 => self.op_eor_a_imm(bus),
+            0x44 => self.op_eor_a_dp(bus),
+            0x45 => self.op_eor_a_abs(bus),
+            0x46 => self.op_eor_a_dp_x_direct(bus),
+            0x54 => self.op_eor_a_dp_plus_x(bus),
+            0x55 => self.op_eor_a_abs_plus_x(bus),
+            0x56 => self.op_eor_a_abs_plus_y(bus),
+            0x47 => self.op_eor_a_dp_x_indirect(bus),
+            0x57 => self.op_eor_a_dp_indirect_plus_y(bus),
+            0x59 => self.op_eor_x_indirect_y_indirect(bus),
+            0x49 => self.op_eor_dp_dp(bus),
+            0x58 => self.op_eor_dp_imm(bus),
+
             other => panic!(
                 "snes/smp: unimplemented opcode ${other:02X} at PC=${:04X}",
                 self.pc.wrapping_sub(1)
@@ -1182,6 +1224,238 @@ impl Smp {
         let addr = self.fetch_u16(bus);
         let v = bus.read(addr);
         self.cmp_byte(self.y, v);
+    }
+
+    // ----- AND / OR / EOR families ------------------------------------
+    //
+    // Bitwise logical ops: cycle counts and addressing modes mirror
+    // ADC/SBC exactly (12 modes each). Flags: only N/Z are touched -
+    // C/V/H are preserved (Anomie's notes; Mesen2 `Or` / `And` / `Eor`).
+    // Memory-destination forms (dp,dp / dp,#imm / (X),(Y)) compute the
+    // op into the destination and write the result back, like SBC -
+    // not like CMP which discards the result.
+
+    fn or_byte(&mut self, a: u8, b: u8) -> u8 {
+        let r = a | b;
+        self.set_nz(r);
+        r
+    }
+    fn and_byte(&mut self, a: u8, b: u8) -> u8 {
+        let r = a & b;
+        self.set_nz(r);
+        r
+    }
+    fn eor_byte(&mut self, a: u8, b: u8) -> u8 {
+        let r = a ^ b;
+        self.set_nz(r);
+        r
+    }
+
+    // ----- OR ----------------------------------------------------------
+    fn op_or_a_imm(&mut self, bus: &mut impl SmpBus) {
+        let v = self.fetch_u8(bus);
+        self.a = self.or_byte(self.a, v);
+    }
+    fn op_or_a_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.a = self.or_byte(self.a, v);
+    }
+    fn op_or_a_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        self.a = self.or_byte(self.a, v);
+    }
+    fn op_or_a_dp_x_direct(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        let v = bus.read(self.addr_dp_x_direct());
+        self.a = self.or_byte(self.a, v);
+    }
+    fn op_or_a_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.or_byte(self.a, v);
+    }
+    fn op_or_a_abs_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.or_byte(self.a, v);
+    }
+    fn op_or_a_abs_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.or_byte(self.a, v);
+    }
+    fn op_or_a_dp_x_indirect(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_x_indirect(bus);
+        let v = bus.read(addr);
+        self.a = self.or_byte(self.a, v);
+    }
+    fn op_or_a_dp_indirect_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_indirect_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.or_byte(self.a, v);
+    }
+    fn op_or_x_indirect_y_indirect(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        let y_val = bus.read(self.addr_dp_y_direct());
+        let x_addr = self.addr_dp_x_direct();
+        let x_val = bus.read(x_addr);
+        let result = self.or_byte(x_val, y_val);
+        bus.write(x_addr, result);
+    }
+    fn op_or_dp_dp(&mut self, bus: &mut impl SmpBus) {
+        let src_dp = self.fetch_u8(bus);
+        let src_val = self.read_dp(bus, src_dp);
+        let dst_dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dst_dp);
+        let result = self.or_byte(dst_val, src_val);
+        self.write_dp(bus, dst_dp, result);
+    }
+    fn op_or_dp_imm(&mut self, bus: &mut impl SmpBus) {
+        let imm = self.fetch_u8(bus);
+        let dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dp);
+        let result = self.or_byte(dst_val, imm);
+        self.write_dp(bus, dp, result);
+    }
+
+    // ----- AND ---------------------------------------------------------
+    fn op_and_a_imm(&mut self, bus: &mut impl SmpBus) {
+        let v = self.fetch_u8(bus);
+        self.a = self.and_byte(self.a, v);
+    }
+    fn op_and_a_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.a = self.and_byte(self.a, v);
+    }
+    fn op_and_a_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        self.a = self.and_byte(self.a, v);
+    }
+    fn op_and_a_dp_x_direct(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        let v = bus.read(self.addr_dp_x_direct());
+        self.a = self.and_byte(self.a, v);
+    }
+    fn op_and_a_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.and_byte(self.a, v);
+    }
+    fn op_and_a_abs_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.and_byte(self.a, v);
+    }
+    fn op_and_a_abs_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.and_byte(self.a, v);
+    }
+    fn op_and_a_dp_x_indirect(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_x_indirect(bus);
+        let v = bus.read(addr);
+        self.a = self.and_byte(self.a, v);
+    }
+    fn op_and_a_dp_indirect_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_indirect_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.and_byte(self.a, v);
+    }
+    fn op_and_x_indirect_y_indirect(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        let y_val = bus.read(self.addr_dp_y_direct());
+        let x_addr = self.addr_dp_x_direct();
+        let x_val = bus.read(x_addr);
+        let result = self.and_byte(x_val, y_val);
+        bus.write(x_addr, result);
+    }
+    fn op_and_dp_dp(&mut self, bus: &mut impl SmpBus) {
+        let src_dp = self.fetch_u8(bus);
+        let src_val = self.read_dp(bus, src_dp);
+        let dst_dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dst_dp);
+        let result = self.and_byte(dst_val, src_val);
+        self.write_dp(bus, dst_dp, result);
+    }
+    fn op_and_dp_imm(&mut self, bus: &mut impl SmpBus) {
+        let imm = self.fetch_u8(bus);
+        let dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dp);
+        let result = self.and_byte(dst_val, imm);
+        self.write_dp(bus, dp, result);
+    }
+
+    // ----- EOR ---------------------------------------------------------
+    fn op_eor_a_imm(&mut self, bus: &mut impl SmpBus) {
+        let v = self.fetch_u8(bus);
+        self.a = self.eor_byte(self.a, v);
+    }
+    fn op_eor_a_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.a = self.eor_byte(self.a, v);
+    }
+    fn op_eor_a_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        self.a = self.eor_byte(self.a, v);
+    }
+    fn op_eor_a_dp_x_direct(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        let v = bus.read(self.addr_dp_x_direct());
+        self.a = self.eor_byte(self.a, v);
+    }
+    fn op_eor_a_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.eor_byte(self.a, v);
+    }
+    fn op_eor_a_abs_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.eor_byte(self.a, v);
+    }
+    fn op_eor_a_abs_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.eor_byte(self.a, v);
+    }
+    fn op_eor_a_dp_x_indirect(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_x_indirect(bus);
+        let v = bus.read(addr);
+        self.a = self.eor_byte(self.a, v);
+    }
+    fn op_eor_a_dp_indirect_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_indirect_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.eor_byte(self.a, v);
+    }
+    fn op_eor_x_indirect_y_indirect(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        let y_val = bus.read(self.addr_dp_y_direct());
+        let x_addr = self.addr_dp_x_direct();
+        let x_val = bus.read(x_addr);
+        let result = self.eor_byte(x_val, y_val);
+        bus.write(x_addr, result);
+    }
+    fn op_eor_dp_dp(&mut self, bus: &mut impl SmpBus) {
+        let src_dp = self.fetch_u8(bus);
+        let src_val = self.read_dp(bus, src_dp);
+        let dst_dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dst_dp);
+        let result = self.eor_byte(dst_val, src_val);
+        self.write_dp(bus, dst_dp, result);
+    }
+    fn op_eor_dp_imm(&mut self, bus: &mut impl SmpBus) {
+        let imm = self.fetch_u8(bus);
+        let dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dp);
+        let result = self.eor_byte(dst_val, imm);
+        self.write_dp(bus, dp, result);
     }
 }
 
