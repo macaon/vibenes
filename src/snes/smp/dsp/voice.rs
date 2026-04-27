@@ -29,9 +29,10 @@
 //!   immediately after the 4-sample warm-up (which is implicit in the
 //!   sampler since the buffer fills as samples are pushed). Most
 //!   music is unaffected.
-//! - **Pitch modulation** (PMON), **noise** (NON), **echo** (EON):
-//!   land in Phase 5c.6 / 5c.7. The voice exposes `last_raw_sample`
-//!   so a future PMON stage can read voice n-1's output.
+//! - **Echo** (EON): handled by the master mixer + EchoUnit, not
+//!   the voice itself. The voice's last_voice_output is what the
+//!   next voice's PMON stage reads, and is what the mixer routes
+//!   into the echo bus.
 //! - **ENDX / OUTX** voice-status registers: writeback is not yet
 //!   plumbed; the voice records the latest values in
 //!   [`Voice::endx_pending`] / [`Voice::last_raw_sample`] so the
@@ -83,9 +84,13 @@ pub struct Voice {
     /// flag set (regardless of loop). The mixer publishes the OR
     /// across voices into the global ENDX register when wired up.
     pub endx_pending: bool,
-    /// Last per-sample raw output (post-Gaussian, pre-envelope, pre-
-    /// volume). Exposed for pitch-modulation in the next voice.
+    /// Last per-sample raw output (post-Gaussian / noise, pre-
+    /// envelope, pre-volume).
     pub last_raw_sample: i16,
+    /// Last post-envelope value with LSB masked off. This is the
+    /// "VoiceOutput" the next voice's PMON stage reads (per
+    /// snes-apu.md §"Voice DSP pipeline" step 4).
+    pub last_voice_output: i16,
 }
 
 impl Voice {
@@ -107,6 +112,7 @@ impl Voice {
             active: false,
             endx_pending: false,
             last_raw_sample: 0,
+            last_voice_output: 0,
         }
     }
 
@@ -139,6 +145,7 @@ impl Voice {
         self.active = true;
         self.endx_pending = false;
         self.last_raw_sample = 0;
+        self.last_voice_output = 0;
     }
 
     /// Decode the 9-byte block starting at `brr_addr` from ARAM into
@@ -200,6 +207,15 @@ impl Voice {
     /// - `adsr1` / `adsr2` / `gain`: envelope control bytes.
     /// - `counter`: global envelope rate counter.
     /// - `aram`: 64 KiB audio RAM slice for BRR fetch.
+    /// Per-sample step. Returns `(left, right)` post-volume voice
+    /// contributions (signed, pre-master-volume).
+    ///
+    /// `prev_voice_output` is the previous voice's `last_voice_output`
+    /// (used when `pmon_enabled` is true to modulate this voice's
+    /// pitch). `noise_sample` is the global noise LFSR sample
+    /// scaled to s16 (used when `non_enabled` is true to replace
+    /// the BRR-derived raw sample).
+    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         pitch: u16,
@@ -210,47 +226,72 @@ impl Voice {
         gain: u8,
         counter: &EnvelopeCounter,
         aram: &[u8; 0x10000],
+        prev_voice_output: i16,
+        pmon_enabled: bool,
+        noise_sample: i16,
+        non_enabled: bool,
     ) -> (i32, i32) {
         // Inactive voices contribute silence but still tick their
         // envelope so the host's ENVX read stays sensible.
         if !self.active {
             step_envelope(&mut self.envelope, adsr1, adsr2, gain, counter);
             self.last_raw_sample = 0;
+            self.last_voice_output = 0;
             return (0, 0);
         }
 
+        // Resolve effective pitch: PMON applies a modulation from the
+        // previous voice's post-envelope output before BRR consumption
+        // and Gaussian interpolation. Per Mesen2 / snes-apu.md:
+        //   P = pitch + ((prev_voice_output >> 5) * pitch) >> 10
+        let effective_pitch = if pmon_enabled {
+            let p = pitch as i32;
+            let modulated = p + (((prev_voice_output as i32) >> 5) * p >> 10);
+            modulated.clamp(0, 0x3FFF) as u16
+        } else {
+            pitch
+        };
+
         // Pull as many BRR samples as needed to satisfy this tick's
-        // pitch step.
-        let needed = self.sampler.pending_decodes(pitch);
+        // (modulated) pitch step.
+        let needed = self.sampler.pending_decodes(effective_pitch);
         for _ in 0..needed {
             self.push_one(aram);
             if !self.active {
-                // End-without-loop tripped during the fill - bail.
                 step_envelope(&mut self.envelope, adsr1, adsr2, gain, counter);
                 self.last_raw_sample = 0;
+                self.last_voice_output = 0;
                 return (0, 0);
             }
         }
 
-        // Gaussian-interpolate at the current pitch counter, then
-        // advance.
-        let raw = self.sampler.step(pitch);
+        // Gaussian-interpolate, then optionally replace with noise.
+        let mut raw = self.sampler.step(effective_pitch);
+        if non_enabled {
+            raw = noise_sample;
+        }
         self.last_raw_sample = raw;
 
         // Run envelope for this sample.
         step_envelope(&mut self.envelope, adsr1, adsr2, gain, counter);
 
-        // Apply envelope: shaped = (raw * env) / 2048. The envelope
-        // is unsigned 11-bit; raw is signed 16-bit; the product fits
-        // in i32 with headroom.
+        // Apply envelope: shaped = (raw * env) / 2048, LSB-masked
+        // (matches Mesen2 / higan VoiceOutput convention - the next
+        // voice's PMON stage will read this value).
         let env = self.envelope.level as i32;
-        let shaped = (raw as i32 * env) >> 11;
+        let shaped = ((raw as i32 * env) >> 11) & !1;
+        self.last_voice_output = clamp16(shaped);
 
         // Apply per-voice volume (signed 8-bit, /128 normalisation).
         let left = (shaped * voll as i32) >> 7;
         let right = (shaped * volr as i32) >> 7;
         (left, right)
     }
+}
+
+#[inline]
+fn clamp16(x: i32) -> i16 {
+    x.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
 impl Default for Voice {
@@ -281,7 +322,7 @@ mod tests {
         let mut v = Voice::new();
         let aram = Box::new([0u8; 0x10000]);
         let counter = EnvelopeCounter::new();
-        let (l, r) = v.step(0x1000, 0x40, 0x40, 0x00, 0x00, 0x00, &counter, &aram);
+        let (l, r) = v.step(0x1000, 0x40, 0x40, 0x00, 0x00, 0x00, &counter, &aram, 0, false, 0, false);
         assert_eq!((l, r), (0, 0));
     }
 
@@ -306,7 +347,7 @@ mod tests {
         v.start(0, 0x1000, &aram);
         let counter = EnvelopeCounter::new();
         for _ in 0..100 {
-            let (l, r) = v.step(0x1000, 0x40, 0x40, 0x80, 0x00, 0x00, &counter, &aram);
+            let (l, r) = v.step(0x1000, 0x40, 0x40, 0x80, 0x00, 0x00, &counter, &aram, 0, false, 0, false);
             assert_eq!(l, 0);
             assert_eq!(r, 0);
         }
@@ -327,7 +368,7 @@ mod tests {
         // pitch = 0x1000 -> one BRR sample per tick. After 16 ticks
         // we've consumed the whole block.
         for _ in 0..32 {
-            let _ = v.step(0x1000, 0x40, 0x40, 0x80, 0x00, 0x00, &counter, &aram);
+            let _ = v.step(0x1000, 0x40, 0x40, 0x80, 0x00, 0x00, &counter, &aram, 0, false, 0, false);
         }
         assert!(!v.active, "voice should release after end-without-loop");
         assert_eq!(v.envelope.mode, EnvelopeMode::Release);
@@ -342,7 +383,7 @@ mod tests {
         v.start(0, 0x1000, &aram);
         let counter = EnvelopeCounter::new();
         for _ in 0..1000 {
-            let _ = v.step(0x1000, 0x40, 0x40, 0x80, 0x00, 0x00, &counter, &aram);
+            let _ = v.step(0x1000, 0x40, 0x40, 0x80, 0x00, 0x00, &counter, &aram, 0, false, 0, false);
         }
         assert!(v.active, "looping voice stays active");
         assert!(v.endx_pending, "ENDX latches on each end-block");
@@ -370,7 +411,7 @@ mod tests {
         // and the envelope reaches some non-zero level.
         let mut got_nonzero = false;
         for _ in 0..256 {
-            let (l, _r) = v.step(0x1000, 0x40, 0x40, 0x80, 0x00, 0x00, &counter, &aram);
+            let (l, _r) = v.step(0x1000, 0x40, 0x40, 0x80, 0x00, 0x00, &counter, &aram, 0, false, 0, false);
             if l != 0 {
                 got_nonzero = true;
                 break;

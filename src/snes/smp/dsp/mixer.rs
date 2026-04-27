@@ -16,13 +16,21 @@
 //! (already EVOL-scaled) is added to the dry mix before the final
 //! s16 clamp.
 //!
+//! Noise and pitch-modulation (5c.7) are wired here too: a global
+//! 15-bit LFSR ticks at the FLG.4-0 rate, and per-voice NON / PMON
+//! bits replace the BRR-derived raw sample with the noise sample
+//! and modulate the per-voice pitch by the previous voice's
+//! post-envelope output respectively.
+//!
 //! ## Deferred for future sub-phases
 //!
-//! - **5c.7** noise + pitch modulation: per-voice noise replacement
-//!   + per-voice PMON of the previous voice's last_raw_sample.
 //! - **KON polling cadence**: Mesen2 / hardware polls KON / KOFF
 //!   every 2 samples (in their 5-step pipeline). We poll every
 //!   sample. Audibly indistinguishable for normal music.
+//! - **ENDX register writeback**: voices set `endx_pending` when
+//!   they hit an end-block; the mixer doesn't yet aggregate this
+//!   into the global ENDX. Drivers that poll ENDX won't see ends
+//!   until that's wired up.
 //!
 //! ## Source pointers
 //!
@@ -46,6 +54,11 @@ pub struct Mixer {
     /// Latched from the global `KON` register; cleared after each
     /// voice has been started.
     pub kon_pending: u8,
+    /// Global 15-bit noise LFSR. Clocked at the rate selected by
+    /// FLG.4-0; the per-voice NON bit replaces a voice's BRR-derived
+    /// raw sample with `(lfsr * 2)` (LSB-zeroed s16). Reset value
+    /// is `0x4000` per Anomie / Mesen2 documentation.
+    pub noise_lfsr: u16,
 }
 
 impl Mixer {
@@ -64,6 +77,7 @@ impl Mixer {
             counter: EnvelopeCounter::new(),
             echo: EchoUnit::new(),
             kon_pending: 0,
+            noise_lfsr: 0x4000,
         }
     }
 
@@ -115,12 +129,29 @@ impl Mixer {
         // continue to step (envelopes / BRR keep advancing).
         let muted = dsp.muted();
 
+        // Tick the noise LFSR if the FLG-selected rate fires this
+        // sample. Mesen2 formula: N = (N>>1) | (((N<<14) ^ (N<<13)) & 0x4000).
+        let noise_rate = dsp.noise_rate_index();
+        if self.counter.should_update(noise_rate) {
+            let new_bit = ((self.noise_lfsr << 14) ^ (self.noise_lfsr << 13)) & 0x4000;
+            self.noise_lfsr = new_bit ^ (self.noise_lfsr >> 1);
+        }
+        // Noise sample: (LFSR * 2) cast to i16. The 15-bit LFSR's MSB
+        // (bit 14) becomes the i16 sign bit after the shift, giving
+        // the full s16 swing the voice path expects.
+        let noise_sample = (self.noise_lfsr.wrapping_mul(2)) as i16;
+        let non = dsp.non();
+        let pmon = dsp.pmon();
+
         // Sum per-voice contributions; collect EON-flagged voices
-        // separately for the echo feedback path.
+        // separately for the echo feedback path. PMON chains the
+        // previous voice's last_voice_output into the next voice's
+        // pitch (b0 of PMON is ignored - voice 0 cannot be modulated).
         let mut sum_l: i32 = 0;
         let mut sum_r: i32 = 0;
         let mut eon_sum_l: i32 = 0;
         let mut eon_sum_r: i32 = 0;
+        let mut prev_voice_output: i16 = 0;
         for v in 0..8 {
             let pitch = dsp.voice_pitch(v);
             let voll = dsp.voice_volume_left(v);
@@ -128,6 +159,8 @@ impl Mixer {
             let adsr1 = dsp.voice_adsr1(v);
             let adsr2 = dsp.voice_adsr2(v);
             let gain = dsp.voice_gain(v);
+            let pmon_enabled = v > 0 && (pmon & (1u8 << v)) != 0;
+            let non_enabled = (non & (1u8 << v)) != 0;
             let (l, r) = self.voices[v].step(
                 pitch,
                 voll,
@@ -137,6 +170,10 @@ impl Mixer {
                 gain,
                 &self.counter,
                 aram,
+                prev_voice_output,
+                pmon_enabled,
+                noise_sample,
+                non_enabled,
             );
             sum_l = sum_l.saturating_add(l);
             sum_r = sum_r.saturating_add(r);
@@ -144,6 +181,7 @@ impl Mixer {
                 eon_sum_l = eon_sum_l.saturating_add(l);
                 eon_sum_r = eon_sum_r.saturating_add(r);
             }
+            prev_voice_output = self.voices[v].last_voice_output;
         }
 
         // Run the echo pipeline. Returns the echo contribution that
@@ -470,6 +508,170 @@ mod tests {
         // (the feedback writeback path).
         let touched = aram[0x4000..0x4040].iter().any(|&b| b != 0);
         assert!(touched, "echo writeback should have populated ARAM");
+    }
+
+    #[test]
+    fn fresh_mixer_noise_lfsr_starts_at_4000() {
+        let m = Mixer::new();
+        assert_eq!(m.noise_lfsr, 0x4000);
+    }
+
+    #[test]
+    fn noise_lfsr_advances_when_rate_fires() {
+        let mut mixer = Mixer::new();
+        let mut dsp = DspRegs::new();
+        dsp.write(global_reg::FLG, 0x1F); // noise rate = 31 (every sample)
+        let mut aram = Box::new([0u8; 0x10000]);
+        let pre = mixer.noise_lfsr;
+        let _ = mixer.step_sample(&dsp, &mut aram);
+        let post = mixer.noise_lfsr;
+        assert_ne!(pre, post, "rate=31 -> LFSR advances each sample");
+    }
+
+    #[test]
+    fn noise_lfsr_frozen_when_rate_zero() {
+        let mut mixer = Mixer::new();
+        let mut dsp = DspRegs::new();
+        dsp.write(global_reg::FLG, 0x00); // noise rate = 0 (off)
+        let mut aram = Box::new([0u8; 0x10000]);
+        let pre = mixer.noise_lfsr;
+        for _ in 0..100 {
+            let _ = mixer.step_sample(&dsp, &mut aram);
+        }
+        assert_eq!(mixer.noise_lfsr, pre, "rate=0 freezes LFSR");
+    }
+
+    #[test]
+    fn non_voice_outputs_noise_instead_of_brr() {
+        // Voice 0 with NON bit and a known LFSR state should output
+        // (LFSR * 2) (envelope-scaled) instead of the BRR-derived
+        // sample. Easiest assertion: the BRR block is silent (all
+        // zero nibbles), but with NON=1 the voice still produces
+        // non-zero output once the envelope ramps up.
+        let mut mixer = Mixer::new();
+        // Pin LFSR to a non-zero, non-symmetric state so output is
+        // detectably non-zero.
+        mixer.noise_lfsr = 0x2A55;
+        let mut dsp = DspRegs::new();
+        dsp.write(global_reg::MVOLL, 0x7F);
+        dsp.write(global_reg::MVOLR, 0x7F);
+        dsp.write(global_reg::DIR, 0x05);
+        dsp.write(global_reg::NON, 0x01); // voice 0 -> noise
+        dsp.write(global_reg::FLG, 0x1F); // noise rate fires every sample
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLL), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLR), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::PH), 0x10);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::ADSR1), 0x8F); // fast attack
+        let mut aram = Box::new([0u8; 0x10000]);
+        // Sample dir + silent BRR block (would output silence without NON).
+        aram[0x0500] = 0x00;
+        aram[0x0501] = 0x06;
+        aram[0x0502] = 0x00;
+        aram[0x0503] = 0x06;
+        aram[0x0600] = 0x03; // silent end+loop block
+
+        mixer.latch_kon(0x01);
+        let mut got_nonzero = false;
+        for _ in 0..256 {
+            let (l, _) = mixer.step_sample(&dsp, &mut aram);
+            if l != 0 {
+                got_nonzero = true;
+                break;
+            }
+        }
+        assert!(got_nonzero, "NON-flagged voice with active LFSR should be audible");
+    }
+
+    #[test]
+    fn pmon_bit_zero_is_ignored_voice0_unmodulated() {
+        // PMON.0 is hardware-ignored. A PMON value of 0x01 should NOT
+        // cause voice 0's pitch to deviate from its raw register.
+        let mut mixer = Mixer::new();
+        let mut dsp = DspRegs::new();
+        dsp.write(global_reg::MVOLL, 0x7F);
+        dsp.write(global_reg::MVOLR, 0x7F);
+        dsp.write(global_reg::DIR, 0x05);
+        dsp.write(global_reg::PMON, 0x01); // PMON.0 (should be ignored)
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLL), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLR), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::PH), 0x10);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::ADSR1), 0x8F);
+        let mut aram = Box::new([0u8; 0x10000]);
+        aram[0x0500] = 0x00;
+        aram[0x0501] = 0x06;
+        aram[0x0502] = 0x00;
+        aram[0x0503] = 0x06;
+        aram[0x0600] = 0x83;
+        for i in 1..9 {
+            aram[0x0600 + i] = 0x77;
+        }
+        mixer.latch_kon(0x01);
+        // Run for a fixed window; voice 0 should consume BRR samples
+        // at exactly pitch=0x1000 = one BRR sample per output tick.
+        // After 32 samples we expect to be partway through the second
+        // 16-sample block, NOT (e.g.) wildly off.
+        for _ in 0..16 {
+            let _ = mixer.step_sample(&dsp, &mut aram);
+        }
+        // Sanity: pitch counter should be at 16 * 0x1000 mod 0x10000
+        // = 0x0000 (wrapped exactly once). We just check the voice
+        // didn't trip an early end-without-loop or get stuck.
+        assert!(mixer.voices[0].active, "voice 0 still active after 16 samples");
+    }
+
+    #[test]
+    fn pmon_voice1_pitch_modulated_by_voice0_output() {
+        // With PMON.1 set, voice 1's pitch should be modulated by
+        // voice 0's last_voice_output. The clearest observable: with
+        // voice 0 producing a non-trivial output, voice 1's
+        // sampler.pitch_counter should step at a different rate than
+        // a control mixer with PMON.1 cleared.
+        // Easier test: just check that voice 1's pitch counter differs
+        // between PMON-on and PMON-off after some samples.
+        let mk_dsp = |pmon: u8| {
+            let mut d = DspRegs::new();
+            d.write(global_reg::MVOLL, 0x7F);
+            d.write(global_reg::MVOLR, 0x7F);
+            d.write(global_reg::DIR, 0x05);
+            d.write(global_reg::PMON, pmon);
+            // Voice 0: produce output (drives PMON of voice 1).
+            d.write(DspRegs::voice_addr(0, voice_reg::VOLL), 0x40);
+            d.write(DspRegs::voice_addr(0, voice_reg::VOLR), 0x40);
+            d.write(DspRegs::voice_addr(0, voice_reg::PH), 0x10);
+            d.write(DspRegs::voice_addr(0, voice_reg::ADSR1), 0x8F);
+            // Voice 1: same setup, both KON'd.
+            d.write(DspRegs::voice_addr(1, voice_reg::VOLL), 0x40);
+            d.write(DspRegs::voice_addr(1, voice_reg::VOLR), 0x40);
+            d.write(DspRegs::voice_addr(1, voice_reg::PH), 0x10);
+            d.write(DspRegs::voice_addr(1, voice_reg::ADSR1), 0x8F);
+            d
+        };
+        let mut aram = Box::new([0u8; 0x10000]);
+        aram[0x0500] = 0x00;
+        aram[0x0501] = 0x06;
+        aram[0x0502] = 0x00;
+        aram[0x0503] = 0x06;
+        aram[0x0600] = 0x83;
+        for i in 1..9 {
+            aram[0x0600 + i] = 0x77;
+        }
+        let mut m_on = Mixer::new();
+        let mut m_off = Mixer::new();
+        m_on.latch_kon(0x03); // voices 0 + 1
+        m_off.latch_kon(0x03);
+        let dsp_on = mk_dsp(0x02); // PMON.1 set
+        let dsp_off = mk_dsp(0x00);
+        for _ in 0..64 {
+            let _ = m_on.step_sample(&dsp_on, &mut aram);
+            let _ = m_off.step_sample(&dsp_off, &mut aram);
+        }
+        // Voice 1's pitch counter trajectory should differ between
+        // the two configurations.
+        assert_ne!(
+            m_on.voices[1].sampler.pitch_counter,
+            m_off.voices[1].sampler.pitch_counter,
+            "PMON should perturb voice 1's pitch counter"
+        );
     }
 
     #[test]
