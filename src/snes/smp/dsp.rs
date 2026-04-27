@@ -18,6 +18,8 @@
 //! register layout / event model, bsnes-plus `bsnes/snes/dsp/`
 //! for the per-cycle scheduling skeleton.
 
+pub mod brr;
+
 /// Per-voice register offsets within an `$X0`-`$X9` block. Voice `i`'s
 /// register `voice_reg` lives at `(i << 4) | voice_reg`.
 ///
