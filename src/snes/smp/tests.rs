@@ -698,6 +698,212 @@ fn adc_dp_imm_five_cycles_imm_first_in_stream() {
     assert_eq!(bus.peek(0x0020), 0x42);
 }
 
+// ----- SBC family ------------------------------------------------------
+//
+// SBC = ADC(a, !b), so the addressing-mode plumbing is shared. These
+// tests focus on borrow / no-borrow semantics, signed overflow on
+// subtraction, and the half-borrow convention. Each non-imm mode
+// gets one round-trip test to lock in cycle count + addressing.
+
+#[test]
+fn sbc_imm_no_borrow_pre_subtract_one() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.psw.c = true; // no borrow
+    let cycles = run_one(&mut smp, &mut bus, &[0xA8, 0x05]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0x0B);
+    assert!(smp.psw.c, "no underflow -> C stays set (no-borrow)");
+    assert!(!smp.psw.n);
+    assert!(!smp.psw.z);
+    assert!(!smp.psw.v);
+}
+
+#[test]
+fn sbc_imm_with_borrow_in() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.psw.c = false; // borrow in
+    run_one(&mut smp, &mut bus, &[0xA8, 0x05]);
+    // 0x10 - 0x05 - 1 = 0x0A
+    assert_eq!(smp.a, 0x0A);
+    assert!(smp.psw.c, "no underflow on subtract -> C stays set");
+}
+
+#[test]
+fn sbc_imm_underflow_clears_carry() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x00;
+    smp.psw.c = true; // no borrow
+    run_one(&mut smp, &mut bus, &[0xA8, 0x01]);
+    assert_eq!(smp.a, 0xFF);
+    assert!(!smp.psw.c, "underflow clears C (borrow occurred)");
+    assert!(smp.psw.n);
+}
+
+#[test]
+fn sbc_imm_signed_overflow_sets_v() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    // 0x80 - 0x01 = 0x7F: negative minus positive -> positive is V.
+    smp.a = 0x80;
+    smp.psw.c = true;
+    run_one(&mut smp, &mut bus, &[0xA8, 0x01]);
+    assert_eq!(smp.a, 0x7F);
+    assert!(smp.psw.v);
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn sbc_imm_zero_result_sets_z() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x42;
+    smp.psw.c = true;
+    run_one(&mut smp, &mut bus, &[0xA8, 0x42]);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.z);
+    assert!(smp.psw.c);
+}
+
+#[test]
+fn sbc_a_dp_three_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.psw.c = true;
+    bus.poke(0x0020, 0x05);
+    let cycles = run_one(&mut smp, &mut bus, &[0xA4, 0x20]);
+    assert_eq!(cycles, 3);
+    assert_eq!(smp.a, 0x0B);
+}
+
+#[test]
+fn sbc_a_abs_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x40;
+    smp.psw.c = true;
+    bus.poke(0x1234, 0x10);
+    let cycles = run_one(&mut smp, &mut bus, &[0xA5, 0x34, 0x12]);
+    assert_eq!(cycles, 4);
+    assert_eq!(smp.a, 0x30);
+}
+
+#[test]
+fn sbc_a_dp_x_direct_three_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.x = 0x05;
+    smp.psw.c = true;
+    bus.poke(0x0005, 0x07);
+    let cycles = run_one(&mut smp, &mut bus, &[0xA6]);
+    assert_eq!(cycles, 3);
+    assert_eq!(smp.a, 0x09);
+}
+
+#[test]
+fn sbc_a_dp_plus_x_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x40;
+    smp.x = 0x05;
+    smp.psw.c = true;
+    bus.poke(0x0025, 0x10);
+    let cycles = run_one(&mut smp, &mut bus, &[0xB4, 0x20]);
+    assert_eq!(cycles, 4);
+    assert_eq!(smp.a, 0x30);
+}
+
+#[test]
+fn sbc_a_abs_plus_x_and_abs_plus_y_five_cycles() {
+    for opcode in [0xB5_u8, 0xB6_u8] {
+        let mut bus = FlatSmpBus::new();
+        let mut smp = Smp::new();
+        smp.a = 0x40;
+        smp.x = 0x10;
+        smp.y = 0x10;
+        smp.psw.c = true;
+        bus.poke(0x1244, 0x05);
+        let cycles = run_one(&mut smp, &mut bus, &[opcode, 0x34, 0x12]);
+        assert_eq!(cycles, 5, "opcode ${:02X}", opcode);
+        assert_eq!(smp.a, 0x3B);
+    }
+}
+
+#[test]
+fn sbc_a_dp_x_indirect_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.x = 0x02;
+    smp.psw.c = true;
+    bus.poke(0x0022, 0x00);
+    bus.poke(0x0023, 0x12); // ptr -> $1200
+    bus.poke(0x1200, 0x05);
+    let cycles = run_one(&mut smp, &mut bus, &[0xA7, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(smp.a, 0x0B);
+}
+
+#[test]
+fn sbc_a_dp_indirect_plus_y_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.y = 0x05;
+    smp.psw.c = true;
+    bus.poke(0x0020, 0x00);
+    bus.poke(0x0021, 0x12);
+    bus.poke(0x1205, 0x03);
+    let cycles = run_one(&mut smp, &mut bus, &[0xB7, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(smp.a, 0x0D);
+}
+
+#[test]
+fn sbc_x_y_indirect_writes_to_x_address_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0xCC;
+    smp.x = 0x10;
+    smp.y = 0x20;
+    smp.psw.c = true;
+    bus.poke(0x0010, 0x42); // (X)
+    bus.poke(0x0020, 0x02); // (Y)
+    let cycles = run_one(&mut smp, &mut bus, &[0xB9]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0010), 0x40);
+    assert_eq!(smp.a, 0xCC);
+}
+
+#[test]
+fn sbc_dp_dp_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = true;
+    bus.poke(0x0010, 0x05); // src
+    bus.poke(0x0020, 0x40); // dst
+    let cycles = run_one(&mut smp, &mut bus, &[0xA9, 0x10, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(bus.peek(0x0020), 0x3B);
+}
+
+#[test]
+fn sbc_dp_imm_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = true;
+    bus.poke(0x0020, 0x40);
+    let cycles = run_one(&mut smp, &mut bus, &[0xB8, 0x05, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0020), 0x3B);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

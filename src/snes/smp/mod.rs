@@ -460,6 +460,20 @@ impl Smp {
             0x89 => self.op_adc_dp_dp(bus),
             0x98 => self.op_adc_dp_imm(bus),
 
+            // --- SBC family (mirrors ADC; same 12 modes) ---
+            0xA8 => self.op_sbc_a_imm(bus),
+            0xA4 => self.op_sbc_a_dp(bus),
+            0xA5 => self.op_sbc_a_abs(bus),
+            0xA6 => self.op_sbc_a_dp_x_direct(bus),
+            0xB4 => self.op_sbc_a_dp_plus_x(bus),
+            0xB5 => self.op_sbc_a_abs_plus_x(bus),
+            0xB6 => self.op_sbc_a_abs_plus_y(bus),
+            0xA7 => self.op_sbc_a_dp_x_indirect(bus),
+            0xB7 => self.op_sbc_a_dp_indirect_plus_y(bus),
+            0xB9 => self.op_sbc_x_indirect_y_indirect(bus),
+            0xA9 => self.op_sbc_dp_dp(bus),
+            0xB8 => self.op_sbc_dp_imm(bus),
+
             other => panic!(
                 "snes/smp: unimplemented opcode ${other:02X} at PC=${:04X}",
                 self.pc.wrapping_sub(1)
@@ -908,6 +922,103 @@ impl Smp {
         let dp = self.fetch_u8(bus);
         let dst_val = self.read_dp(bus, dp);
         let result = self.adc_byte(dst_val, imm);
+        self.write_dp(bus, dp, result);
+    }
+
+    // ----- SBC family --------------------------------------------------
+    //
+    // SPC700 SBC computes `a + (~b) + C`, a standard subtract-with-
+    // borrow where C=1 means "no borrow." Implementing it as
+    // `adc_byte(a, !b)` propagates every flag correctly:
+    //   - C: set when a + ~b + C overflows (i.e. no borrow occurred)
+    //   - V: set when a and ~b share a sign but result differs (which
+    //        is equivalent to a and b having different signs and the
+    //        result having the wrong sign from a)
+    //   - H: set when no half-borrow from bit 4 (low-nibble add of
+    //        a + ~b + C overflows past bit 3)
+    //   - N/Z: from the 8-bit result
+    // Cycle counts and addressing modes mirror ADC exactly.
+
+    fn sbc_byte(&mut self, a: u8, b: u8) -> u8 {
+        self.adc_byte(a, !b)
+    }
+
+    fn op_sbc_a_imm(&mut self, bus: &mut impl SmpBus) {
+        let v = self.fetch_u8(bus);
+        self.a = self.sbc_byte(self.a, v);
+    }
+
+    fn op_sbc_a_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.a = self.sbc_byte(self.a, v);
+    }
+
+    fn op_sbc_a_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        self.a = self.sbc_byte(self.a, v);
+    }
+
+    fn op_sbc_a_dp_x_direct(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        let v = bus.read(self.addr_dp_x_direct());
+        self.a = self.sbc_byte(self.a, v);
+    }
+
+    fn op_sbc_a_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.sbc_byte(self.a, v);
+    }
+
+    fn op_sbc_a_abs_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = self.sbc_byte(self.a, v);
+    }
+
+    fn op_sbc_a_abs_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.sbc_byte(self.a, v);
+    }
+
+    fn op_sbc_a_dp_x_indirect(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_x_indirect(bus);
+        let v = bus.read(addr);
+        self.a = self.sbc_byte(self.a, v);
+    }
+
+    fn op_sbc_a_dp_indirect_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_indirect_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = self.sbc_byte(self.a, v);
+    }
+
+    fn op_sbc_x_indirect_y_indirect(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        let y_val = bus.read(self.addr_dp_y_direct());
+        let x_addr = self.addr_dp_x_direct();
+        let x_val = bus.read(x_addr);
+        let result = self.sbc_byte(x_val, y_val);
+        bus.write(x_addr, result);
+    }
+
+    fn op_sbc_dp_dp(&mut self, bus: &mut impl SmpBus) {
+        let src_dp = self.fetch_u8(bus);
+        let src_val = self.read_dp(bus, src_dp);
+        let dst_dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dst_dp);
+        let result = self.sbc_byte(dst_val, src_val);
+        self.write_dp(bus, dst_dp, result);
+    }
+
+    fn op_sbc_dp_imm(&mut self, bus: &mut impl SmpBus) {
+        let imm = self.fetch_u8(bus);
+        let dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dp);
+        let result = self.sbc_byte(dst_val, imm);
         self.write_dp(bus, dp, result);
     }
 }
