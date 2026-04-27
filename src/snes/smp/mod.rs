@@ -406,6 +406,15 @@ impl Smp {
             0x9B => self.op_dec_dp_plus_x(bus),
             0x8C => self.op_dec_abs(bus),
 
+            // --- 16-bit YA word ops ---
+            0xBA => self.op_movw_ya_dp(bus),
+            0xDA => self.op_movw_dp_ya(bus),
+            0x7A => self.op_addw_ya_dp(bus),
+            0x9A => self.op_subw_ya_dp(bus),
+            0x5A => self.op_cmpw_ya_dp(bus),
+            0x3A => self.op_incw_dp(bus),
+            0x1A => self.op_decw_dp(bus),
+
             // --- Shifts and rotates (RMW for memory forms) ---
             0x1C => self.op_asl_a(bus),
             0x0B => self.op_asl_dp(bus),
@@ -903,6 +912,119 @@ impl Smp {
         let v = bus.read(addr);
         let r = self.ror_byte(v);
         bus.write(addr, r);
+    }
+
+    // ----- 16-bit YA word ops -----------------------------------------
+    //
+    // YA forms a 16-bit register pair (Y = high, A = low). Word
+    // operands are loaded little-endian from the direct page; dp+1
+    // wraps within the page (offset is 8-bit). Quirks:
+    //   - MOVW dp, YA does NOT update flags (Anomie: it is the only
+    //     "load-style" SPC700 op that leaves PSW alone).
+    //   - ADDW / SUBW do NOT use the carry flag as input - they are
+    //     fresh adds / subtracts. C is set from the new carry.
+    //   - CMPW only touches N/Z/C (no V/H), mirroring 8-bit CMP.
+    //   - ADDW H is set on carry from bit 11; SUBW H is set on
+    //     no-borrow from bit 12 (i.e. low 12 bits LHS >= RHS).
+    // Cycle counts (from bsnes / Anomie):
+    //   MOVW YA, dp - 5 (op + dp + read_lo + idle + read_hi)
+    //   MOVW dp, YA - 5 (op + dp + dummy_read + write_lo + write_hi)
+    //   ADDW / SUBW - 5 (op + dp + read_lo + idle + read_hi)
+    //   CMPW        - 4 (op + dp + read_lo + read_hi - no idle)
+    //   INCW / DECW - 6 (op + dp + read_lo + write_lo + read_hi + write_hi)
+
+    fn ya_word(&self) -> u16 {
+        ((self.y as u16) << 8) | (self.a as u16)
+    }
+    fn set_ya_from_word(&mut self, w: u16) {
+        self.a = w as u8;
+        self.y = (w >> 8) as u8;
+    }
+    fn set_nz16(&mut self, w: u16) {
+        self.psw.n = (w & 0x8000) != 0;
+        self.psw.z = w == 0;
+    }
+
+    fn op_movw_ya_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        self.a = self.read_dp(bus, dp);
+        bus.idle();
+        self.y = self.read_dp(bus, dp.wrapping_add(1));
+        let ya = self.ya_word();
+        self.set_nz16(ya);
+    }
+
+    fn op_movw_dp_ya(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let _ = self.read_dp(bus, dp); // dummy read
+        self.write_dp(bus, dp, self.a);
+        self.write_dp(bus, dp.wrapping_add(1), self.y);
+        // SPC700 quirk: MOVW dp, YA does not update flags.
+    }
+
+    fn op_addw_ya_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let lo = self.read_dp(bus, dp) as u16;
+        bus.idle();
+        let hi = self.read_dp(bus, dp.wrapping_add(1)) as u16;
+        let word = (hi << 8) | lo;
+        let ya = self.ya_word();
+        self.psw.h = ((ya & 0x0FFF) + (word & 0x0FFF)) > 0x0FFF;
+        let wide = (ya as u32) + (word as u32);
+        let result = wide as u16;
+        self.psw.v = ((!(ya ^ word)) & (ya ^ result) & 0x8000) != 0;
+        self.psw.c = wide > 0xFFFF;
+        self.set_ya_from_word(result);
+        self.set_nz16(result);
+    }
+
+    fn op_subw_ya_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let lo = self.read_dp(bus, dp) as u16;
+        bus.idle();
+        let hi = self.read_dp(bus, dp.wrapping_add(1)) as u16;
+        let word = (hi << 8) | lo;
+        let ya = self.ya_word();
+        let signed = (ya as i32) - (word as i32);
+        let result = signed as u16;
+        self.psw.h = ((ya & 0x0FFF) as i32 - (word & 0x0FFF) as i32) >= 0;
+        self.psw.v = ((ya ^ word) & (ya ^ result) & 0x8000) != 0;
+        self.psw.c = signed >= 0;
+        self.set_ya_from_word(result);
+        self.set_nz16(result);
+    }
+
+    fn op_cmpw_ya_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let lo = self.read_dp(bus, dp) as u16;
+        let hi = self.read_dp(bus, dp.wrapping_add(1)) as u16;
+        let word = (hi << 8) | lo;
+        let ya = self.ya_word();
+        let result = ya.wrapping_sub(word);
+        self.psw.c = ya >= word;
+        self.set_nz16(result);
+    }
+
+    fn op_incw_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let mut result = self.read_dp(bus, dp) as u16;
+        result = result.wrapping_add(1);
+        self.write_dp(bus, dp, result as u8);
+        let hi = self.read_dp(bus, dp.wrapping_add(1)) as u16;
+        result = result.wrapping_add(hi << 8);
+        self.set_nz16(result);
+        self.write_dp(bus, dp.wrapping_add(1), (result >> 8) as u8);
+    }
+
+    fn op_decw_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let mut result = self.read_dp(bus, dp) as u16;
+        result = result.wrapping_sub(1);
+        self.write_dp(bus, dp, result as u8);
+        let hi = self.read_dp(bus, dp.wrapping_add(1)) as u16;
+        result = result.wrapping_add(hi << 8);
+        self.set_nz16(result);
+        self.write_dp(bus, dp.wrapping_add(1), (result >> 8) as u8);
     }
 
     // ----- Immediate loads (2 cycles each) ----------------------------

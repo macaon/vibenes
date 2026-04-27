@@ -1471,6 +1471,176 @@ fn ror_abs_five_cycles_writes_back() {
     assert!(smp.psw.c);
 }
 
+// ----- 16-bit YA word ops ---------------------------------------------
+//
+// YA pair: Y is high byte, A is low byte. Word memory is little-endian
+// in dp (dp+1 wraps within the page). MOVW dp,YA does NOT update
+// flags (Anomie quirk). ADDW/SUBW do not consume carry-in. CMPW only
+// touches N/Z/C. INCW/DECW only touch N/Z.
+
+#[test]
+fn movw_ya_dp_loads_little_endian_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x34);
+    bus.poke(0x0021, 0x12);
+    let cycles = run_one(&mut smp, &mut bus, &[0xBA, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(smp.a, 0x34);
+    assert_eq!(smp.y, 0x12);
+    assert!(!smp.psw.z);
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn movw_ya_dp_zero_word_sets_z() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x00);
+    bus.poke(0x0021, 0x00);
+    let cycles = run_one(&mut smp, &mut bus, &[0xBA, 0x20]);
+    assert_eq!(cycles, 5);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn movw_dp_ya_writes_word_and_does_not_update_flags() {
+    // SPC700 quirk: MOVW dp,YA does NOT touch any flag. We pre-set
+    // every flag, run a write of YA=0x0000 (Z would normally be set
+    // by a load-style op), and verify nothing changed.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x00;
+    smp.y = 0x00;
+    smp.psw.n = false;
+    smp.psw.z = false;
+    smp.psw.c = true;
+    smp.psw.v = true;
+    smp.psw.h = true;
+    let cycles = run_one(&mut smp, &mut bus, &[0xDA, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0020), 0x00);
+    assert_eq!(bus.peek(0x0021), 0x00);
+    assert!(!smp.psw.z, "MOVW dp,YA must not set Z");
+    assert!(!smp.psw.n);
+    assert!(smp.psw.c, "MOVW dp,YA must preserve C");
+    assert!(smp.psw.v);
+    assert!(smp.psw.h);
+}
+
+#[test]
+fn addw_ya_dp_full_carry_and_v_flags() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0xFF;
+    smp.y = 0xFF;
+    bus.poke(0x0020, 0x01);
+    bus.poke(0x0021, 0x00); // word = 0x0001
+    smp.psw.c = false; // ADDW ignores C-in regardless
+    let cycles = run_one(&mut smp, &mut bus, &[0x7A, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(smp.a, 0x00);
+    assert_eq!(smp.y, 0x00);
+    assert!(smp.psw.c, "carry out of bit 15");
+    assert!(smp.psw.z);
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn addw_ya_dp_signed_overflow_sets_v() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    // 0x7FFF + 0x0001 = 0x8000 -> signed overflow positive->negative
+    smp.a = 0xFF;
+    smp.y = 0x7F;
+    bus.poke(0x0020, 0x01);
+    bus.poke(0x0021, 0x00);
+    let cycles = run_one(&mut smp, &mut bus, &[0x7A, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(smp.y, 0x80);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.v);
+    assert!(smp.psw.n);
+    assert!(!smp.psw.c);
+}
+
+#[test]
+fn subw_ya_dp_underflow_clears_carry() {
+    // Carry convention: C=1 means no borrow.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x00;
+    smp.y = 0x00;
+    bus.poke(0x0020, 0x01);
+    bus.poke(0x0021, 0x00);
+    let cycles = run_one(&mut smp, &mut bus, &[0x9A, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(smp.y, 0xFF);
+    assert_eq!(smp.a, 0xFF);
+    assert!(!smp.psw.c);
+    assert!(smp.psw.n);
+}
+
+#[test]
+fn cmpw_ya_dp_equal_sets_z_and_c_only_no_v_no_h_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x34;
+    smp.y = 0x12;
+    smp.psw.v = true; // pre-load: must survive
+    smp.psw.h = true;
+    bus.poke(0x0020, 0x34);
+    bus.poke(0x0021, 0x12);
+    let cycles = run_one(&mut smp, &mut bus, &[0x5A, 0x20]);
+    assert_eq!(cycles, 4, "CMPW has no internal idle (4 cycles)");
+    assert!(smp.psw.z);
+    assert!(smp.psw.c);
+    assert!(!smp.psw.n);
+    assert!(smp.psw.v, "CMPW must not touch V");
+    assert!(smp.psw.h, "CMPW must not touch H");
+}
+
+#[test]
+fn incw_dp_six_cycles_carries_into_high_byte() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0xFF);
+    bus.poke(0x0021, 0x12);
+    let cycles = run_one(&mut smp, &mut bus, &[0x3A, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(bus.peek(0x0020), 0x00);
+    assert_eq!(bus.peek(0x0021), 0x13, "low-byte overflow propagates");
+    assert!(!smp.psw.z);
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn incw_dp_wraps_to_zero_sets_z() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0xFF);
+    bus.poke(0x0021, 0xFF);
+    let cycles = run_one(&mut smp, &mut bus, &[0x3A, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(bus.peek(0x0020), 0x00);
+    assert_eq!(bus.peek(0x0021), 0x00);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn decw_dp_six_cycles_borrows_into_high_byte() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x00);
+    bus.poke(0x0021, 0x12);
+    let cycles = run_one(&mut smp, &mut bus, &[0x1A, 0x20]);
+    assert_eq!(cycles, 6);
+    assert_eq!(bus.peek(0x0020), 0xFF);
+    assert_eq!(bus.peek(0x0021), 0x11);
+    assert!(!smp.psw.z);
+    assert!(!smp.psw.n);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]
