@@ -1269,6 +1269,98 @@ fn eor_dp_imm_five_cycles_writes_back() {
     assert_eq!(bus.peek(0x0020), 0x55);
 }
 
+// ----- INC / DEC of memory --------------------------------------------
+//
+// RMW ops: read, modify, write back. N/Z from result, C/V/H survive.
+// Cycle counts: dp=4, dp+X=5, !abs=5. Wraparound at 0xFF/0x00.
+
+#[test]
+fn inc_dp_writes_back_and_sets_nz() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = true;
+    smp.psw.v = true;
+    smp.psw.h = true;
+    bus.poke(0x0020, 0x7F);
+    let cycles = run_one(&mut smp, &mut bus, &[0xAB, 0x20]);
+    assert_eq!(cycles, 4);
+    assert_eq!(bus.peek(0x0020), 0x80);
+    assert!(smp.psw.n);
+    assert!(!smp.psw.z);
+    assert!(smp.psw.c, "INC must not touch C");
+    assert!(smp.psw.v, "INC must not touch V");
+    assert!(smp.psw.h, "INC must not touch H");
+}
+
+#[test]
+fn dec_dp_wraps_to_ff_sets_n_clears_z() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x00);
+    let cycles = run_one(&mut smp, &mut bus, &[0x8B, 0x20]);
+    assert_eq!(cycles, 4);
+    assert_eq!(bus.peek(0x0020), 0xFF);
+    assert!(smp.psw.n);
+    assert!(!smp.psw.z);
+}
+
+#[test]
+fn inc_dp_wraps_to_zero_sets_z() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0xFF);
+    let cycles = run_one(&mut smp, &mut bus, &[0xAB, 0x20]);
+    assert_eq!(cycles, 4);
+    assert_eq!(bus.peek(0x0020), 0x00);
+    assert!(smp.psw.z);
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn inc_dp_plus_x_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x05;
+    bus.poke(0x0025, 0x10);
+    let cycles = run_one(&mut smp, &mut bus, &[0xBB, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0025), 0x11);
+}
+
+#[test]
+fn dec_dp_plus_x_five_cycles_wraps_dp() {
+    // dp+X wraps within the direct page, so 0xFF + 1 -> 0x00 of dp.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x10;
+    bus.poke(0x000F, 0x01); // (0xFF + 0x10) & 0xFF = 0x0F
+    let cycles = run_one(&mut smp, &mut bus, &[0x9B, 0xFF]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x000F), 0x00);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn inc_abs_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x1234, 0x42);
+    let cycles = run_one(&mut smp, &mut bus, &[0xAC, 0x34, 0x12]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x1234), 0x43);
+}
+
+#[test]
+fn dec_abs_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x1234, 0x01);
+    let cycles = run_one(&mut smp, &mut bus, &[0x8C, 0x34, 0x12]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x1234), 0x00);
+    assert!(smp.psw.z);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

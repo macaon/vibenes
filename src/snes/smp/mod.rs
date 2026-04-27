@@ -398,6 +398,14 @@ impl Smp {
             0xFC => self.op_inc_y(bus),
             0xDC => self.op_dec_y(bus),
 
+            // --- INC / DEC of memory (RMW) ---
+            0xAB => self.op_inc_dp(bus),
+            0xBB => self.op_inc_dp_plus_x(bus),
+            0xAC => self.op_inc_abs(bus),
+            0x8B => self.op_dec_dp(bus),
+            0x9B => self.op_dec_dp_plus_x(bus),
+            0x8C => self.op_dec_abs(bus),
+
             // --- Immediate loads ---
             0xE8 => self.op_mov_a_imm(bus),
             0xCD => self.op_mov_x_imm(bus),
@@ -690,6 +698,56 @@ impl Smp {
         bus.idle();
         self.y = self.y.wrapping_sub(1);
         self.set_nz(self.y);
+    }
+
+    // ----- INC / DEC of memory (RMW) ----------------------------------
+    //
+    // Read-modify-write: read operand, compute new value, write it
+    // back. Flags: N/Z from the result; C/V/H untouched. Cycle counts:
+    //   INC/DEC dp     - 4 cycles (opcode + dp_fetch + read + write)
+    //   INC/DEC dp+X   - 5 cycles (adds idle for X-add)
+    //   INC/DEC !abs   - 5 cycles (opcode + lo + hi + read + write)
+
+    fn op_inc_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp).wrapping_add(1);
+        self.set_nz(v);
+        self.write_dp(bus, dp, v);
+    }
+
+    fn op_dec_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp).wrapping_sub(1);
+        self.set_nz(v);
+        self.write_dp(bus, dp, v);
+    }
+
+    fn op_inc_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr).wrapping_add(1);
+        self.set_nz(v);
+        bus.write(addr, v);
+    }
+
+    fn op_dec_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr).wrapping_sub(1);
+        self.set_nz(v);
+        bus.write(addr, v);
+    }
+
+    fn op_inc_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr).wrapping_add(1);
+        self.set_nz(v);
+        bus.write(addr, v);
+    }
+
+    fn op_dec_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr).wrapping_sub(1);
+        self.set_nz(v);
+        bus.write(addr, v);
     }
 
     // ----- Immediate loads (2 cycles each) ----------------------------
