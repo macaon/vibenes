@@ -401,6 +401,42 @@ mod tests {
     }
 
     #[test]
+    fn read_high_address_mirrors_low_register() {
+        // $80-$FF mirror $00-$7F on read: writing $02 then reading
+        // through $82 returns the same byte.
+        let mut d = DspRegs::new();
+        d.address = 0x02;
+        d.write_data(0xAB);
+        d.address = 0x82;
+        assert_eq!(d.read_data(), 0xAB);
+    }
+
+    #[test]
+    fn write_to_high_address_does_not_corrupt_mirror_target() {
+        // A blocked write to $82 must not stomp the $02 register.
+        let mut d = DspRegs::new();
+        d.address = 0x02;
+        d.write_data(0x55);
+        d.address = 0x82;
+        d.write_data(0xFF); // dropped
+        d.address = 0x02;
+        assert_eq!(d.read_data(), 0x55, "blocked write must not reach mirror");
+    }
+
+    #[test]
+    fn write_data_guard_threshold_at_address_0x80() {
+        // Boundary: $7F writes through, $80 is blocked.
+        let mut d = DspRegs::new();
+        d.address = 0x7F;
+        d.write_data(0x11);
+        assert_eq!(d.regs[0x7F], 0x11);
+
+        d.address = 0x80;
+        d.write_data(0x22);
+        assert_eq!(d.regs[0x00], 0x00, "$80 must not write to $00 mirror target");
+    }
+
+    #[test]
     fn kon_koff_round_trip() {
         let mut d = DspRegs::new();
         d.write(global_reg::KON, 0xF0);

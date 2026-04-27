@@ -50,6 +50,8 @@ pub fn load_raw_spc_image(
     *ports = ApuPorts {
         cpu_to_smp: [0; 4],
         smp_to_cpu: [0; 4],
+        pending_cpu_to_smp: [0; 4],
+        pending_dirty: 0,
     };
 }
 

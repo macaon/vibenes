@@ -211,6 +211,17 @@ pub struct ApuPorts {
     pub cpu_to_smp: [u8; 4],
     /// What the SMP last wrote; the CPU reads this on `$2140-$2143`.
     pub smp_to_cpu: [u8; 4],
+    /// Shadow latch for fresh CPU writes. Hides the new byte from the
+    /// SMP until the next [`Self::commit_pending`] tick, modelling the
+    /// sub-cycle latency that real hardware exhibits between a 5A22
+    /// store to `$2140-$2143` and the SMP observing it on `$F4-$F7`.
+    /// Without this delay, Kishin Douji Zenki and Kawasaki Superbike
+    /// Challenge can race their boot handshake and freeze.
+    pub pending_cpu_to_smp: [u8; 4],
+    /// Bitmask of `pending_cpu_to_smp` slots that have been written
+    /// since the last commit. Bit `n` set means slot `n` needs to be
+    /// copied into `cpu_to_smp` on the next commit.
+    pub pending_dirty: u8,
 }
 
 impl ApuPorts {
@@ -219,13 +230,32 @@ impl ApuPorts {
     pub const RESET: Self = Self {
         cpu_to_smp: [0; 4],
         smp_to_cpu: [0xAA, 0xBB, 0x00, 0x00],
+        pending_cpu_to_smp: [0; 4],
+        pending_dirty: 0,
     };
 
-    /// CPU writes `value` to `$2140 + idx`. Updates the latch the SMP
-    /// will see on its next read of `$F4 + idx`.
+    /// CPU writes `value` to `$2140 + idx`. Lands in the pending
+    /// shadow; the SMP will see it after the next instruction
+    /// boundary commit.
     pub fn cpu_write(&mut self, idx: usize, value: u8) {
         debug_assert!(idx < 4);
-        self.cpu_to_smp[idx] = value;
+        self.pending_cpu_to_smp[idx] = value;
+        self.pending_dirty |= 1 << idx;
+    }
+
+    /// Promote pending CPU writes into the SMP-visible latch. Called
+    /// once per SMP instruction (post-step) so any read inside the
+    /// just-finished instruction saw the pre-write value, while the
+    /// next instruction sees the new one. This is the granularity
+    /// game compat needs (Mesen2 commits per cycle for cycle-exact
+    /// fidelity; per-instruction is conservative but sufficient).
+    pub fn commit_pending(&mut self) {
+        for i in 0..4 {
+            if self.pending_dirty & (1 << i) != 0 {
+                self.cpu_to_smp[i] = self.pending_cpu_to_smp[i];
+            }
+        }
+        self.pending_dirty = 0;
     }
 
     /// CPU reads `$2140 + idx`. Returns whatever the SMP last wrote.
@@ -241,7 +271,8 @@ impl ApuPorts {
         self.smp_to_cpu[idx] = value;
     }
 
-    /// SMP reads `$F4 + idx`. Returns whatever the CPU last wrote.
+    /// SMP reads `$F4 + idx`. Returns whatever the CPU last wrote
+    /// (committed value; pending writes are not yet visible).
     pub fn smp_read(&self, idx: usize) -> u8 {
         debug_assert!(idx < 4);
         self.cpu_to_smp[idx]
@@ -362,9 +393,10 @@ mod tests {
     #[test]
     fn apu_ports_round_trip_each_direction_independently() {
         let mut p = ApuPorts::RESET;
-        // CPU -> SMP
+        // CPU -> SMP - landing in pending until commit.
         p.cpu_write(0, 0x11);
         p.cpu_write(3, 0x44);
+        p.commit_pending();
         assert_eq!(p.smp_read(0), 0x11);
         assert_eq!(p.smp_read(3), 0x44);
         // SMP -> CPU (overrides reset boot signature)
@@ -373,5 +405,37 @@ mod tests {
         // The two directions are independent: CPU's read of $2140
         // sees what SMP wrote, NOT what CPU wrote to $2140.
         assert_ne!(p.cpu_read(0), p.smp_read(0));
+    }
+
+    #[test]
+    fn apu_ports_cpu_write_invisible_to_smp_until_commit() {
+        // The dual-latch holds the new CPU byte in shadow. The SMP
+        // continues to observe the pre-write value until commit.
+        let mut p = ApuPorts::RESET;
+        p.cpu_write(1, 0x55);
+        assert_eq!(p.smp_read(1), 0x00, "still pre-commit (reset value)");
+        p.commit_pending();
+        assert_eq!(p.smp_read(1), 0x55, "post-commit, byte is visible");
+    }
+
+    #[test]
+    fn apu_ports_commit_only_promotes_dirty_slots() {
+        let mut p = ApuPorts::RESET;
+        p.cpu_to_smp = [0x10, 0x20, 0x30, 0x40];
+        p.cpu_write(2, 0xFF); // only slot 2 dirty
+        p.commit_pending();
+        assert_eq!(p.cpu_to_smp, [0x10, 0x20, 0xFF, 0x40]);
+    }
+
+    #[test]
+    fn apu_ports_repeated_cpu_writes_collapse_to_latest_at_commit() {
+        // Multiple CPU writes between commits leave only the most
+        // recent value visible to the SMP.
+        let mut p = ApuPorts::RESET;
+        p.cpu_write(0, 0xAA);
+        p.cpu_write(0, 0xBB);
+        p.cpu_write(0, 0xCC);
+        p.commit_pending();
+        assert_eq!(p.smp_read(0), 0xCC);
     }
 }

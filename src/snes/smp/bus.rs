@@ -190,15 +190,24 @@ impl<'a> IntegratedSmpBus<'a> {
                 self.control.raw = value;
                 self.timers.apply_control(*self.control);
                 // Bits 4/5 are write-1-to-clear for $2140-$2143 input
-                // latches (the SMP-facing side of cpu_to_smp). Mesen2
-                // clears the matching latch byte; we mirror that.
+                // latches (the SMP-facing side of cpu_to_smp). Both
+                // the visible latch AND any pending CPU write that
+                // hasn't been committed yet must be zeroed - otherwise
+                // a CPU write that arrived just before the clear
+                // would re-surface on the next commit tick.
                 if value & 0x10 != 0 {
                     self.ports.cpu_to_smp[0] = 0;
                     self.ports.cpu_to_smp[1] = 0;
+                    self.ports.pending_cpu_to_smp[0] = 0;
+                    self.ports.pending_cpu_to_smp[1] = 0;
+                    self.ports.pending_dirty &= !0b0011;
                 }
                 if value & 0x20 != 0 {
                     self.ports.cpu_to_smp[2] = 0;
                     self.ports.cpu_to_smp[3] = 0;
+                    self.ports.pending_cpu_to_smp[2] = 0;
+                    self.ports.pending_cpu_to_smp[3] = 0;
+                    self.ports.pending_dirty &= !0b1100;
                 }
             }
             0x00F2 => self.dsp.address = value,

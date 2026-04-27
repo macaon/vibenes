@@ -201,6 +201,11 @@ impl Snes {
             cycles: &mut self.apu.cycles,
         };
         self.apu.smp.step(&mut spc_bus);
+        // Commit any CPU-side mailbox writes that landed in the
+        // pending shadow during this instruction. The just-finished
+        // instruction read the pre-write value; the next one will
+        // see the new byte.
+        self.bus.apu_ports.commit_pending();
     }
 
     pub fn attach_save_metadata(&mut self, rom_path: PathBuf, rom_crc32: u32) {
@@ -354,6 +359,8 @@ mod tests {
         let mut ports = smp::state::ApuPorts {
             cpu_to_smp: [0; 4],
             smp_to_cpu: [0; 4],
+            pending_cpu_to_smp: [0; 4],
+            pending_dirty: 0,
         };
         let mut steps = 0u32;
         let max_steps = 50_000u32;
@@ -388,15 +395,18 @@ mod tests {
 
     #[test]
     fn cpu_to_smp_mailbox_handoff_through_shared_apu_ports() {
-        // CPU writes to the shared mailbox, then the SMP bus reads
-        // the same byte. Locks in that LoRomBus and IntegratedSmpBus
-        // both route through the same ApuPorts struct.
+        // CPU writes to the shared mailbox; after the per-instruction
+        // commit fires, the SMP bus reads the new byte. Locks in that
+        // LoRomBus and IntegratedSmpBus both route through the same
+        // ApuPorts struct, plus the dual-latch delay model.
         let mut ports = smp::state::ApuPorts::RESET;
-        // Simulate CPU side write to $2140.
+        // Simulate CPU side write to $2140 - lands in pending shadow.
         ports.cpu_write(0, 0x42);
-        // Simulate SMP side read of $F4 - just borrows the same struct.
+        // Until commit, SMP still sees the old value.
+        assert_eq!(ports.smp_read(0), 0x00, "pending hidden until commit");
+        ports.commit_pending();
         assert_eq!(ports.smp_read(0), 0x42);
-        // SMP writes to $F4 - CPU sees it on $2140.
+        // SMP writes to $F4 - CPU sees it on $2140 immediately.
         ports.smp_write(0, 0x99);
         assert_eq!(ports.cpu_read(0), 0x99);
         // The two halves are disjoint: writing the SMP side did not
