@@ -2051,6 +2051,101 @@ fn dbnz_y_four_cycles_when_not_taken_does_not_touch_flags() {
     assert_eq!(smp.pc, 0x0202);
 }
 
+// ----- CALL / PCALL / TCALL / RETI ------------------------------------
+//
+// CALL !abs:    8 cycles. Push next-PC, jump to absolute.
+// PCALL u:      6 cycles. Push next-PC, jump to $FF00+u.
+// TCALL n:      8 cycles. Push next-PC, vector at $FFDE-2n.
+// RETI:         6 cycles. Pop PSW, then PC, then 2 idles.
+// None of these touch flags except RETI which restores all flags.
+
+#[test]
+fn call_abs_pushes_next_pc_and_jumps_eight_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.sp = 0xFF;
+    let cycles = run_one(&mut smp, &mut bus, &[0x3F, 0x34, 0x12]);
+    assert_eq!(cycles, 8);
+    assert_eq!(smp.pc, 0x1234);
+    // Return address (next-PC = 0x0203) was pushed: hi to $01FF, lo to $01FE.
+    assert_eq!(bus.peek(0x01FF), 0x02);
+    assert_eq!(bus.peek(0x01FE), 0x03);
+    assert_eq!(smp.sp, 0xFD);
+}
+
+#[test]
+fn pcall_jumps_to_ff00_plus_u_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.sp = 0xFF;
+    let cycles = run_one(&mut smp, &mut bus, &[0x4F, 0x42]);
+    assert_eq!(cycles, 6);
+    assert_eq!(smp.pc, 0xFF42);
+    assert_eq!(bus.peek(0x01FF), 0x02); // return = 0x0202
+    assert_eq!(bus.peek(0x01FE), 0x02);
+}
+
+#[test]
+fn tcall_zero_uses_ffde_vector() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.sp = 0xFF;
+    bus.poke(0xFFDE, 0x00);
+    bus.poke(0xFFDF, 0x90);
+    let cycles = run_one(&mut smp, &mut bus, &[0x01]);
+    assert_eq!(cycles, 8);
+    assert_eq!(smp.pc, 0x9000);
+    assert_eq!(bus.peek(0x01FF), 0x02); // return = 0x0201
+    assert_eq!(bus.peek(0x01FE), 0x01);
+}
+
+#[test]
+fn tcall_fifteen_uses_ffc0_vector() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.sp = 0xFF;
+    bus.poke(0xFFC0, 0x10);
+    bus.poke(0xFFC1, 0x80);
+    let cycles = run_one(&mut smp, &mut bus, &[0xF1]);
+    assert_eq!(cycles, 8);
+    assert_eq!(smp.pc, 0x8010);
+}
+
+#[test]
+fn reti_pops_psw_then_pc_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.sp = 0xFC;
+    // Stack (low -> high addr): [PC_lo, PC_hi, PSW] starting at 0x01FD
+    bus.poke(0x01FD, 0xAA); // PSW byte: N=1, V=0, P=1, B=0, H=1, I=0, Z=1, C=0
+    bus.poke(0x01FE, 0x34); // PC lo
+    bus.poke(0x01FF, 0x12); // PC hi
+    let cycles = run_one(&mut smp, &mut bus, &[0x7F]);
+    assert_eq!(cycles, 6);
+    assert_eq!(smp.pc, 0x1234);
+    assert_eq!(smp.sp, 0xFF);
+    assert!(smp.psw.n);
+    assert!(!smp.psw.v);
+    assert!(smp.psw.p);
+    assert!(smp.psw.h);
+    assert!(smp.psw.z);
+    assert!(!smp.psw.c);
+}
+
+#[test]
+fn ret_after_call_round_trips_pc() {
+    // Sanity: CALL pushes, RET pops the same address.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.sp = 0xFF;
+    let _ = run_one(&mut smp, &mut bus, &[0x3F, 0x00, 0x80]);
+    assert_eq!(smp.pc, 0x8000);
+    // Now run RET from the called location.
+    let _ = run_one(&mut smp, &mut bus, &[0x6F]);
+    assert_eq!(smp.pc, 0x0203, "RET pops the address pushed by CALL");
+    assert_eq!(smp.sp, 0xFF);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

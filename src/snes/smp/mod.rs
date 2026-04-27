@@ -540,6 +540,27 @@ impl Smp {
             // --- JMP / RET ---
             0x5F => self.op_jmp_abs(bus),
             0x6F => self.op_ret(bus),
+            0x7F => self.op_reti(bus),
+            0x3F => self.op_call_abs(bus),
+            0x4F => self.op_pcall(bus),
+
+            // --- TCALL n (16 ops) ---
+            0x01 => self.op_tcall(bus, 0),
+            0x11 => self.op_tcall(bus, 1),
+            0x21 => self.op_tcall(bus, 2),
+            0x31 => self.op_tcall(bus, 3),
+            0x41 => self.op_tcall(bus, 4),
+            0x51 => self.op_tcall(bus, 5),
+            0x61 => self.op_tcall(bus, 6),
+            0x71 => self.op_tcall(bus, 7),
+            0x81 => self.op_tcall(bus, 8),
+            0x91 => self.op_tcall(bus, 9),
+            0xA1 => self.op_tcall(bus, 10),
+            0xB1 => self.op_tcall(bus, 11),
+            0xC1 => self.op_tcall(bus, 12),
+            0xD1 => self.op_tcall(bus, 13),
+            0xE1 => self.op_tcall(bus, 14),
+            0xF1 => self.op_tcall(bus, 15),
 
             // --- ADC family (12 addressing modes) ---
             0x88 => self.op_adc_a_imm(bus),
@@ -1518,6 +1539,59 @@ impl Smp {
         bus.idle();
         bus.idle();
         self.pc = self.pop16(bus);
+    }
+
+    // ----- CALL / PCALL / TCALL / RETI --------------------------------
+    //
+    // CALL !abs ($3F, 8 cycles): push PC of next instruction, jump to
+    //   absolute address. Order: opcode + lo + hi + 3 idles + push_hi
+    //   + push_lo. The 3 internal cycles are bsnes-faithful.
+    // PCALL u ($4F, 6 cycles): page-call - jump to $FF00 + u. Pattern:
+    //   opcode + offset + 2 idles + push_hi + push_lo.
+    // TCALL n ($n1, 8 cycles): table call - vector at 0xFFDE - 2n.
+    //   Pattern: opcode + 3 idles + push_hi + push_lo + read vec_lo
+    //   + read vec_hi.
+    // RETI ($7F, 6 cycles): pop PSW, then PC, then 2 idle cycles.
+    //   Order matters: PSW pops first (bsnes; matches stack push order
+    //   used by interrupts when those land).
+
+    fn op_call_abs(&mut self, bus: &mut impl SmpBus) {
+        let target = self.fetch_u16(bus);
+        bus.idle();
+        bus.idle();
+        bus.idle();
+        let return_addr = self.pc;
+        self.push16(bus, return_addr);
+        self.pc = target;
+    }
+
+    fn op_pcall(&mut self, bus: &mut impl SmpBus) {
+        let lo = self.fetch_u8(bus);
+        bus.idle();
+        bus.idle();
+        let return_addr = self.pc;
+        self.push16(bus, return_addr);
+        self.pc = 0xFF00 | lo as u16;
+    }
+
+    fn op_tcall(&mut self, bus: &mut impl SmpBus, n: u8) {
+        bus.idle();
+        bus.idle();
+        bus.idle();
+        let return_addr = self.pc;
+        self.push16(bus, return_addr);
+        let vec_addr = 0xFFDEu16.wrapping_sub((n as u16) << 1);
+        let lo = bus.read(vec_addr) as u16;
+        let hi = bus.read(vec_addr.wrapping_add(1)) as u16;
+        self.pc = (hi << 8) | lo;
+    }
+
+    fn op_reti(&mut self, bus: &mut impl SmpBus) {
+        let psw_byte = self.pop8(bus);
+        self.psw.unpack(psw_byte);
+        self.pc = self.pop16(bus);
+        bus.idle();
+        bus.idle();
     }
 
     // ----- ADC family --------------------------------------------------
