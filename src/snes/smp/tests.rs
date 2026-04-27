@@ -2251,6 +2251,128 @@ fn xcn_zero_sets_z() {
     assert!(smp.psw.z);
 }
 
+// ----- Indexed / indirect MOV variants (Phase 5b.3) ------------------
+//
+// These rounded out the SPC700 instruction set so the IPL ROM
+// finishes its boot sequence end-to-end. The IPL integration test
+// in src/snes/mod.rs is the strongest validator; the per-op tests
+// below lock in cycle counts and the post-increment / stream-order
+// quirks that are easy to get backward.
+
+#[test]
+fn mov_a_dp_x_direct_three_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x10;
+    bus.poke(0x0010, 0x42);
+    let cycles = run_one(&mut smp, &mut bus, &[0xE6]);
+    assert_eq!(cycles, 3);
+    assert_eq!(smp.a, 0x42);
+}
+
+#[test]
+fn mov_a_dp_x_post_inc_increments_x_and_takes_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x20;
+    bus.poke(0x0020, 0x99);
+    let cycles = run_one(&mut smp, &mut bus, &[0xBF]);
+    assert_eq!(cycles, 4);
+    assert_eq!(smp.a, 0x99);
+    assert_eq!(smp.x, 0x21, "X post-incremented");
+    assert!(smp.psw.n, "0x99 high bit -> N");
+}
+
+#[test]
+fn mov_dp_x_direct_a_writes_with_dummy_read_in_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x77;
+    smp.x = 0x10;
+    let cycles = run_one(&mut smp, &mut bus, &[0xC6]);
+    assert_eq!(cycles, 4);
+    assert_eq!(bus.peek(0x0010), 0x77);
+}
+
+#[test]
+fn mov_dp_x_post_inc_a_writes_then_increments_x() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x55;
+    smp.x = 0x30;
+    let cycles = run_one(&mut smp, &mut bus, &[0xAF]);
+    assert_eq!(cycles, 4);
+    assert_eq!(bus.peek(0x0030), 0x55);
+    assert_eq!(smp.x, 0x31);
+}
+
+#[test]
+fn mov_dp_dp_stream_order_is_src_then_dst() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0010, 0xAB); // src
+    bus.poke(0x0020, 0xCD); // dst (will be overwritten)
+    // Stream: opcode, src=0x10, dst=0x20.
+    let cycles = run_one(&mut smp, &mut bus, &[0xFA, 0x10, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0020), 0xAB);
+    assert_eq!(bus.peek(0x0010), 0xAB, "src untouched");
+}
+
+#[test]
+fn mov_dp_imm_stream_order_is_imm_then_dp() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    let cycles = run_one(&mut smp, &mut bus, &[0x8F, 0x42, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0020), 0x42);
+}
+
+#[test]
+fn mov_dp_dp_does_not_update_nz_flags() {
+    // Per Anomie: MOV dp, dp leaves PSW alone (it's a memory-to-memory
+    // copy, not a load through the accumulator).
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.z = true;
+    smp.psw.n = false;
+    bus.poke(0x0010, 0x80); // copying a high-bit value would normally set N
+    let _ = run_one(&mut smp, &mut bus, &[0xFA, 0x10, 0x20]);
+    assert!(smp.psw.z, "Z unchanged");
+    assert!(!smp.psw.n, "N unchanged");
+}
+
+#[test]
+fn brk_pushes_pc_and_psw_jumps_to_ffde_vector_eight_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.sp = 0xFF;
+    smp.psw.c = true;
+    bus.poke(0xFFDE, 0x10);
+    bus.poke(0xFFDF, 0x90);
+    let cycles = run_one(&mut smp, &mut bus, &[0x0F]);
+    assert_eq!(cycles, 8);
+    assert_eq!(smp.pc, 0x9010);
+    // PSW pushed at $01FD; PC pushed at $01FE/$01FF.
+    let pushed_psw = bus.peek(0x01FD);
+    assert!(pushed_psw & 0x10 != 0, "B flag set in pushed PSW");
+    assert!(pushed_psw & 0x01 != 0, "C flag preserved in push");
+    assert!(!smp.psw.i, "I cleared on BRK entry");
+}
+
+#[test]
+fn jmp_abs_x_indirect_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x04;
+    // Jump table at $1000, 4 entries.
+    bus.poke(0x1004, 0x34);
+    bus.poke(0x1005, 0x12);
+    let cycles = run_one(&mut smp, &mut bus, &[0x1F, 0x00, 0x10]);
+    assert_eq!(cycles, 6);
+    assert_eq!(smp.pc, 0x1234);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

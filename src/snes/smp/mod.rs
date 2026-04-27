@@ -517,6 +517,32 @@ impl Smp {
             0xC9 => self.op_mov_abs_x(bus),
             0xCC => self.op_mov_abs_y(bus),
 
+            // --- Indexed/indirect MOV variants ---
+            0xE6 => self.op_mov_a_dp_x_direct(bus),
+            0xBF => self.op_mov_a_dp_x_post_inc(bus),
+            0xC6 => self.op_mov_dp_x_direct_a(bus),
+            0xAF => self.op_mov_dp_x_post_inc_a(bus),
+            0xF4 => self.op_mov_a_dp_plus_x(bus),
+            0xFB => self.op_mov_y_dp_plus_x(bus),
+            0xF9 => self.op_mov_x_dp_plus_y(bus),
+            0xD4 => self.op_mov_dp_plus_x_a(bus),
+            0xDB => self.op_mov_dp_plus_x_y(bus),
+            0xD9 => self.op_mov_dp_plus_y_x(bus),
+            0xF5 => self.op_mov_a_abs_plus_x(bus),
+            0xF6 => self.op_mov_a_abs_plus_y(bus),
+            0xD5 => self.op_mov_abs_plus_x_a(bus),
+            0xD6 => self.op_mov_abs_plus_y_a(bus),
+            0xE7 => self.op_mov_a_dp_x_indirect(bus),
+            0xF7 => self.op_mov_a_dp_indirect_plus_y(bus),
+            0xC7 => self.op_mov_dp_x_indirect_a(bus),
+            0xD7 => self.op_mov_dp_indirect_plus_y_a(bus),
+            0xFA => self.op_mov_dp_dp(bus),
+            0x8F => self.op_mov_dp_imm(bus),
+
+            // --- BRK + indexed indirect JMP ---
+            0x0F => self.op_brk(bus),
+            0x1F => self.op_jmp_abs_x_indirect(bus),
+
             // --- Stack ops ---
             0x2D => self.op_push_a(bus),
             0x4D => self.op_push_x(bus),
@@ -659,11 +685,6 @@ impl Smp {
             0x59 => self.op_eor_x_indirect_y_indirect(bus),
             0x49 => self.op_eor_dp_dp(bus),
             0x58 => self.op_eor_dp_imm(bus),
-
-            other => panic!(
-                "snes/smp: unimplemented opcode ${other:02X} at PC=${:04X}",
-                self.pc.wrapping_sub(1)
-            ),
         }
     }
 
@@ -1453,6 +1474,211 @@ impl Smp {
         let addr = self.fetch_u16(bus);
         let _ = bus.read(addr);
         bus.write(addr, self.y);
+    }
+
+    // ----- Indexed / indirect MOV variants ---------------------------
+    //
+    // Cycle counts and idle/dummy-read patterns are bsnes-faithful
+    // (see `bsnes/snes/smp/algorithms.cpp`). MOVs do NOT touch C/V/H;
+    // loads update N/Z, stores leave PSW alone.
+
+    fn op_mov_a_dp_x_direct(&mut self, bus: &mut impl SmpBus) {
+        // MOV A, (X) - 3 cycles. opcode + idle + read.
+        bus.idle();
+        let v = bus.read(self.addr_dp_x_direct());
+        self.a = v;
+        self.set_nz(v);
+    }
+
+    fn op_mov_a_dp_x_post_inc(&mut self, bus: &mut impl SmpBus) {
+        // MOV A, (X)+ - 4 cycles. opcode + idle + read + idle.
+        // Post-increments X.
+        bus.idle();
+        let v = bus.read(self.addr_dp_x_direct());
+        bus.idle();
+        self.x = self.x.wrapping_add(1);
+        self.a = v;
+        self.set_nz(v);
+    }
+
+    fn op_mov_dp_x_direct_a(&mut self, bus: &mut impl SmpBus) {
+        // MOV (X), A - 4 cycles. opcode + idle + dummy_read + write.
+        bus.idle();
+        let addr = self.addr_dp_x_direct();
+        let _ = bus.read(addr);
+        bus.write(addr, self.a);
+    }
+
+    fn op_mov_dp_x_post_inc_a(&mut self, bus: &mut impl SmpBus) {
+        // MOV (X)+, A - 4 cycles. Per bsnes: opcode + idle + write +
+        // idle, with X post-incremented after the write.
+        bus.idle();
+        let addr = self.addr_dp_x_direct();
+        bus.write(addr, self.a);
+        bus.idle();
+        self.x = self.x.wrapping_add(1);
+    }
+
+    fn op_mov_a_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        // MOV A, dp+X - 4 cycles.
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = v;
+        self.set_nz(v);
+    }
+
+    fn op_mov_y_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        // MOV Y, dp+X - 4 cycles.
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        self.y = v;
+        self.set_nz(v);
+    }
+
+    fn op_mov_x_dp_plus_y(&mut self, bus: &mut impl SmpBus) {
+        // MOV X, dp+Y - 4 cycles.
+        let addr = self.addr_dp_plus_y(bus);
+        let v = bus.read(addr);
+        self.x = v;
+        self.set_nz(v);
+    }
+
+    fn op_mov_dp_plus_x_a(&mut self, bus: &mut impl SmpBus) {
+        // MOV dp+X, A - 5 cycles. addr_dp_plus_x charges op + dp +
+        // idle (4 cycles total inc. opcode); we add dummy_read + write.
+        let addr = self.addr_dp_plus_x(bus);
+        let _ = bus.read(addr);
+        bus.write(addr, self.a);
+    }
+
+    fn op_mov_dp_plus_x_y(&mut self, bus: &mut impl SmpBus) {
+        // MOV dp+X, Y - 5 cycles.
+        let addr = self.addr_dp_plus_x(bus);
+        let _ = bus.read(addr);
+        bus.write(addr, self.y);
+    }
+
+    fn op_mov_dp_plus_y_x(&mut self, bus: &mut impl SmpBus) {
+        // MOV dp+Y, X - 5 cycles.
+        let addr = self.addr_dp_plus_y(bus);
+        let _ = bus.read(addr);
+        bus.write(addr, self.x);
+    }
+
+    fn op_mov_a_abs_plus_x(&mut self, bus: &mut impl SmpBus) {
+        // MOV A, !abs+X - 5 cycles.
+        let addr = self.addr_abs_plus_x(bus);
+        let v = bus.read(addr);
+        self.a = v;
+        self.set_nz(v);
+    }
+
+    fn op_mov_a_abs_plus_y(&mut self, bus: &mut impl SmpBus) {
+        // MOV A, !abs+Y - 5 cycles.
+        let addr = self.addr_abs_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = v;
+        self.set_nz(v);
+    }
+
+    fn op_mov_abs_plus_x_a(&mut self, bus: &mut impl SmpBus) {
+        // MOV !abs+X, A - 6 cycles.
+        let addr = self.addr_abs_plus_x(bus);
+        let _ = bus.read(addr);
+        bus.write(addr, self.a);
+    }
+
+    fn op_mov_abs_plus_y_a(&mut self, bus: &mut impl SmpBus) {
+        // MOV !abs+Y, A - 6 cycles.
+        let addr = self.addr_abs_plus_y(bus);
+        let _ = bus.read(addr);
+        bus.write(addr, self.a);
+    }
+
+    fn op_mov_a_dp_x_indirect(&mut self, bus: &mut impl SmpBus) {
+        // MOV A, [dp+X] - 6 cycles.
+        let addr = self.addr_dp_x_indirect(bus);
+        let v = bus.read(addr);
+        self.a = v;
+        self.set_nz(v);
+    }
+
+    fn op_mov_a_dp_indirect_plus_y(&mut self, bus: &mut impl SmpBus) {
+        // MOV A, [dp]+Y - 6 cycles.
+        let addr = self.addr_dp_indirect_plus_y(bus);
+        let v = bus.read(addr);
+        self.a = v;
+        self.set_nz(v);
+    }
+
+    fn op_mov_dp_x_indirect_a(&mut self, bus: &mut impl SmpBus) {
+        // MOV [dp+X], A - 7 cycles. The pointer-resolution helper
+        // charges op + dp + idle + ptr_lo + ptr_hi (6 with opcode);
+        // dummy_read + write add the final two.
+        let addr = self.addr_dp_x_indirect(bus);
+        let _ = bus.read(addr);
+        bus.write(addr, self.a);
+    }
+
+    fn op_mov_dp_indirect_plus_y_a(&mut self, bus: &mut impl SmpBus) {
+        // MOV [dp]+Y, A - 7 cycles.
+        let addr = self.addr_dp_indirect_plus_y(bus);
+        let _ = bus.read(addr);
+        bus.write(addr, self.a);
+    }
+
+    fn op_mov_dp_dp(&mut self, bus: &mut impl SmpBus) {
+        // MOV dp, dp - 5 cycles. opcode + src_dp + read_src + dst_dp +
+        // write. NB: SPC700 stream order is (src, dst), unlike how
+        // most assemblers print it. Does NOT update N/Z.
+        let src_dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, src_dp);
+        let dst_dp = self.fetch_u8(bus);
+        self.write_dp(bus, dst_dp, v);
+    }
+
+    fn op_mov_dp_imm(&mut self, bus: &mut impl SmpBus) {
+        // MOV dp, #imm - 5 cycles. Stream order: imm first, then dp
+        // (matches ADC/SBC dp,#imm). Does NOT update N/Z.
+        let imm = self.fetch_u8(bus);
+        let dp = self.fetch_u8(bus);
+        let _ = self.read_dp(bus, dp); // dummy read
+        self.write_dp(bus, dp, imm);
+    }
+
+    // ----- BRK + indexed indirect JMP --------------------------------
+
+    fn op_brk(&mut self, bus: &mut impl SmpBus) {
+        // BRK - 8 cycles. Push PC (next-instruction), push PSW with B
+        // set, set I=0, clear B in the live PSW (per Anomie: B is
+        // pushed but the running CPU keeps it 0), jump to vector at
+        // $FFDE. Mesen2's `Brk` does the same vector ($FFDE = TCALL 0).
+        bus.idle();
+        let return_pc = self.pc;
+        self.push16(bus, return_pc);
+        let mut psw_pushed = self.psw.pack();
+        psw_pushed |= 0x10; // B flag in pushed copy
+        self.push8(bus, psw_pushed);
+        bus.idle();
+        let lo = bus.read(0xFFDE) as u16;
+        let hi = bus.read(0xFFDF) as u16;
+        self.pc = (hi << 8) | lo;
+        // Live flags: clear I (per Anomie), keep B as-is (B is a
+        // pushed-only flag; the running CPU does not have a separate
+        // B bit beyond what `pack`/`unpack` round-trip).
+        self.psw.i = false;
+    }
+
+    fn op_jmp_abs_x_indirect(&mut self, bus: &mut impl SmpBus) {
+        // JMP [!abs+X] - 6 cycles. Read 16-bit pointer from abs+X
+        // (without page-wrap; SPC700 has a flat 16-bit space) and
+        // jump to the address it contains.
+        let base = self.fetch_u16(bus);
+        bus.idle();
+        let ptr = base.wrapping_add(self.x as u16);
+        let lo = bus.read(ptr) as u16;
+        let hi = bus.read(ptr.wrapping_add(1)) as u16;
+        self.pc = (hi << 8) | lo;
     }
 
     // ----- Stack ops (4 cycles each) ----------------------------------

@@ -334,6 +334,59 @@ mod tests {
     }
 
     #[test]
+    fn ipl_rom_writes_boot_signature_to_mailbox_unaided() {
+        // End-to-end integration: with the mailbox cleared at the
+        // start, run the SMP through the IPL boot sequence and verify
+        // that it independently produces $AA at $F4 and $BB at $F5
+        // (the two-byte handshake commercial games' WaitForAPUReady
+        // loops spin on). This exercises:
+        //   - IPL shadow read at $FFC0+ (CONTROL.7 = 1 at reset)
+        //   - ARAM write/read (the IPL's clear loop touches $00-$EF)
+        //   - branches (BNE in the clear loop)
+        //   - DEC X, CMP, MOV-to-IO
+        //   - the integrated bus's $F4-$F7 -> ApuPorts smp_write path
+        // No host code, no Snes wrapper - just the SMP + integrated
+        // bus eating its way through the IPL until the signature
+        // bytes appear at the CPU-facing latches.
+        let mut apu = ApuSubsystem::new(smp::ipl::Ipl::embedded());
+        // Clear the boot signature out of the latches so we can
+        // observe the SMP rewriting them.
+        let mut ports = smp::state::ApuPorts {
+            cpu_to_smp: [0; 4],
+            smp_to_cpu: [0; 4],
+        };
+        let mut steps = 0u32;
+        let max_steps = 50_000u32;
+        let signature_emitted = loop {
+            {
+                let mut bus = smp::bus::IntegratedSmpBus {
+                    aram: &mut apu.aram,
+                    ipl: &apu.ipl.bytes,
+                    control: &mut apu.control,
+                    timers: &mut apu.timers,
+                    dsp: &mut apu.dsp,
+                    ports: &mut ports,
+                    cycles: &mut apu.cycles,
+                };
+                apu.smp.step(&mut bus);
+            }
+            steps += 1;
+            if ports.smp_to_cpu[0] == 0xAA && ports.smp_to_cpu[1] == 0xBB {
+                break true;
+            }
+            if steps >= max_steps {
+                break false;
+            }
+        };
+        assert!(
+            signature_emitted,
+            "IPL did not produce $AA $BB at $F4/$F5 within {} SMP \
+             instructions (took {} so far; PC=${:04X})",
+            max_steps, steps, apu.smp.pc
+        );
+    }
+
+    #[test]
     fn cpu_to_smp_mailbox_handoff_through_shared_apu_ports() {
         // CPU writes to the shared mailbox, then the SMP bus reads
         // the same byte. Locks in that LoRomBus and IntegratedSmpBus
