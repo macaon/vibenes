@@ -1361,6 +1361,116 @@ fn dec_abs_five_cycles() {
     assert!(smp.psw.z);
 }
 
+// ----- Shifts and rotates ---------------------------------------------
+//
+// ASL/LSR set C from the bit shifted out; ROL/ROR rotate C through.
+// All four set N/Z from the result; V/H must survive untouched.
+// Cycle counts: A=2, dp=4, dp+X=5, !abs=5.
+
+#[test]
+fn asl_a_high_bit_to_carry_two_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x81;
+    smp.psw.v = true;
+    smp.psw.h = true;
+    let cycles = run_one(&mut smp, &mut bus, &[0x1C]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0x02);
+    assert!(smp.psw.c);
+    assert!(!smp.psw.n);
+    assert!(!smp.psw.z);
+    assert!(smp.psw.v, "ASL must not touch V");
+    assert!(smp.psw.h, "ASL must not touch H");
+}
+
+#[test]
+fn asl_dp_writes_back_in_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x40);
+    let cycles = run_one(&mut smp, &mut bus, &[0x0B, 0x20]);
+    assert_eq!(cycles, 4);
+    assert_eq!(bus.peek(0x0020), 0x80);
+    assert!(smp.psw.n);
+    assert!(!smp.psw.c);
+}
+
+#[test]
+fn lsr_a_low_bit_to_carry_clears_n() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x81;
+    smp.psw.n = true; // ensure LSR clears it (high bit shifts in as 0)
+    let cycles = run_one(&mut smp, &mut bus, &[0x5C]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0x40);
+    assert!(smp.psw.c);
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn lsr_a_zero_result_sets_z() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x01;
+    let cycles = run_one(&mut smp, &mut bus, &[0x5C]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.c);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn rol_a_rotates_through_carry() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x80;
+    smp.psw.c = true;
+    let cycles = run_one(&mut smp, &mut bus, &[0x3C]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0x01, "old C rotated into bit 0");
+    assert!(smp.psw.c, "old bit 7 is the new C");
+}
+
+#[test]
+fn ror_a_rotates_through_carry() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x01;
+    smp.psw.c = true;
+    let cycles = run_one(&mut smp, &mut bus, &[0x7C]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0x80, "old C rotated into bit 7");
+    assert!(smp.psw.c, "old bit 0 is the new C");
+    assert!(smp.psw.n);
+}
+
+#[test]
+fn rol_dp_plus_x_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x05;
+    smp.psw.c = false;
+    bus.poke(0x0025, 0xAA);
+    let cycles = run_one(&mut smp, &mut bus, &[0x3B, 0x20]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x0025), 0x54);
+    assert!(smp.psw.c);
+}
+
+#[test]
+fn ror_abs_five_cycles_writes_back() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = false;
+    bus.poke(0x1234, 0x05);
+    let cycles = run_one(&mut smp, &mut bus, &[0x6C, 0x34, 0x12]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x1234), 0x02);
+    assert!(smp.psw.c);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

@@ -406,6 +406,24 @@ impl Smp {
             0x9B => self.op_dec_dp_plus_x(bus),
             0x8C => self.op_dec_abs(bus),
 
+            // --- Shifts and rotates (RMW for memory forms) ---
+            0x1C => self.op_asl_a(bus),
+            0x0B => self.op_asl_dp(bus),
+            0x1B => self.op_asl_dp_plus_x(bus),
+            0x0C => self.op_asl_abs(bus),
+            0x5C => self.op_lsr_a(bus),
+            0x4B => self.op_lsr_dp(bus),
+            0x5B => self.op_lsr_dp_plus_x(bus),
+            0x4C => self.op_lsr_abs(bus),
+            0x3C => self.op_rol_a(bus),
+            0x2B => self.op_rol_dp(bus),
+            0x3B => self.op_rol_dp_plus_x(bus),
+            0x2C => self.op_rol_abs(bus),
+            0x7C => self.op_ror_a(bus),
+            0x6B => self.op_ror_dp(bus),
+            0x7B => self.op_ror_dp_plus_x(bus),
+            0x6C => self.op_ror_abs(bus),
+
             // --- Immediate loads ---
             0xE8 => self.op_mov_a_imm(bus),
             0xCD => self.op_mov_x_imm(bus),
@@ -748,6 +766,143 @@ impl Smp {
         let v = bus.read(addr).wrapping_sub(1);
         self.set_nz(v);
         bus.write(addr, v);
+    }
+
+    // ----- Shifts and rotates -----------------------------------------
+    //
+    // ASL: C <- bit 7, result = v << 1.            N/Z from result.
+    // LSR: C <- bit 0, result = v >> 1.            N=0, Z from result.
+    // ROL: C_new <- bit 7, result = (v<<1)|C_old.  N/Z from result.
+    // ROR: C_new <- bit 0, result = (v>>1)|C_old<<7. N/Z from result.
+    // V and H are preserved across all four. Cycle counts:
+    //   *A    - 2 (opcode + idle)
+    //   *dp   - 4 (opcode + dp_fetch + read + write)
+    //   *dp+X - 5 (RMW + idle for X-add)
+    //   *!abs - 5 (opcode + lo + hi + read + write)
+
+    fn asl_byte(&mut self, v: u8) -> u8 {
+        self.psw.c = (v & 0x80) != 0;
+        let r = v << 1;
+        self.set_nz(r);
+        r
+    }
+    fn lsr_byte(&mut self, v: u8) -> u8 {
+        self.psw.c = (v & 0x01) != 0;
+        let r = v >> 1;
+        self.set_nz(r);
+        r
+    }
+    fn rol_byte(&mut self, v: u8) -> u8 {
+        let new_c = (v & 0x80) != 0;
+        let old_c = self.psw.c as u8;
+        let r = (v << 1) | old_c;
+        self.psw.c = new_c;
+        self.set_nz(r);
+        r
+    }
+    fn ror_byte(&mut self, v: u8) -> u8 {
+        let new_c = (v & 0x01) != 0;
+        let old_c = if self.psw.c { 0x80 } else { 0 };
+        let r = (v >> 1) | old_c;
+        self.psw.c = new_c;
+        self.set_nz(r);
+        r
+    }
+
+    // ASL
+    fn op_asl_a(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        self.a = self.asl_byte(self.a);
+    }
+    fn op_asl_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        let r = self.asl_byte(v);
+        self.write_dp(bus, dp, r);
+    }
+    fn op_asl_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        let r = self.asl_byte(v);
+        bus.write(addr, r);
+    }
+    fn op_asl_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        let r = self.asl_byte(v);
+        bus.write(addr, r);
+    }
+
+    // LSR
+    fn op_lsr_a(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        self.a = self.lsr_byte(self.a);
+    }
+    fn op_lsr_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        let r = self.lsr_byte(v);
+        self.write_dp(bus, dp, r);
+    }
+    fn op_lsr_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        let r = self.lsr_byte(v);
+        bus.write(addr, r);
+    }
+    fn op_lsr_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        let r = self.lsr_byte(v);
+        bus.write(addr, r);
+    }
+
+    // ROL
+    fn op_rol_a(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        self.a = self.rol_byte(self.a);
+    }
+    fn op_rol_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        let r = self.rol_byte(v);
+        self.write_dp(bus, dp, r);
+    }
+    fn op_rol_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        let r = self.rol_byte(v);
+        bus.write(addr, r);
+    }
+    fn op_rol_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        let r = self.rol_byte(v);
+        bus.write(addr, r);
+    }
+
+    // ROR
+    fn op_ror_a(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        self.a = self.ror_byte(self.a);
+    }
+    fn op_ror_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        let r = self.ror_byte(v);
+        self.write_dp(bus, dp, r);
+    }
+    fn op_ror_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        let r = self.ror_byte(v);
+        bus.write(addr, r);
+    }
+    fn op_ror_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        let r = self.ror_byte(v);
+        bus.write(addr, r);
     }
 
     // ----- Immediate loads (2 cycles each) ----------------------------
