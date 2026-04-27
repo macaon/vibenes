@@ -32,6 +32,7 @@
 
 pub mod bus;
 pub mod dsp;
+pub mod harness;
 pub mod ipl;
 pub mod state;
 
@@ -1650,23 +1651,25 @@ impl Smp {
     // ----- BRK + indexed indirect JMP --------------------------------
 
     fn op_brk(&mut self, bus: &mut impl SmpBus) {
-        // BRK - 8 cycles. Push PC (next-instruction), push PSW with B
-        // set, set I=0, clear B in the live PSW (per Anomie: B is
-        // pushed but the running CPU keeps it 0), jump to vector at
-        // $FFDE. Mesen2's `Brk` does the same vector ($FFDE = TCALL 0).
+        // BRK - 8 cycles. Per higan `instructionBreak`
+        // (component/processor/spc700/instructions.cpp:148):
+        //   read(PC); push PCH; push PCL; push P; idle();
+        //   PC = read(0xFFDE) | (read(0xFFDF) << 8);
+        //   IF = 0;  BF = 1;
+        // The live B flag is SET on entry (not just the pushed copy),
+        // which RTI-equivalent paths can later observe. My earlier
+        // implementation cleared it, which is a spec violation; this
+        // is the corrected version.
         bus.idle();
         let return_pc = self.pc;
         self.push16(bus, return_pc);
-        let mut psw_pushed = self.psw.pack();
-        psw_pushed |= 0x10; // B flag in pushed copy
+        self.psw.b = true;
+        let psw_pushed = self.psw.pack();
         self.push8(bus, psw_pushed);
         bus.idle();
         let lo = bus.read(0xFFDE) as u16;
         let hi = bus.read(0xFFDF) as u16;
         self.pc = (hi << 8) | lo;
-        // Live flags: clear I (per Anomie), keep B as-is (B is a
-        // pushed-only flag; the running CPU does not have a separate
-        // B bit beyond what `pack`/`unpack` round-trip).
         self.psw.i = false;
     }
 
