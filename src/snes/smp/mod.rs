@@ -32,6 +32,7 @@
 
 pub mod bus;
 pub mod ipl;
+pub mod state;
 
 #[cfg(test)]
 mod tests;
