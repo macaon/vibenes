@@ -20,6 +20,8 @@
 
 pub mod brr;
 pub mod envelope;
+pub mod mixer;
+pub mod voice;
 pub mod voice_sampler;
 
 /// Per-voice register offsets within an `$X0`-`$X9` block. Voice `i`'s
