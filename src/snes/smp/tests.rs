@@ -1757,6 +1757,179 @@ fn div_ya_x_h_flag_from_low_nibbles() {
     assert!(smp.psw.h, "(Y&0xF=5) >= (X&0xF=2) -> H set");
 }
 
+// ----- Bit operations -------------------------------------------------
+//
+// SET1/CLR1 dp.bit are 4-cycle RMW with no flag updates. TSET1/TCLR1
+// !abs (6 cycles) compare A vs mem (set N/Z from A-mem, no C/V/H)
+// then OR / AND-NOT A into mem. The carry-bit family (AND1/OR1/EOR1/
+// MOV1/NOT1) uses a 13/3-split absolute address: low 13 bits are
+// addr, high 3 bits are bit#.
+
+#[test]
+fn set1_dp_sets_chosen_bit_no_flags() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.n = false;
+    smp.psw.z = false;
+    bus.poke(0x0020, 0x00);
+    let cycles = run_one(&mut smp, &mut bus, &[0x02, 0x20]); // SET1 dp.0
+    assert_eq!(cycles, 4);
+    assert_eq!(bus.peek(0x0020), 0x01);
+    assert!(!smp.psw.n, "SET1 must not touch N");
+    assert!(!smp.psw.z, "SET1 must not touch Z");
+}
+
+#[test]
+fn set1_dp_for_bit_seven() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x00);
+    let cycles = run_one(&mut smp, &mut bus, &[0xE2, 0x20]); // SET1 dp.7
+    assert_eq!(cycles, 4);
+    assert_eq!(bus.peek(0x0020), 0x80);
+}
+
+#[test]
+fn clr1_dp_clears_chosen_bit_only() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0xFF);
+    let cycles = run_one(&mut smp, &mut bus, &[0x52, 0x20]); // CLR1 dp.2
+    assert_eq!(cycles, 4);
+    assert_eq!(bus.peek(0x0020), 0xFB, "only bit 2 cleared");
+}
+
+#[test]
+fn tset1_abs_sets_nz_from_a_minus_mem_then_ors_a() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x80;
+    smp.psw.c = true; // C must survive
+    bus.poke(0x1234, 0x01);
+    let cycles = run_one(&mut smp, &mut bus, &[0x0E, 0x34, 0x12]);
+    assert_eq!(cycles, 6);
+    assert_eq!(bus.peek(0x1234), 0x81, "A | mem written back");
+    // A - mem = 0x80 - 0x01 = 0x7F -> N=0, Z=0
+    assert!(!smp.psw.n);
+    assert!(!smp.psw.z);
+    assert!(smp.psw.c, "TSET1 must not touch C");
+}
+
+#[test]
+fn tset1_abs_z_set_when_a_equals_mem() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x42;
+    bus.poke(0x1234, 0x42);
+    let _ = run_one(&mut smp, &mut bus, &[0x0E, 0x34, 0x12]);
+    assert_eq!(bus.peek(0x1234), 0x42); // unchanged after OR
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn tclr1_abs_and_not_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x0F;
+    bus.poke(0x1234, 0xFF);
+    let cycles = run_one(&mut smp, &mut bus, &[0x4E, 0x34, 0x12]);
+    assert_eq!(cycles, 6);
+    assert_eq!(bus.peek(0x1234), 0xF0, "A bits cleared from mem");
+    // A - mem = 0x0F - 0xFF = 0x10 (with borrow) -> N=0
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn and1_c_bit_keeps_c_only_when_both_set() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = true;
+    // Operand: bit=5, addr=0x1234. Encoded: (5 << 13) | 0x1234 = 0xB234.
+    bus.poke(0x1234, 0b0010_0000); // bit 5 set
+    let cycles = run_one(&mut smp, &mut bus, &[0x4A, 0x34, 0xB2]);
+    assert_eq!(cycles, 4);
+    assert!(smp.psw.c, "C(1) & bit5(1) = 1");
+
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = true;
+    bus.poke(0x1234, 0b0000_0000); // bit 5 clear
+    let _ = run_one(&mut smp, &mut bus, &[0x4A, 0x34, 0xB2]);
+    assert!(!smp.psw.c, "C(1) & bit5(0) = 0");
+}
+
+#[test]
+fn and1_c_notbit_inverts_memory_bit() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = true;
+    bus.poke(0x1234, 0b0010_0000); // bit 5 set -> /bit = 0
+    let cycles = run_one(&mut smp, &mut bus, &[0x6A, 0x34, 0xB2]);
+    assert_eq!(cycles, 4);
+    assert!(!smp.psw.c);
+}
+
+#[test]
+fn or1_c_bit_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = false;
+    bus.poke(0x1234, 0b0010_0000);
+    let cycles = run_one(&mut smp, &mut bus, &[0x0A, 0x34, 0xB2]);
+    assert_eq!(cycles, 5);
+    assert!(smp.psw.c);
+}
+
+#[test]
+fn eor1_c_bit_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = true;
+    bus.poke(0x1234, 0b0010_0000);
+    let cycles = run_one(&mut smp, &mut bus, &[0x8A, 0x34, 0xB2]);
+    assert_eq!(cycles, 5);
+    assert!(!smp.psw.c, "1 ^ 1 = 0");
+}
+
+#[test]
+fn not1_bit_five_cycles_rmw() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x1234, 0b0010_0000);
+    let cycles = run_one(&mut smp, &mut bus, &[0xEA, 0x34, 0xB2]);
+    assert_eq!(cycles, 5);
+    assert_eq!(bus.peek(0x1234), 0b0000_0000);
+}
+
+#[test]
+fn mov1_c_bit_loads_into_carry() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = false;
+    bus.poke(0x1234, 0b0010_0000);
+    let cycles = run_one(&mut smp, &mut bus, &[0xAA, 0x34, 0xB2]);
+    assert_eq!(cycles, 4);
+    assert!(smp.psw.c);
+}
+
+#[test]
+fn mov1_bit_c_writes_carry_to_memory_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = true;
+    bus.poke(0x1234, 0xFF); // all bits set; we'll set bit 5 but it's already 1
+    let cycles = run_one(&mut smp, &mut bus, &[0xCA, 0x34, 0xB2]);
+    assert_eq!(cycles, 6);
+    assert_eq!(bus.peek(0x1234), 0xFF);
+
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.psw.c = false;
+    bus.poke(0x1234, 0xFF);
+    let _ = run_one(&mut smp, &mut bus, &[0xCA, 0x34, 0xB2]);
+    assert_eq!(bus.peek(0x1234), 0xDF, "bit 5 cleared by C=0");
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

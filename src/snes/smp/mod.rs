@@ -410,6 +410,38 @@ impl Smp {
             0xCF => self.op_mul_ya(bus),
             0x9E => self.op_div_ya_x(bus),
 
+            // --- SET1 / CLR1 dp.bit (16 opcodes) ---
+            0x02 => self.op_set1_dp(bus, 0),
+            0x22 => self.op_set1_dp(bus, 1),
+            0x42 => self.op_set1_dp(bus, 2),
+            0x62 => self.op_set1_dp(bus, 3),
+            0x82 => self.op_set1_dp(bus, 4),
+            0xA2 => self.op_set1_dp(bus, 5),
+            0xC2 => self.op_set1_dp(bus, 6),
+            0xE2 => self.op_set1_dp(bus, 7),
+            0x12 => self.op_clr1_dp(bus, 0),
+            0x32 => self.op_clr1_dp(bus, 1),
+            0x52 => self.op_clr1_dp(bus, 2),
+            0x72 => self.op_clr1_dp(bus, 3),
+            0x92 => self.op_clr1_dp(bus, 4),
+            0xB2 => self.op_clr1_dp(bus, 5),
+            0xD2 => self.op_clr1_dp(bus, 6),
+            0xF2 => self.op_clr1_dp(bus, 7),
+
+            // --- TSET1 / TCLR1 !abs ---
+            0x0E => self.op_tset1_abs(bus),
+            0x4E => self.op_tclr1_abs(bus),
+
+            // --- Carry/memory bit ops (13/3 split address) ---
+            0x4A => self.op_and1_c_bit(bus),
+            0x6A => self.op_and1_c_notbit(bus),
+            0x0A => self.op_or1_c_bit(bus),
+            0x2A => self.op_or1_c_notbit(bus),
+            0x8A => self.op_eor1_c_bit(bus),
+            0xEA => self.op_not1_bit(bus),
+            0xAA => self.op_mov1_c_bit(bus),
+            0xCA => self.op_mov1_bit_c(bus),
+
             // --- 16-bit YA word ops ---
             0xBA => self.op_movw_ya_dp(bus),
             0xDA => self.op_movw_dp_ya(bus),
@@ -1055,6 +1087,113 @@ impl Smp {
         self.y = (result >> 8) as u8;
         self.psw.n = (self.y & 0x80) != 0;
         self.psw.z = self.y == 0;
+    }
+
+    // ----- Bit operations ---------------------------------------------
+    //
+    // SET1 / CLR1 dp.bit are 4-cycle RMW ops on a single bit of a
+    // direct-page byte; no flag updates. Bit number is encoded in
+    // bits 5-7 of the opcode (we pass it explicitly for clarity).
+    //
+    // TSET1 / TCLR1 !abs (6 cycles) compare A against the memory
+    // value (set N/Z from `A - mem`, like CMP but without C/V/H),
+    // then OR / AND-NOT A into the memory location. Includes a
+    // dummy read between read and write.
+    //
+    // The remaining bit ops use a 13/3-split absolute address: the
+    // 16-bit operand encodes addr in bits 0-12 and bit# in bits
+    // 13-15. They operate on PSW.C with one bit of memory.
+
+    fn fetch_bit_addr(&mut self, bus: &mut impl SmpBus) -> (u16, u8) {
+        let lo = self.fetch_u8(bus) as u16;
+        let hi = self.fetch_u8(bus) as u16;
+        let combined = (hi << 8) | lo;
+        (combined & 0x1FFF, ((combined >> 13) & 0x07) as u8)
+    }
+
+    fn op_set1_dp(&mut self, bus: &mut impl SmpBus, bit: u8) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.write_dp(bus, dp, v | (1 << bit));
+    }
+
+    fn op_clr1_dp(&mut self, bus: &mut impl SmpBus, bit: u8) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.write_dp(bus, dp, v & !(1 << bit));
+    }
+
+    fn op_tset1_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let data = bus.read(addr);
+        let cmp = self.a.wrapping_sub(data);
+        self.set_nz(cmp);
+        let _ = bus.read(addr); // dummy read
+        bus.write(addr, data | self.a);
+    }
+
+    fn op_tclr1_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let data = bus.read(addr);
+        let cmp = self.a.wrapping_sub(data);
+        self.set_nz(cmp);
+        let _ = bus.read(addr); // dummy read
+        bus.write(addr, data & !self.a);
+    }
+
+    fn op_and1_c_bit(&mut self, bus: &mut impl SmpBus) {
+        let (addr, bit) = self.fetch_bit_addr(bus);
+        let data = bus.read(addr);
+        self.psw.c = self.psw.c && ((data >> bit) & 1) != 0;
+    }
+
+    fn op_and1_c_notbit(&mut self, bus: &mut impl SmpBus) {
+        let (addr, bit) = self.fetch_bit_addr(bus);
+        let data = bus.read(addr);
+        self.psw.c = self.psw.c && ((data >> bit) & 1) == 0;
+    }
+
+    fn op_or1_c_bit(&mut self, bus: &mut impl SmpBus) {
+        let (addr, bit) = self.fetch_bit_addr(bus);
+        let data = bus.read(addr);
+        bus.idle();
+        self.psw.c = self.psw.c || ((data >> bit) & 1) != 0;
+    }
+
+    fn op_or1_c_notbit(&mut self, bus: &mut impl SmpBus) {
+        let (addr, bit) = self.fetch_bit_addr(bus);
+        let data = bus.read(addr);
+        bus.idle();
+        self.psw.c = self.psw.c || ((data >> bit) & 1) == 0;
+    }
+
+    fn op_eor1_c_bit(&mut self, bus: &mut impl SmpBus) {
+        let (addr, bit) = self.fetch_bit_addr(bus);
+        let data = bus.read(addr);
+        bus.idle();
+        let mem_bit = ((data >> bit) & 1) != 0;
+        self.psw.c ^= mem_bit;
+    }
+
+    fn op_not1_bit(&mut self, bus: &mut impl SmpBus) {
+        let (addr, bit) = self.fetch_bit_addr(bus);
+        let data = bus.read(addr);
+        bus.write(addr, data ^ (1 << bit));
+    }
+
+    fn op_mov1_c_bit(&mut self, bus: &mut impl SmpBus) {
+        let (addr, bit) = self.fetch_bit_addr(bus);
+        let data = bus.read(addr);
+        self.psw.c = ((data >> bit) & 1) != 0;
+    }
+
+    fn op_mov1_bit_c(&mut self, bus: &mut impl SmpBus) {
+        let (addr, bit) = self.fetch_bit_addr(bus);
+        let data = bus.read(addr);
+        bus.idle();
+        let mask = 1 << bit;
+        let new = (data & !mask) | (if self.psw.c { mask } else { 0 });
+        bus.write(addr, new);
     }
 
     fn op_div_ya_x(&mut self, bus: &mut impl SmpBus) {
