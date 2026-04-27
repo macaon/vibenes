@@ -543,6 +543,9 @@ impl Smp {
             0x7F => self.op_reti(bus),
             0x3F => self.op_call_abs(bus),
             0x4F => self.op_pcall(bus),
+            0xDF => self.op_daa(bus),
+            0xBE => self.op_das(bus),
+            0x9F => self.op_xcn(bus),
 
             // --- TCALL n (16 ops) ---
             0x01 => self.op_tcall(bus, 0),
@@ -1592,6 +1595,53 @@ impl Smp {
         self.pc = self.pop16(bus);
         bus.idle();
         bus.idle();
+    }
+
+    // ----- DAA / DAS / XCN --------------------------------------------
+    //
+    // DAA A ($DF, 3 cycles): decimal adjust after BCD addition. If the
+    //   pre-DAA A was > 0x99 or C is set, add 0x60 and set C. Then if
+    //   the (post-correction) low nibble is > 9 or H is set, add 0x06.
+    //   N/Z reflect the final A. C may be promoted to 1; never cleared.
+    // DAS A ($BE, 3 cycles): mirror for subtraction. Subtract 0x60 if
+    //   A > 0x99 or C is clear, then -0x06 if low nibble > 9 or H clear.
+    //   C may be cleared to 0; never set.
+    // XCN A ($9F, 5 cycles): exchange high and low nibbles of A
+    //   (((A&0x0F)<<4) | (A>>4)). Sets N/Z; leaves C/V/H untouched.
+
+    fn op_daa(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        bus.idle();
+        if self.psw.c || self.a > 0x99 {
+            self.a = self.a.wrapping_add(0x60);
+            self.psw.c = true;
+        }
+        if self.psw.h || (self.a & 0x0F) > 9 {
+            self.a = self.a.wrapping_add(0x06);
+        }
+        self.set_nz(self.a);
+    }
+
+    fn op_das(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        bus.idle();
+        if !self.psw.c || self.a > 0x99 {
+            self.a = self.a.wrapping_sub(0x60);
+            self.psw.c = false;
+        }
+        if !self.psw.h || (self.a & 0x0F) > 9 {
+            self.a = self.a.wrapping_sub(0x06);
+        }
+        self.set_nz(self.a);
+    }
+
+    fn op_xcn(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        bus.idle();
+        bus.idle();
+        bus.idle();
+        self.a = (self.a >> 4) | (self.a << 4);
+        self.set_nz(self.a);
     }
 
     // ----- ADC family --------------------------------------------------

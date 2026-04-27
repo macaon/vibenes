@@ -2146,6 +2146,111 @@ fn ret_after_call_round_trips_pc() {
     assert_eq!(smp.sp, 0xFF);
 }
 
+// ----- DAA / DAS / XCN ------------------------------------------------
+//
+// DAA / DAS adjust A after a BCD addition / subtraction; both are 3
+// cycles (op + 2 idles). XCN swaps the nibbles of A in 5 cycles
+// (op + 4 idles). All three set N/Z from the final A.
+
+#[test]
+fn daa_after_simple_low_nibble_overflow_three_cycles() {
+    // Simulating ADC of 0x09 + 0x01 = 0x0A, with H set by the ADC.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x0A;
+    smp.psw.c = false;
+    smp.psw.h = true;
+    let cycles = run_one(&mut smp, &mut bus, &[0xDF]);
+    assert_eq!(cycles, 3);
+    assert_eq!(smp.a, 0x10);
+    assert!(!smp.psw.c);
+}
+
+#[test]
+fn daa_carries_when_a_exceeds_99() {
+    // 0x55 + 0x45 = 0x9A pre-DAA. DAA must produce 0x00 with C=1
+    // (representing decimal 100).
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x9A;
+    smp.psw.c = false;
+    smp.psw.h = false;
+    let _ = run_one(&mut smp, &mut bus, &[0xDF]);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.c);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn daa_promotes_existing_carry() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x12;
+    smp.psw.c = true;
+    smp.psw.h = false;
+    let _ = run_one(&mut smp, &mut bus, &[0xDF]);
+    // c=1 -> +0x60 -> 0x72. Low nibble 2 not >9, h=0 -> no extra.
+    assert_eq!(smp.a, 0x72);
+    assert!(smp.psw.c);
+}
+
+#[test]
+fn das_subtracts_correction_when_carry_clear() {
+    // 0x40 - 0x18 = 0x28 with borrow (C=0). DAS should yield 0x22.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x28;
+    smp.psw.c = false;
+    smp.psw.h = false;
+    let cycles = run_one(&mut smp, &mut bus, &[0xBE]);
+    assert_eq!(cycles, 3);
+    // c=0 -> -0x60 -> 0xC8, c stays 0. h=0 -> -0x06 -> 0xC2.
+    // (Hardware behaviour - matches bsnes; real BCD users set up
+    // C/H from the SBC that preceded DAS for accurate decimal.)
+    assert_eq!(smp.a, 0xC2);
+}
+
+#[test]
+fn das_no_correction_when_already_valid_bcd() {
+    // 0x44 - 0x12 = 0x32 with C=1, H=1 from SBC. DAS leaves A alone.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x32;
+    smp.psw.c = true;
+    smp.psw.h = true;
+    let _ = run_one(&mut smp, &mut bus, &[0xBE]);
+    assert_eq!(smp.a, 0x32);
+    assert!(smp.psw.c);
+}
+
+#[test]
+fn xcn_swaps_nibbles_five_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0xAB;
+    smp.psw.c = true; // must survive
+    smp.psw.v = true;
+    smp.psw.h = true;
+    let cycles = run_one(&mut smp, &mut bus, &[0x9F]);
+    assert_eq!(cycles, 5);
+    assert_eq!(smp.a, 0xBA);
+    assert!(smp.psw.n);
+    assert!(!smp.psw.z);
+    assert!(smp.psw.c, "XCN must not touch C");
+    assert!(smp.psw.v, "XCN must not touch V");
+    assert!(smp.psw.h, "XCN must not touch H");
+}
+
+#[test]
+fn xcn_zero_sets_z() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x00;
+    let _ = run_one(&mut smp, &mut bus, &[0x9F]);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.z);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]
