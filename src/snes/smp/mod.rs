@@ -406,6 +406,10 @@ impl Smp {
             0x9B => self.op_dec_dp_plus_x(bus),
             0x8C => self.op_dec_abs(bus),
 
+            // --- MUL / DIV ---
+            0xCF => self.op_mul_ya(bus),
+            0x9E => self.op_div_ya_x(bus),
+
             // --- 16-bit YA word ops ---
             0xBA => self.op_movw_ya_dp(bus),
             0xDA => self.op_movw_dp_ya(bus),
@@ -1025,6 +1029,60 @@ impl Smp {
         result = result.wrapping_add(hi << 8);
         self.set_nz16(result);
         self.write_dp(bus, dp.wrapping_add(1), (result >> 8) as u8);
+    }
+
+    // ----- MUL YA / DIV YA, X -----------------------------------------
+    //
+    // MUL YA ($CF, 9 cycles): YA = Y * A unsigned. Sets N/Z from the
+    // high byte (Y) only - quirk: a result like 0x0001 sets Z=1
+    // because Y is zero (per Mesen2 `Mul` and Anomie's notes).
+    //
+    // DIV YA, X ($9E, 12 cycles): A = YA / X (quotient), Y = YA % X
+    // (remainder). Hardware uses an iterative 9-step shift-subtract;
+    // we port Mesen2's loop verbatim. V is set when Y >= X (result
+    // would not fit in 8 bits), H when (Y & 0xF) >= (X & 0xF). N/Z
+    // come from the resulting A. The /512 quirk: when V is set the
+    // returned quotient/remainder come out of the loop's collision
+    // case rather than a true division - this is the SPC700's exact
+    // observable behaviour and games depend on it.
+
+    fn op_mul_ya(&mut self, bus: &mut impl SmpBus) {
+        for _ in 0..8 {
+            bus.idle();
+        }
+        let result = (self.y as u16) * (self.a as u16);
+        self.a = result as u8;
+        self.y = (result >> 8) as u8;
+        self.psw.n = (self.y & 0x80) != 0;
+        self.psw.z = self.y == 0;
+    }
+
+    fn op_div_ya_x(&mut self, bus: &mut impl SmpBus) {
+        for _ in 0..11 {
+            bus.idle();
+        }
+        let ya = self.ya_word() as i32;
+        let x_u8 = self.x;
+        let y_u8 = self.y;
+        let x = x_u8 as i32;
+        self.psw.v = y_u8 >= x_u8;
+        self.psw.h = (y_u8 & 0x0F) >= (x_u8 & 0x0F);
+        if (y_u8 as i32) < (x << 1) {
+            // y_u8 < 2x implies x > 0 (else 0 < 0 is false), so /x is safe.
+            self.a = (ya / x) as u8;
+            self.y = (ya % x) as u8;
+        } else {
+            // The /512 quirk: when V is set the SPC700 emits a closed-
+            // form approximation rather than performing true division.
+            // Bsnes-plus's expression matches hardware exactly; games
+            // depend on this observable behaviour.
+            let denom = 256 - x;
+            let term = ya - (x << 9);
+            self.a = (0xFF - term.wrapping_div(denom)) as u8;
+            self.y = (x + term.wrapping_rem(denom)) as u8;
+        }
+        self.psw.n = (self.a & 0x80) != 0;
+        self.psw.z = self.a == 0;
     }
 
     // ----- Immediate loads (2 cycles each) ----------------------------

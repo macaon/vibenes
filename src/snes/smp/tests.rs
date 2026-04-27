@@ -1641,6 +1641,122 @@ fn decw_dp_six_cycles_borrows_into_high_byte() {
     assert!(!smp.psw.n);
 }
 
+// ----- MUL / DIV ------------------------------------------------------
+//
+// MUL YA: 9 cycles (op + 8 idles). YA = Y*A unsigned. N/Z reflect the
+// HIGH byte (Y) only - 0x0001 sets Z because Y is zero. DIV YA,X:
+// 12 cycles (op + 11 idles). A = YA/X, Y = YA%X. V is set when Y>=X
+// (result would not fit in 8 bits) - the bsnes /512 closed form
+// then provides the SPC700-faithful quotient/remainder.
+
+#[test]
+fn mul_ya_simple_product_nine_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x12;
+    smp.a = 0x34;
+    let cycles = run_one(&mut smp, &mut bus, &[0xCF]);
+    assert_eq!(cycles, 9);
+    // 0x12 * 0x34 = 0x03A8
+    assert_eq!(smp.a, 0xA8);
+    assert_eq!(smp.y, 0x03);
+    assert!(!smp.psw.n);
+    assert!(!smp.psw.z);
+}
+
+#[test]
+fn mul_ya_zero_high_byte_sets_z_quirk() {
+    // 0x01 * 0x01 = 0x0001. Y=0, A=1. SPC700 quirk: Z is set from Y
+    // only, so Z=1 here even though the full product is non-zero.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x01;
+    smp.a = 0x01;
+    let cycles = run_one(&mut smp, &mut bus, &[0xCF]);
+    assert_eq!(cycles, 9);
+    assert_eq!(smp.y, 0x00);
+    assert_eq!(smp.a, 0x01);
+    assert!(smp.psw.z, "MUL Z reflects Y only");
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn mul_ya_sets_n_when_high_byte_negative() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0xFF;
+    smp.a = 0xFF;
+    let _ = run_one(&mut smp, &mut bus, &[0xCF]);
+    // 0xFF * 0xFF = 0xFE01
+    assert_eq!(smp.y, 0xFE);
+    assert_eq!(smp.a, 0x01);
+    assert!(smp.psw.n);
+}
+
+#[test]
+fn div_ya_x_simple_twelve_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x00;
+    smp.a = 0x06;
+    smp.x = 0x03;
+    let cycles = run_one(&mut smp, &mut bus, &[0x9E]);
+    assert_eq!(cycles, 12);
+    assert_eq!(smp.a, 0x02);
+    assert_eq!(smp.y, 0x00);
+    assert!(!smp.psw.v);
+    assert!(!smp.psw.h);
+    assert!(!smp.psw.n);
+    assert!(!smp.psw.z);
+}
+
+#[test]
+fn div_ya_x_zero_quotient_sets_z() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x00;
+    smp.a = 0x07;
+    smp.x = 0x10;
+    let _ = run_one(&mut smp, &mut bus, &[0x9E]);
+    assert_eq!(smp.a, 0x00);
+    assert_eq!(smp.y, 0x07);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn div_ya_x_v_flag_set_when_y_ge_x() {
+    // Y >= X means quotient won't fit in 8 bits.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x10;
+    smp.a = 0x00;
+    smp.x = 0x05;
+    let _ = run_one(&mut smp, &mut bus, &[0x9E]);
+    assert!(smp.psw.v, "Y(0x10) >= X(0x05) -> V");
+    assert!(!smp.psw.h, "(Y&0xF=0) < (X&0xF=5) -> H clear");
+}
+
+#[test]
+fn div_ya_x_h_flag_from_low_nibbles() {
+    // H is set when (Y & 0x0F) >= (X & 0x0F).
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x02;
+    smp.a = 0x00;
+    smp.x = 0x35;
+    let _ = run_one(&mut smp, &mut bus, &[0x9E]);
+    assert!(!smp.psw.v, "Y(2) < X(0x35) -> V clear");
+    assert!(!smp.psw.h, "(Y&0xF=2) < (X&0xF=5) -> H clear");
+
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x05;
+    smp.a = 0x00;
+    smp.x = 0x32;
+    let _ = run_one(&mut smp, &mut bus, &[0x9E]);
+    assert!(smp.psw.h, "(Y&0xF=5) >= (X&0xF=2) -> H set");
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]
