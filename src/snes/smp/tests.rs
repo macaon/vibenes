@@ -904,6 +904,254 @@ fn sbc_dp_imm_five_cycles() {
     assert_eq!(bus.peek(0x0020), 0x3B);
 }
 
+// ----- CMP family ------------------------------------------------------
+//
+// CMP only updates N/Z/C (NOT V or H - that's the SPC700 quirk that
+// distinguishes it from SBC). Carry: set when LHS >= RHS unsigned.
+// The tests lock in (a) the no-V/no-H behaviour, (b) cycle counts
+// per addressing mode, (c) operand ordering for the dp,dp / (X),(Y) /
+// dp,#imm forms.
+
+#[test]
+fn cmp_a_imm_equal_sets_z_and_c_clears_n() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x42;
+    let cycles = run_one(&mut smp, &mut bus, &[0x68, 0x42]);
+    assert_eq!(cycles, 2);
+    assert_eq!(smp.a, 0x42, "CMP must not modify A");
+    assert!(smp.psw.z);
+    assert!(smp.psw.c, "equal -> C set (LHS >= RHS)");
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn cmp_a_imm_lhs_greater_clears_z_sets_c() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x80;
+    run_one(&mut smp, &mut bus, &[0x68, 0x40]);
+    // 0x80 - 0x40 = 0x40
+    assert!(!smp.psw.z);
+    assert!(smp.psw.c);
+    assert!(!smp.psw.n);
+}
+
+#[test]
+fn cmp_a_imm_lhs_less_clears_c_sets_n() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    run_one(&mut smp, &mut bus, &[0x68, 0x80]);
+    // 0x10 - 0x80 = 0x90; result negative.
+    assert!(!smp.psw.z);
+    assert!(!smp.psw.c, "LHS < RHS -> C clear (borrow)");
+    assert!(smp.psw.n);
+}
+
+#[test]
+fn cmp_does_not_modify_v_or_h() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x80;
+    smp.psw.v = true;
+    smp.psw.h = true;
+    // CMP A,#$01 - 0x80-0x01 = 0x7F, would trip V if treated as SBC.
+    run_one(&mut smp, &mut bus, &[0x68, 0x01]);
+    assert!(smp.psw.v, "CMP must NOT clear pre-existing V");
+    assert!(smp.psw.h, "CMP must NOT clear pre-existing H");
+}
+
+#[test]
+fn cmp_a_dp_three_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x42;
+    bus.poke(0x0020, 0x42);
+    let cycles = run_one(&mut smp, &mut bus, &[0x64, 0x20]);
+    assert_eq!(cycles, 3);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn cmp_a_abs_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x42;
+    bus.poke(0x1234, 0x40);
+    let cycles = run_one(&mut smp, &mut bus, &[0x65, 0x34, 0x12]);
+    assert_eq!(cycles, 4);
+    assert!(smp.psw.c);
+    assert!(!smp.psw.z);
+}
+
+#[test]
+fn cmp_a_dp_x_direct_three_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x10;
+    smp.x = 0x05;
+    bus.poke(0x0005, 0x10);
+    let cycles = run_one(&mut smp, &mut bus, &[0x66]);
+    assert_eq!(cycles, 3);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn cmp_a_dp_plus_x_four_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x40;
+    smp.x = 0x05;
+    bus.poke(0x0025, 0x40);
+    let cycles = run_one(&mut smp, &mut bus, &[0x74, 0x20]);
+    assert_eq!(cycles, 4);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn cmp_a_abs_plus_x_and_abs_plus_y_five_cycles() {
+    for opcode in [0x75_u8, 0x76_u8] {
+        let mut bus = FlatSmpBus::new();
+        let mut smp = Smp::new();
+        smp.a = 0x42;
+        smp.x = 0x10;
+        smp.y = 0x10;
+        bus.poke(0x1244, 0x42);
+        let cycles = run_one(&mut smp, &mut bus, &[opcode, 0x34, 0x12]);
+        assert_eq!(cycles, 5, "opcode ${:02X}", opcode);
+        assert!(smp.psw.z);
+    }
+}
+
+#[test]
+fn cmp_a_dp_x_indirect_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x42;
+    smp.x = 0x02;
+    bus.poke(0x0022, 0x00);
+    bus.poke(0x0023, 0x12);
+    bus.poke(0x1200, 0x42);
+    let cycles = run_one(&mut smp, &mut bus, &[0x67, 0x20]);
+    assert_eq!(cycles, 6);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn cmp_a_dp_indirect_plus_y_six_cycles() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x42;
+    smp.y = 0x05;
+    bus.poke(0x0020, 0x00);
+    bus.poke(0x0021, 0x12);
+    bus.poke(0x1205, 0x42);
+    let cycles = run_one(&mut smp, &mut bus, &[0x77, 0x20]);
+    assert_eq!(cycles, 6);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn cmp_x_y_indirect_compares_x_against_y_does_not_modify_memory() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x10;
+    smp.y = 0x20;
+    bus.poke(0x0010, 0x42); // (X) value
+    bus.poke(0x0020, 0x42); // (Y) value
+    let cycles = run_one(&mut smp, &mut bus, &[0x79]);
+    assert_eq!(cycles, 5);
+    assert!(smp.psw.z, "(X) == (Y) -> Z set");
+    assert!(smp.psw.c);
+    assert_eq!(bus.peek(0x0010), 0x42, "CMP must not modify (X)");
+    assert_eq!(bus.peek(0x0020), 0x42, "CMP must not modify (Y)");
+}
+
+#[test]
+fn cmp_dp_dp_six_cycles_dst_minus_src() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0010, 0x40); // src
+    bus.poke(0x0020, 0x42); // dst (the LHS of the comparison)
+    // Stream: opcode src_dp dst_dp
+    let cycles = run_one(&mut smp, &mut bus, &[0x69, 0x10, 0x20]);
+    assert_eq!(cycles, 6);
+    assert!(smp.psw.c, "dst >= src -> C");
+    assert!(!smp.psw.z);
+    assert_eq!(bus.peek(0x0020), 0x42, "CMP must not modify dst");
+}
+
+#[test]
+fn cmp_dp_imm_five_cycles_dp_minus_imm() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x42);
+    // Stream: opcode imm dp -> CMP $20, #$42
+    let cycles = run_one(&mut smp, &mut bus, &[0x78, 0x42, 0x20]);
+    assert_eq!(cycles, 5);
+    assert!(smp.psw.z);
+    assert_eq!(bus.peek(0x0020), 0x42);
+}
+
+#[test]
+fn cmp_x_imm_dp_abs_cycle_counts() {
+    // CMP X,#imm = $C8 / 2 cycles
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x42;
+    let cycles = run_one(&mut smp, &mut bus, &[0xC8, 0x42]);
+    assert_eq!(cycles, 2);
+    assert!(smp.psw.z);
+
+    // CMP X,dp = $3E / 3 cycles
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x10;
+    bus.poke(0x0020, 0x05);
+    let cycles = run_one(&mut smp, &mut bus, &[0x3E, 0x20]);
+    assert_eq!(cycles, 3);
+    assert!(smp.psw.c);
+
+    // CMP X,!abs = $1E / 4 cycles
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x10;
+    bus.poke(0x1234, 0x10);
+    let cycles = run_one(&mut smp, &mut bus, &[0x1E, 0x34, 0x12]);
+    assert_eq!(cycles, 4);
+    assert!(smp.psw.z);
+}
+
+#[test]
+fn cmp_y_imm_dp_abs_cycle_counts() {
+    // CMP Y,#imm = $AD / 2 cycles
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x42;
+    let cycles = run_one(&mut smp, &mut bus, &[0xAD, 0x42]);
+    assert_eq!(cycles, 2);
+    assert!(smp.psw.z);
+
+    // CMP Y,dp = $7E / 3 cycles
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x10;
+    bus.poke(0x0020, 0x10);
+    let cycles = run_one(&mut smp, &mut bus, &[0x7E, 0x20]);
+    assert_eq!(cycles, 3);
+    assert!(smp.psw.z);
+
+    // CMP Y,!abs = $5E / 4 cycles
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x80;
+    bus.poke(0x1234, 0x80);
+    let cycles = run_one(&mut smp, &mut bus, &[0x5E, 0x34, 0x12]);
+    assert_eq!(cycles, 4);
+    assert!(smp.psw.z);
+}
+
 // ----- IPL ROM smoke test ---------------------------------------------
 
 #[test]

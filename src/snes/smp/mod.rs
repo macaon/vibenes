@@ -474,6 +474,30 @@ impl Smp {
             0xA9 => self.op_sbc_dp_dp(bus),
             0xB8 => self.op_sbc_dp_imm(bus),
 
+            // --- CMP A family (12 modes) ---
+            0x68 => self.op_cmp_a_imm(bus),
+            0x64 => self.op_cmp_a_dp(bus),
+            0x65 => self.op_cmp_a_abs(bus),
+            0x66 => self.op_cmp_a_dp_x_direct(bus),
+            0x74 => self.op_cmp_a_dp_plus_x(bus),
+            0x75 => self.op_cmp_a_abs_plus_x(bus),
+            0x76 => self.op_cmp_a_abs_plus_y(bus),
+            0x67 => self.op_cmp_a_dp_x_indirect(bus),
+            0x77 => self.op_cmp_a_dp_indirect_plus_y(bus),
+            0x79 => self.op_cmp_x_indirect_y_indirect(bus),
+            0x69 => self.op_cmp_dp_dp(bus),
+            0x78 => self.op_cmp_dp_imm(bus),
+
+            // --- CMP X (3 modes) ---
+            0xC8 => self.op_cmp_x_imm(bus),
+            0x3E => self.op_cmp_x_dp(bus),
+            0x1E => self.op_cmp_x_abs(bus),
+
+            // --- CMP Y (3 modes) ---
+            0xAD => self.op_cmp_y_imm(bus),
+            0x7E => self.op_cmp_y_dp(bus),
+            0x5E => self.op_cmp_y_abs(bus),
+
             other => panic!(
                 "snes/smp: unimplemented opcode ${other:02X} at PC=${:04X}",
                 self.pc.wrapping_sub(1)
@@ -1020,6 +1044,144 @@ impl Smp {
         let dst_val = self.read_dp(bus, dp);
         let result = self.sbc_byte(dst_val, imm);
         self.write_dp(bus, dp, result);
+    }
+
+    // ----- CMP family --------------------------------------------------
+    //
+    // CMP performs `a - b` and updates N/Z/C only - SPC700's CMP does
+    // NOT touch V or H (per Anomie's notes + Mesen2 `Cmp`). Carry
+    // convention matches SBC: C=1 means a >= b (no borrow). The
+    // memory-destination forms (CMP (X),(Y), CMP dp,dp, CMP dp,#imm)
+    // are pure comparisons - they set flags but don't write the
+    // result back, so they're slightly cheaper than the SBC siblings.
+
+    fn cmp_byte(&mut self, a: u8, b: u8) {
+        let result = a.wrapping_sub(b);
+        self.psw.c = a >= b;
+        self.set_nz(result);
+    }
+
+    // CMP A
+    fn op_cmp_a_imm(&mut self, bus: &mut impl SmpBus) {
+        let v = self.fetch_u8(bus);
+        self.cmp_byte(self.a, v);
+    }
+
+    fn op_cmp_a_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.cmp_byte(self.a, v);
+    }
+
+    fn op_cmp_a_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        self.cmp_byte(self.a, v);
+    }
+
+    fn op_cmp_a_dp_x_direct(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        let v = bus.read(self.addr_dp_x_direct());
+        self.cmp_byte(self.a, v);
+    }
+
+    fn op_cmp_a_dp_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_plus_x(bus);
+        let v = bus.read(addr);
+        self.cmp_byte(self.a, v);
+    }
+
+    fn op_cmp_a_abs_plus_x(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_x(bus);
+        let v = bus.read(addr);
+        self.cmp_byte(self.a, v);
+    }
+
+    fn op_cmp_a_abs_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_abs_plus_y(bus);
+        let v = bus.read(addr);
+        self.cmp_byte(self.a, v);
+    }
+
+    fn op_cmp_a_dp_x_indirect(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_x_indirect(bus);
+        let v = bus.read(addr);
+        self.cmp_byte(self.a, v);
+    }
+
+    fn op_cmp_a_dp_indirect_plus_y(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.addr_dp_indirect_plus_y(bus);
+        let v = bus.read(addr);
+        self.cmp_byte(self.a, v);
+    }
+
+    fn op_cmp_x_indirect_y_indirect(&mut self, bus: &mut impl SmpBus) {
+        // CMP (X),(Y): 5 cycles. Opcode + idle + read_x + read_y +
+        // idle (no write - the result is discarded after flag update).
+        bus.idle();
+        let x_val = bus.read(self.addr_dp_x_direct());
+        let y_val = bus.read(self.addr_dp_y_direct());
+        self.cmp_byte(x_val, y_val);
+        // The 5th cycle is the idle that an SBC would have used for
+        // its writeback; CMP keeps it but doesn't touch memory.
+        bus.idle();
+    }
+
+    fn op_cmp_dp_dp(&mut self, bus: &mut impl SmpBus) {
+        // CMP dp,dp: 6 cycles. Opcode + src_dp + read_src + dst_dp +
+        // read_dst + idle. Stream order: src, dst.
+        let src_dp = self.fetch_u8(bus);
+        let src_val = self.read_dp(bus, src_dp);
+        let dst_dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dst_dp);
+        self.cmp_byte(dst_val, src_val);
+        bus.idle();
+    }
+
+    fn op_cmp_dp_imm(&mut self, bus: &mut impl SmpBus) {
+        // CMP dp,#imm: 5 cycles. Opcode + imm + dp_fetch + read_dp +
+        // idle. Stream order: imm, dp.
+        let imm = self.fetch_u8(bus);
+        let dp = self.fetch_u8(bus);
+        let dst_val = self.read_dp(bus, dp);
+        self.cmp_byte(dst_val, imm);
+        bus.idle();
+    }
+
+    // CMP X (3 modes)
+    fn op_cmp_x_imm(&mut self, bus: &mut impl SmpBus) {
+        let v = self.fetch_u8(bus);
+        self.cmp_byte(self.x, v);
+    }
+
+    fn op_cmp_x_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.cmp_byte(self.x, v);
+    }
+
+    fn op_cmp_x_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        self.cmp_byte(self.x, v);
+    }
+
+    // CMP Y (3 modes)
+    fn op_cmp_y_imm(&mut self, bus: &mut impl SmpBus) {
+        let v = self.fetch_u8(bus);
+        self.cmp_byte(self.y, v);
+    }
+
+    fn op_cmp_y_dp(&mut self, bus: &mut impl SmpBus) {
+        let dp = self.fetch_u8(bus);
+        let v = self.read_dp(bus, dp);
+        self.cmp_byte(self.y, v);
+    }
+
+    fn op_cmp_y_abs(&mut self, bus: &mut impl SmpBus) {
+        let addr = self.fetch_u16(bus);
+        let v = bus.read(addr);
+        self.cmp_byte(self.y, v);
     }
 }
 
