@@ -1141,14 +1141,15 @@ impl Smp {
     // high byte (Y) only - quirk: a result like 0x0001 sets Z=1
     // because Y is zero (per Mesen2 `Mul` and Anomie's notes).
     //
-    // DIV YA, X ($9E, 12 cycles): A = YA / X (quotient), Y = YA % X
-    // (remainder). Hardware uses an iterative 9-step shift-subtract;
-    // we port Mesen2's loop verbatim. V is set when Y >= X (result
-    // would not fit in 8 bits), H when (Y & 0xF) >= (X & 0xF). N/Z
-    // come from the resulting A. The /512 quirk: when V is set the
-    // returned quotient/remainder come out of the loop's collision
-    // case rather than a true division - this is the SPC700's exact
-    // observable behaviour and games depend on it.
+    // DIV YA, X ($9E, 12 cycles): A = YA / X, Y = YA % X. Hardware
+    // runs a 9-iteration shift-subtract divider; the closed-form
+    // piecewise expression below is the algebraic simplification of
+    // that loop (verified by hand-trace + lock-in tests). V = bit 8
+    // of the would-be 9-bit quotient (equivalent to Y >= X for X > 0
+    // since (Y*256+A) >= 256*X iff Y >= X). H = (Y & 0xF) >= (X & 0xF).
+    // N/Z are derived from the final A. When the quotient does not
+    // fit in 8 bits the hardware emits a mangled 9-bit result instead
+    // of a true division; games rely on the exact observable bytes.
 
     fn op_mul_ya(&mut self, bus: &mut impl SmpBus) {
         for _ in 0..8 {
@@ -1196,20 +1197,21 @@ impl Smp {
     }
 
     fn op_tset1_abs(&mut self, bus: &mut impl SmpBus) {
+        // Hardware order: read, dummy read, set flags, write back.
+        // Flags reflect (A - original_data); the dummy read is the
+        // RMW idle slot (Mesen2 / higan agree).
         let addr = self.fetch_u16(bus);
         let data = bus.read(addr);
-        let cmp = self.a.wrapping_sub(data);
-        self.set_nz(cmp);
-        let _ = bus.read(addr); // dummy read
+        let _ = bus.read(addr);
+        self.set_nz(self.a.wrapping_sub(data));
         bus.write(addr, data | self.a);
     }
 
     fn op_tclr1_abs(&mut self, bus: &mut impl SmpBus) {
         let addr = self.fetch_u16(bus);
         let data = bus.read(addr);
-        let cmp = self.a.wrapping_sub(data);
-        self.set_nz(cmp);
-        let _ = bus.read(addr); // dummy read
+        let _ = bus.read(addr);
+        self.set_nz(self.a.wrapping_sub(data));
         bus.write(addr, data & !self.a);
     }
 
@@ -1351,14 +1353,15 @@ impl Smp {
         self.psw.v = y_u8 >= x_u8;
         self.psw.h = (y_u8 & 0x0F) >= (x_u8 & 0x0F);
         if (y_u8 as i32) < (x << 1) {
-            // y_u8 < 2x implies x > 0 (else 0 < 0 is false), so /x is safe.
+            // No deep overflow: 9-bit quotient fits, integer division
+            // produces the same A/Y as the hardware loop. (y < 2x
+            // implies x > 0, so the divide is safe.)
             self.a = (ya / x) as u8;
             self.y = (ya % x) as u8;
         } else {
-            // The /512 quirk: when V is set the SPC700 emits a closed-
-            // form approximation rather than performing true division.
-            // Bsnes-plus's expression matches hardware exactly; games
-            // depend on this observable behaviour.
+            // Deep-overflow path: closed-form algebraic equivalent of
+            // the 9-iteration shift-subtract divider. Produces the
+            // same mangled bytes as the hardware loop.
             let denom = 256 - x;
             let term = ya - (x << 9);
             self.a = (0xFF - term.wrapping_div(denom)) as u8;
@@ -1777,43 +1780,46 @@ impl Smp {
 
     // ----- CALL / PCALL / TCALL / RETI --------------------------------
     //
-    // CALL !abs ($3F, 8 cycles): push PC of next instruction, jump to
-    //   absolute address. Order: opcode + lo + hi + 3 idles + push_hi
-    //   + push_lo. The 3 internal cycles are bsnes-faithful.
-    // PCALL u ($4F, 6 cycles): page-call - jump to $FF00 + u. Pattern:
-    //   opcode + offset + 2 idles + push_hi + push_lo.
-    // TCALL n ($n1, 8 cycles): table call - vector at 0xFFDE - 2n.
-    //   Pattern: opcode + 3 idles + push_hi + push_lo + read vec_lo
-    //   + read vec_hi.
-    // RETI ($7F, 6 cycles): pop PSW, then PC, then 2 idle cycles.
-    //   Order matters: PSW pops first (bsnes; matches stack push order
-    //   used by interrupts when those land).
+    // Bus-access order in this family follows Mesen2 + higan (which
+    // agree). Total cycle counts match the SPC700 spec; the idle
+    // slots interleave with stack pushes rather than clumping before
+    // them, which only matters for cycle-exact bus tracing.
+    //
+    // CALL !abs ($3F, 8 cy): opcode + fetch lo + fetch hi + idle +
+    //   push hi + push lo + idle + idle.
+    // PCALL u ($4F, 6 cy): opcode + fetch u + idle + push hi +
+    //   push lo + idle.
+    // TCALL n ($n1, 8 cy): opcode + dummy/idle + idle + push hi +
+    //   push lo + idle + read vec lo + read vec hi.
+    // RETI ($7F, 6 cy): opcode + dummy/idle + idle + pop PSW +
+    //   pop PC lo + pop PC hi. PSW pops before PC (matches stack
+    //   push order used by interrupts when they land later).
 
     fn op_call_abs(&mut self, bus: &mut impl SmpBus) {
         let target = self.fetch_u16(bus);
         bus.idle();
-        bus.idle();
-        bus.idle();
         let return_addr = self.pc;
         self.push16(bus, return_addr);
+        bus.idle();
+        bus.idle();
         self.pc = target;
     }
 
     fn op_pcall(&mut self, bus: &mut impl SmpBus) {
         let lo = self.fetch_u8(bus);
         bus.idle();
-        bus.idle();
         let return_addr = self.pc;
         self.push16(bus, return_addr);
+        bus.idle();
         self.pc = 0xFF00 | lo as u16;
     }
 
     fn op_tcall(&mut self, bus: &mut impl SmpBus, n: u8) {
         bus.idle();
         bus.idle();
-        bus.idle();
         let return_addr = self.pc;
         self.push16(bus, return_addr);
+        bus.idle();
         let vec_addr = 0xFFDEu16.wrapping_sub((n as u16) << 1);
         let lo = bus.read(vec_addr) as u16;
         let hi = bus.read(vec_addr.wrapping_add(1)) as u16;
@@ -1821,11 +1827,11 @@ impl Smp {
     }
 
     fn op_reti(&mut self, bus: &mut impl SmpBus) {
+        bus.idle();
+        bus.idle();
         let psw_byte = self.pop8(bus);
         self.psw.unpack(psw_byte);
         self.pc = self.pop16(bus);
-        bus.idle();
-        bus.idle();
     }
 
     // ----- DAA / DAS / XCN --------------------------------------------
@@ -2141,14 +2147,15 @@ impl Smp {
     }
 
     fn op_cmp_x_indirect_y_indirect(&mut self, bus: &mut impl SmpBus) {
-        // CMP (X),(Y): 5 cycles. Opcode + idle + read_x + read_y +
-        // idle (no write - the result is discarded after flag update).
+        // CMP (X),(Y): 5 cycles. Bus order: opcode, dummy/idle,
+        // read (Y), read (X), idle. Hardware reads (Y) before (X)
+        // even though the comparison computes mem[X] - mem[Y]; the
+        // 5th cycle is an idle that an SBC would have used for its
+        // writeback (CMP keeps the slot but never writes).
         bus.idle();
-        let x_val = bus.read(self.addr_dp_x_direct());
         let y_val = bus.read(self.addr_dp_y_direct());
+        let x_val = bus.read(self.addr_dp_x_direct());
         self.cmp_byte(x_val, y_val);
-        // The 5th cycle is the idle that an SBC would have used for
-        // its writeback; CMP keeps it but doesn't touch memory.
         bus.idle();
     }
 

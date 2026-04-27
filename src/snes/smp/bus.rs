@@ -120,9 +120,13 @@ impl SmpBus for FlatSmpBus {
 ///   - `$FA-$FC` timer targets (write-only).
 ///   - `$FD-$FF` timer counters (read-and-clear, low 4 bits visible).
 ///   - `$F0` TEST and reserved bits behave as RAM stubs.
-///   - `$F8/$F9` are aux RAM (just plain ARAM bytes; some emulators
-///     model them as I/O but Mesen2 / bsnes treat them as ordinary
-///     RAM addresses, which is what real games rely on).
+///   - `$F8/$F9` AUXIO are general-purpose RAM bytes per anomie /
+///     the SPC700 hardware spec (no special register behind them);
+///     we route reads and writes through the same ARAM slice that
+///     backs $00..$FF, so DSP-written bytes are observable to the
+///     SMP and vice versa. Mesen2 / higan model them with separate
+///     register fields internally, but the observable behaviour is
+///     identical in normal operation.
 ///
 /// Lifetime model: the bus is constructed transiently per SMP step
 /// from disjoint mutable fields of [`crate::snes::Snes`]. Each field
@@ -163,7 +167,7 @@ impl<'a> IntegratedSmpBus<'a> {
             0x00F2 => self.dsp.address,
             0x00F3 => self.dsp.read_data(),
             0x00F4..=0x00F7 => self.ports.smp_read((addr - 0x00F4) as usize),
-            // $F8/$F9 are plain ARAM in the Mesen2 / bsnes model.
+            // $F8/$F9 AUXIO: plain ARAM bytes per the SPC700 spec.
             0x00F8 | 0x00F9 => self.aram[addr as usize],
             // $FA-$FC timer targets: write-only. Reads return open bus;
             // we yield 0 for determinism (matches Mesen2's `SpcTimer`).
@@ -343,6 +347,32 @@ mod tests {
         let mut bus = h.bus();
         bus.write(0x0234, 0x99);
         assert_eq!(bus.read(0x0234), 0x99);
+    }
+
+    #[test]
+    fn auxio_f8_f9_round_trip_as_plain_aram() {
+        // Per the SPC700 spec ($F8/$F9 AUXIO are general-purpose RAM
+        // bytes), an SMP write to $F8/$F9 must be observable to a
+        // subsequent SMP read at the same address.
+        let mut h = IntegratedHarness::new();
+        let mut bus = h.bus();
+        bus.write(0x00F8, 0x5A);
+        bus.write(0x00F9, 0xA5);
+        assert_eq!(bus.read(0x00F8), 0x5A);
+        assert_eq!(bus.read(0x00F9), 0xA5);
+    }
+
+    #[test]
+    fn auxio_f8_f9_alias_underlying_aram_for_dsp_visibility() {
+        // The bytes live in the same ARAM slice the DSP sees, so a
+        // direct ARAM mutation (modelling DSP DMA, debug poke, etc.)
+        // is visible to the next SMP read.
+        let mut h = IntegratedHarness::new();
+        h.aram[0x00F8] = 0x77;
+        h.aram[0x00F9] = 0x88;
+        let mut bus = h.bus();
+        assert_eq!(bus.read(0x00F8), 0x77);
+        assert_eq!(bus.read(0x00F9), 0x88);
     }
 
     #[test]

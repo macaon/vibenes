@@ -1069,6 +1069,35 @@ fn cmp_x_y_indirect_compares_x_against_y_does_not_modify_memory() {
 }
 
 #[test]
+fn cmp_x_y_indirect_x_greater_sets_c_clears_n() {
+    // Locks in the asymmetry: flags = mem[X] - mem[Y].
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x10;
+    smp.y = 0x20;
+    bus.poke(0x0010, 0x80); // (X)
+    bus.poke(0x0020, 0x40); // (Y)
+    let _ = run_one(&mut smp, &mut bus, &[0x79]);
+    assert!(smp.psw.c, "(X)>=(Y) -> C=1 (no borrow)");
+    assert!(!smp.psw.z);
+    assert!(!smp.psw.n, "0x80-0x40=0x40, bit 7 clear");
+}
+
+#[test]
+fn cmp_x_y_indirect_x_less_clears_c_sets_n() {
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.x = 0x10;
+    smp.y = 0x20;
+    bus.poke(0x0010, 0x40); // (X)
+    bus.poke(0x0020, 0x80); // (Y)
+    let _ = run_one(&mut smp, &mut bus, &[0x79]);
+    assert!(!smp.psw.c, "(X)<(Y) -> C=0 (borrow)");
+    assert!(!smp.psw.z);
+    assert!(smp.psw.n, "0x40-0x80=0xC0, bit 7 set");
+}
+
+#[test]
 fn cmp_dp_dp_six_cycles_dst_minus_src() {
     let mut bus = FlatSmpBus::new();
     let mut smp = Smp::new();
@@ -1582,6 +1611,79 @@ fn subw_ya_dp_underflow_clears_carry() {
 }
 
 #[test]
+fn addw_ya_dp_h_flag_set_when_low_carry_propagates_into_bit11() {
+    // ya = 0x07FF, word = 0x0801: sum = 0x1000 - the low-byte add
+    // carries (0xFF + 0x01 = 0x100), and that carry plus high-byte
+    // 0x07 + 0x08 produces 0x10, setting bit 12 of the full sum.
+    // H must reflect carry from bit 11 of the FULL 16-bit add, NOT
+    // the half-carry of the low byte alone.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0xFF;
+    smp.y = 0x07;
+    bus.poke(0x0020, 0x01);
+    bus.poke(0x0021, 0x08); // word = 0x0801
+    let _ = run_one(&mut smp, &mut bus, &[0x7A, 0x20]);
+    assert_eq!(smp.y, 0x10);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.h, "carry out of bit 11 -> H=1");
+    assert!(!smp.psw.c);
+}
+
+#[test]
+fn addw_ya_dp_h_flag_clear_when_only_bit8_carries() {
+    // ya = 0x00FF, word = 0x0001: sum = 0x0100. Low-byte half-carry
+    // happens at bit 3 (0xF + 0x1) but bit 11 is untouched (high
+    // bytes are 0x00 + 0x00 + low_carry = 0x01). H must be 0.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0xFF;
+    smp.y = 0x00;
+    bus.poke(0x0020, 0x01);
+    bus.poke(0x0021, 0x00);
+    let _ = run_one(&mut smp, &mut bus, &[0x7A, 0x20]);
+    assert_eq!(smp.y, 0x01);
+    assert_eq!(smp.a, 0x00);
+    assert!(!smp.psw.h, "no carry from bit 11 -> H=0");
+    assert!(!smp.psw.c);
+}
+
+#[test]
+fn subw_ya_dp_h_flag_borrow_from_bit12() {
+    // ya = 0x1000, word = 0x0001: result = 0x0FFF. Low-12-bit
+    // subtraction (0x000 - 0x001) borrows -> H=0 (H=1 means NO
+    // borrow on SPC700).
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x00;
+    smp.y = 0x10;
+    bus.poke(0x0020, 0x01);
+    bus.poke(0x0021, 0x00);
+    let _ = run_one(&mut smp, &mut bus, &[0x9A, 0x20]);
+    assert_eq!(smp.y, 0x0F);
+    assert_eq!(smp.a, 0xFF);
+    assert!(!smp.psw.h, "borrow from bit 12 -> H=0");
+    assert!(smp.psw.c, "no full borrow -> C=1");
+}
+
+#[test]
+fn subw_ya_dp_h_flag_no_borrow_when_low12_eq() {
+    // ya = 0x1001, word = 0x0001: result = 0x1000. Low-12-bit sub
+    // (0x001 - 0x001 = 0) does not borrow -> H=1.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.a = 0x01;
+    smp.y = 0x10;
+    bus.poke(0x0020, 0x01);
+    bus.poke(0x0021, 0x00);
+    let _ = run_one(&mut smp, &mut bus, &[0x9A, 0x20]);
+    assert_eq!(smp.y, 0x10);
+    assert_eq!(smp.a, 0x00);
+    assert!(smp.psw.h, "no borrow from bit 11 -> H=1");
+    assert!(smp.psw.c);
+}
+
+#[test]
 fn cmpw_ya_dp_equal_sets_z_and_c_only_no_v_no_h_four_cycles() {
     let mut bus = FlatSmpBus::new();
     let mut smp = Smp::new();
@@ -1639,6 +1741,36 @@ fn decw_dp_six_cycles_borrows_into_high_byte() {
     assert_eq!(bus.peek(0x0021), 0x11);
     assert!(!smp.psw.z);
     assert!(!smp.psw.n);
+}
+
+#[test]
+fn decw_dp_underflow_wraps_to_ffff_sets_n() {
+    // 0x0000 - 1 = 0xFFFF (16-bit). N from bit 15 of result.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0x00);
+    bus.poke(0x0021, 0x00);
+    let _ = run_one(&mut smp, &mut bus, &[0x1A, 0x20]);
+    assert_eq!(bus.peek(0x0020), 0xFF);
+    assert_eq!(bus.peek(0x0021), 0xFF);
+    assert!(!smp.psw.z);
+    assert!(smp.psw.n, "0xFFFF has bit 15 set -> N");
+}
+
+#[test]
+fn incw_dp_crossing_sign_boundary_sets_n() {
+    // 0x7FFF + 1 = 0x8000 - bit 15 flips on -> N must be set.
+    // Confirms u16 carry propagation feeds through to the N flag,
+    // not just the byte-level write.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    bus.poke(0x0020, 0xFF);
+    bus.poke(0x0021, 0x7F);
+    let _ = run_one(&mut smp, &mut bus, &[0x3A, 0x20]);
+    assert_eq!(bus.peek(0x0020), 0x00);
+    assert_eq!(bus.peek(0x0021), 0x80);
+    assert!(!smp.psw.z);
+    assert!(smp.psw.n, "0x8000 has bit 15 set -> N");
 }
 
 // ----- MUL / DIV ------------------------------------------------------
@@ -1755,6 +1887,59 @@ fn div_ya_x_h_flag_from_low_nibbles() {
     smp.x = 0x32;
     let _ = run_one(&mut smp, &mut bus, &[0x9E]);
     assert!(smp.psw.h, "(Y&0xF=5) >= (X&0xF=2) -> H set");
+}
+
+#[test]
+fn div_ya_x_non_overflow_quotient_in_range() {
+    // YA = 0x00FF, X = 0x01: Q = 255 (fits in 8 bits, V=0).
+    // A = 0xFF, Y = 0, N=1, Z=0.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x00;
+    smp.a = 0xFF;
+    smp.x = 0x01;
+    let _ = run_one(&mut smp, &mut bus, &[0x9E]);
+    assert_eq!(smp.a, 0xFF);
+    assert_eq!(smp.y, 0x00);
+    assert!(!smp.psw.v);
+    assert!(smp.psw.n);
+    assert!(!smp.psw.z);
+}
+
+#[test]
+fn div_ya_x_deep_overflow_matches_hardware_algorithm() {
+    // YA = 0x4000, X = 0x10. Q would be 1024 (>>255), V=1.
+    // The SPC700 hardware divider runs a 9-iteration shift-subtract.
+    // Anomie's docs and direct hand-trace of that loop produce
+    // A = 0xDD, Y = 0x30 for this input. Higan's piecewise closed
+    // form is the algebraic simplification of that loop and produces
+    // the same bytes; this test locks the equivalence in.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x40;
+    smp.a = 0x00;
+    smp.x = 0x10;
+    let _ = run_one(&mut smp, &mut bus, &[0x9E]);
+    assert!(smp.psw.v, "Y(0x40) >= X(0x10) -> Q overflows -> V=1");
+    assert_eq!(smp.a, 0xDD, "A = low 8 bits of mangled 9-bit quotient");
+    assert_eq!(smp.y, 0x30, "Y = mangled remainder");
+    assert!(smp.psw.n, "0xDD has bit 7 set -> N");
+    assert!(!smp.psw.z);
+}
+
+#[test]
+fn div_ya_x_quotient_exactly_256_sets_v() {
+    // YA = 0x100, X = 0x01: true Q = 256 = 0x100 (bit 8 set). V=1.
+    // Hardware mangles into A = 0x00, Y = 0x01.
+    let mut bus = FlatSmpBus::new();
+    let mut smp = Smp::new();
+    smp.y = 0x01;
+    smp.a = 0x00;
+    smp.x = 0x01;
+    let _ = run_one(&mut smp, &mut bus, &[0x9E]);
+    assert!(smp.psw.v, "Q=256 -> bit 8 of Q set -> V=1");
+    assert!(smp.psw.z, "A becomes 0x00");
+    assert_eq!(smp.a, 0x00);
 }
 
 // ----- Bit operations -------------------------------------------------
