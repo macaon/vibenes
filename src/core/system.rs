@@ -28,6 +28,14 @@ impl System {
 
 const INES_MAGIC: [u8; 4] = *b"NES\x1A";
 const FDS_MAGIC: [u8; 4] = *b"FDS\x1A";
+/// Disk-header block tag at side-offset 0 of a raw `.fds` (no fwNES
+/// wrapper). Exactly one byte; pairs with [`FDS_NINTENDO_HVC`] at
+/// side-offset 1 to identify a Famicom Disk System dump.
+const FDS_BLOCK_TAG_DISK_HEADER: u8 = 0x01;
+/// 14-byte ASCII signature that begins every legitimate FDS disk
+/// header block. Sits at side-offset 1 in raw `.fds` dumps and at
+/// offset 17 (1 + 16-byte header) in fwNES-wrapped dumps.
+const FDS_NINTENDO_HVC: &[u8; 14] = b"*NINTENDO-HVC*";
 
 /// Lightweight extension guess. Returns `None` for unknown
 /// extensions so the caller falls back to a content sniff. Intended
@@ -51,6 +59,17 @@ pub fn detect_system_bytes(bytes: &[u8]) -> Option<System> {
         if bytes[..4] == INES_MAGIC || bytes[..4] == FDS_MAGIC {
             return Some(System::Nes);
         }
+    }
+    // Raw `.fds` dumps (no fwNES wrapper) skip the magic and start
+    // directly with side 0: a 0x01 block tag followed by the
+    // *NINTENDO-HVC* disk-header signature. Without this branch the
+    // disk bytes fall through to the SNES header probe and score
+    // high enough to misroute Zelda et al. into the SNES core.
+    if bytes.len() >= 1 + FDS_NINTENDO_HVC.len()
+        && bytes[0] == FDS_BLOCK_TAG_DISK_HEADER
+        && &bytes[1..1 + FDS_NINTENDO_HVC.len()] == FDS_NINTENDO_HVC.as_slice()
+    {
+        return Some(System::Nes);
     }
     if crate::snes::rom::looks_like_snes(bytes) {
         return Some(System::Snes);
@@ -112,5 +131,28 @@ mod tests {
     #[test]
     fn returns_none_on_garbage() {
         assert_eq!(detect_system_bytes(&[0u8; 16]), None);
+    }
+
+    #[test]
+    fn raw_fds_without_fwnes_header_detected_as_nes() {
+        // Raw `.fds` dumps (e.g. Zelda no Densetsu v1.1) skip the
+        // 16-byte fwNES wrapper. Side 0 starts with the 0x01 disk
+        // header tag, then *NINTENDO-HVC* at side-offset 1. Pad up
+        // past the SNES probe threshold so we can confirm the
+        // raw-FDS check wins before `looks_like_snes` runs.
+        let mut bytes = vec![0u8; 0x8000];
+        bytes[0] = FDS_BLOCK_TAG_DISK_HEADER;
+        bytes[1..1 + FDS_NINTENDO_HVC.len()].copy_from_slice(FDS_NINTENDO_HVC);
+        assert_eq!(detect_system_bytes(&bytes), Some(System::Nes));
+    }
+
+    #[test]
+    fn fwnes_wrapped_fds_still_detected_as_nes() {
+        // fwNES-wrapped `.fds` keeps its `FDS\x1A` magic at offset 0;
+        // the existing magic check already handles it. Lock that in
+        // as a regression test alongside the raw-FDS coverage.
+        let mut bytes = vec![0u8; 32];
+        bytes[..4].copy_from_slice(&FDS_MAGIC);
+        assert_eq!(detect_system_bytes(&bytes), Some(System::Nes));
     }
 }
