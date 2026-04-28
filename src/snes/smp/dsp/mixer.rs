@@ -22,15 +22,23 @@
 //! and modulate the per-voice pitch by the previous voice's
 //! post-envelope output respectively.
 //!
+//! ENDX writeback (5c.9): after stepping the voices, the mixer
+//! aggregates each voice's `endx_pending` (set whenever a BRR
+//! end-block was processed - looped *or* terminating, per Anomie
+//! and the FF6-panning behaviour noted in snes-apu.md) into the
+//! global `$7C` register as a sticky OR with whatever the host
+//! last left there, then clears the bits of voices we KON'd this
+//! same sample. This mirrors Mesen2 `DspVoice.cpp` step S7:
+//! `voiceEnd = ReadReg(VoiceEnd) | Looped; if (keyOnStarted)
+//! voiceEnd &= ~voiceBit;`. Hardware staggers the publish across
+//! cycles (a 1-sample staging buffer); we collapse it - drivers
+//! poll ENDX between samples, so the visible behaviour matches.
+//!
 //! ## Deferred for future sub-phases
 //!
 //! - **KON polling cadence**: Mesen2 / hardware polls KON / KOFF
 //!   every 2 samples (in their 5-step pipeline). We poll every
 //!   sample. Audibly indistinguishable for normal music.
-//! - **ENDX register writeback**: voices set `endx_pending` when
-//!   they hit an end-block; the mixer doesn't yet aggregate this
-//!   into the global ENDX. Drivers that poll ENDX won't see ends
-//!   until that's wired up.
 //!
 //! ## Source pointers
 //!
@@ -106,8 +114,10 @@ impl Mixer {
     /// Reads its DSP register inputs from `dsp` and ARAM samples from
     /// `aram`. The caller is responsible for keeping the DSP
     /// register file in sync with what the SMP has written and for
-    /// providing a 64 KiB ARAM slice.
-    pub fn step_sample(&mut self, dsp: &DspRegs, aram: &mut [u8; 0x10000]) -> (i16, i16) {
+    /// providing a 64 KiB ARAM slice. `dsp` is taken by mutable
+    /// reference because the mixer writes back the ENDX (`$7C`)
+    /// register at end-of-sample.
+    pub fn step_sample(&mut self, dsp: &mut DspRegs, aram: &mut [u8; 0x10000]) -> (i16, i16) {
         // Tick the global counter once per output sample, BEFORE
         // running any voice (so all voices see the same value).
         self.counter.tick();
@@ -115,6 +125,12 @@ impl Mixer {
         // Resolve KOFF bitmask.
         let koff = dsp.koff();
         let eon = dsp.eon();
+
+        // Capture the KON dispatch mask BEFORE clearing kon_pending,
+        // so the ENDX writeback at end-of-sample knows which voices
+        // were just keyed on (their ENDX bits must be cleared, per
+        // Mesen2 DspVoice.cpp step S7).
+        let kon_dispatched = self.kon_pending;
 
         // Dispatch any pending KONs - now (after the counter tick so
         // attack rate computations see this sample's counter).
@@ -190,6 +206,22 @@ impl Mixer {
             prev_voice_output = self.voices[v].last_voice_output;
         }
 
+        // ENDX writeback. Each voice's `endx_pending` is set when its
+        // most recently advanced BRR block had the end flag (regardless
+        // of whether it also had loop set - hardware sets ENDX on every
+        // end-block, looped or not). Aggregate-and-clear here, then OR
+        // into the host-visible register and mask off any voices we
+        // KON'd this sample.
+        let mut endx_set: u8 = 0;
+        for v in 0..8 {
+            if self.voices[v].endx_pending {
+                endx_set |= 1u8 << v;
+                self.voices[v].endx_pending = false;
+            }
+        }
+        let new_endx = (dsp.endx() | endx_set) & !kon_dispatched;
+        dsp.write(super::global_reg::ENDX, new_endx);
+
         // Run the echo pipeline. Returns the echo contribution that
         // is added to the dry mix; also writes the feedback back to
         // ARAM (unless FLG.5 is set).
@@ -263,9 +295,9 @@ mod tests {
         let mixer_pre = Mixer::new();
         assert_eq!(mixer_pre.counter.value, 0);
         let mut mixer = Mixer::new();
-        let dsp = dsp_with_master_volume(0x40, 0x40);
+        let mut dsp = dsp_with_master_volume(0x40, 0x40);
         let mut aram = Box::new([0u8; 0x10000]);
-        let (l, r) = mixer.step_sample(&dsp, &mut aram);
+        let (l, r) = mixer.step_sample(&mut dsp, &mut aram);
         assert_eq!(l, 0);
         assert_eq!(r, 0);
     }
@@ -273,10 +305,10 @@ mod tests {
     #[test]
     fn counter_ticks_once_per_sample() {
         let mut mixer = Mixer::new();
-        let dsp = dsp_with_master_volume(0x40, 0x40);
+        let mut dsp = dsp_with_master_volume(0x40, 0x40);
         let mut aram = Box::new([0u8; 0x10000]);
         for _ in 0..5 {
-            let _ = mixer.step_sample(&dsp, &mut aram);
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
         // Counter started at 0, ticked 5 times: 0 -> 0x77FF -> 0x77FE -> ... -> 0x77FB.
         assert_eq!(mixer.counter.value, 0x77FB);
@@ -308,7 +340,7 @@ mod tests {
         aram[0x0600] = 0x03;
 
         mixer.latch_kon(0x01); // bit 0 -> voice 0
-        let _ = mixer.step_sample(&dsp, &mut aram);
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
         assert!(mixer.voices[0].active, "voice 0 should be active after KON");
         assert_eq!(mixer.voices[0].brr_addr, 0x0600);
         assert_eq!(mixer.voices[0].envelope.mode, EnvelopeMode::Attack);
@@ -323,7 +355,7 @@ mod tests {
         mixer.voices[0].envelope.mode = EnvelopeMode::Attack;
         dsp.write(global_reg::KOFF, 0x01);
         let mut aram = Box::new([0u8; 0x10000]);
-        let _ = mixer.step_sample(&dsp, &mut aram);
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
         assert_eq!(mixer.voices[0].envelope.mode, EnvelopeMode::Release);
     }
 
@@ -355,7 +387,7 @@ mod tests {
 
         mixer.latch_kon(0x01);
         for _ in 0..50 {
-            let (l, r) = mixer.step_sample(&dsp, &mut aram);
+            let (l, r) = mixer.step_sample(&mut dsp, &mut aram);
             assert_eq!(l, 0, "muted output is zero");
             assert_eq!(r, 0);
         }
@@ -392,8 +424,8 @@ mod tests {
             aram[0x0600 + i] = 0x77;
         }
 
-        let dsp_full = setup_dsp(0x40);
-        let dsp_half = setup_dsp(0x20);
+        let mut dsp_full = setup_dsp(0x40);
+        let mut dsp_half = setup_dsp(0x20);
         let mut m1 = Mixer::new();
         let mut m2 = Mixer::new();
         m1.latch_kon(0x01);
@@ -404,8 +436,8 @@ mod tests {
         let mut acc1: i64 = 0;
         let mut acc2: i64 = 0;
         for _ in 0..256 {
-            let (l1, _) = m1.step_sample(&dsp_full, &mut aram);
-            let (l2, _) = m2.step_sample(&dsp_half, &mut aram);
+            let (l1, _) = m1.step_sample(&mut dsp_full, &mut aram);
+            let (l2, _) = m2.step_sample(&mut dsp_half, &mut aram);
             acc1 += (l1 as i64).abs();
             acc2 += (l2 as i64).abs();
         }
@@ -449,13 +481,13 @@ mod tests {
         let mut m_neg = Mixer::new();
         m_pos.latch_kon(0x01);
         m_neg.latch_kon(0x01);
-        let dsp_pos = setup_dsp(0x7F);
-        let dsp_neg = setup_dsp(0x80); // -128 in i8
+        let mut dsp_pos = setup_dsp(0x7F);
+        let mut dsp_neg = setup_dsp(0x80); // -128 in i8
         let mut found_pos = 0i32;
         let mut found_neg = 0i32;
         for _ in 0..512 {
-            let (lp, _) = m_pos.step_sample(&dsp_pos, &mut aram);
-            let (ln, _) = m_neg.step_sample(&dsp_neg, &mut aram);
+            let (lp, _) = m_pos.step_sample(&mut dsp_pos, &mut aram);
+            let (ln, _) = m_neg.step_sample(&mut dsp_neg, &mut aram);
             if lp != 0 && found_pos == 0 {
                 found_pos = lp as i32;
             }
@@ -507,7 +539,7 @@ mod tests {
         // Run enough samples for the buffer offset to advance past
         // address 0x4000 so we can inspect a slot the echo wrote.
         for _ in 0..16 {
-            let _ = mixer.step_sample(&dsp, &mut aram);
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
 
         // Some bytes in the echo buffer region should now be non-zero
@@ -529,7 +561,7 @@ mod tests {
         dsp.write(global_reg::FLG, 0x1F); // noise rate = 31 (every sample)
         let mut aram = Box::new([0u8; 0x10000]);
         let pre = mixer.noise_lfsr;
-        let _ = mixer.step_sample(&dsp, &mut aram);
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
         let post = mixer.noise_lfsr;
         assert_ne!(pre, post, "rate=31 -> LFSR advances each sample");
     }
@@ -542,7 +574,7 @@ mod tests {
         let mut aram = Box::new([0u8; 0x10000]);
         let pre = mixer.noise_lfsr;
         for _ in 0..100 {
-            let _ = mixer.step_sample(&dsp, &mut aram);
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
         assert_eq!(mixer.noise_lfsr, pre, "rate=0 freezes LFSR");
     }
@@ -579,7 +611,7 @@ mod tests {
         mixer.latch_kon(0x01);
         let mut got_nonzero = false;
         for _ in 0..256 {
-            let (l, _) = mixer.step_sample(&dsp, &mut aram);
+            let (l, _) = mixer.step_sample(&mut dsp, &mut aram);
             if l != 0 {
                 got_nonzero = true;
                 break;
@@ -617,7 +649,7 @@ mod tests {
         // After 32 samples we expect to be partway through the second
         // 16-sample block, NOT (e.g.) wildly off.
         for _ in 0..16 {
-            let _ = mixer.step_sample(&dsp, &mut aram);
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
         // Sanity: pitch counter should be at 16 * 0x1000 mod 0x10000
         // = 0x0000 (wrapped exactly once). We just check the voice
@@ -665,11 +697,11 @@ mod tests {
         let mut m_off = Mixer::new();
         m_on.latch_kon(0x03); // voices 0 + 1
         m_off.latch_kon(0x03);
-        let dsp_on = mk_dsp(0x02); // PMON.1 set
-        let dsp_off = mk_dsp(0x00);
+        let mut dsp_on = mk_dsp(0x02); // PMON.1 set
+        let mut dsp_off = mk_dsp(0x00);
         for _ in 0..64 {
-            let _ = m_on.step_sample(&dsp_on, &mut aram);
-            let _ = m_off.step_sample(&dsp_off, &mut aram);
+            let _ = m_on.step_sample(&mut dsp_on, &mut aram);
+            let _ = m_off.step_sample(&mut dsp_off, &mut aram);
         }
         // Voice 1's pitch counter trajectory should differ between
         // the two configurations.
@@ -710,10 +742,199 @@ mod tests {
 
         mixer.latch_kon(0x01);
         for _ in 0..16 {
-            let _ = mixer.step_sample(&dsp, &mut aram);
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
 
         let untouched = aram[0x4000..0x4040].iter().all(|&b| b == 0);
         assert!(untouched, "FLG.5 must suppress echo writeback");
+    }
+
+    /// Build a minimal-but-realistic DSP+ARAM setup for the ENDX
+    /// tests: voice 0 plays a single 9-byte BRR block whose header
+    /// has `end_flag` and `loop_flag` set to `header_byte`. With
+    /// `0x83` (range=8, filter=0, end+loop) the voice loops on
+    /// itself and re-hits the end-block every 16 output samples
+    /// at pitch 0x1000.
+    fn endx_test_setup(header_byte: u8) -> (DspRegs, Box<[u8; 0x10000]>) {
+        let mut dsp = DspRegs::new();
+        dsp.write(global_reg::MVOLL, 0x40);
+        dsp.write(global_reg::MVOLR, 0x40);
+        dsp.write(global_reg::DIR, 0x05);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLL), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLR), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::PH), 0x10);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::ADSR1), 0x8F);
+        let mut aram = Box::new([0u8; 0x10000]);
+        // Sample directory at $0500: start=$0600, loop=$0600.
+        aram[0x0500] = 0x00;
+        aram[0x0501] = 0x06;
+        aram[0x0502] = 0x00;
+        aram[0x0503] = 0x06;
+        aram[0x0600] = header_byte;
+        for i in 1..9 {
+            aram[0x0600 + i] = 0x77;
+        }
+        (dsp, aram)
+    }
+
+    #[test]
+    fn endx_bit_set_when_voice_processes_looped_end_block() {
+        // Header 0x83 = range=8, filter=0, end+loop. The voice
+        // re-encounters the end block every 16 output samples; ENDX.0
+        // should be set after at least one such crossing. (FF6 panning
+        // depends on ENDX firing for looped end-blocks too.)
+        let (mut dsp, mut aram) = endx_test_setup(0x83);
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x01);
+        // 18 samples > 16 sample/block, guaranteed to cross at least
+        // one end-block boundary.
+        for _ in 0..18 {
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
+        }
+        assert!(
+            dsp.endx() & 0x01 != 0,
+            "ENDX.0 should be set after a looped end-block: endx={:#04x}",
+            dsp.endx()
+        );
+    }
+
+    #[test]
+    fn endx_bit_set_when_voice_processes_terminating_end_block() {
+        // Header 0x81 = range=8, filter=0, end-without-loop. The
+        // voice goes silent (Release) after one block but ENDX.0
+        // must still be set.
+        let (mut dsp, mut aram) = endx_test_setup(0x81);
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x01);
+        for _ in 0..18 {
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
+        }
+        assert!(
+            dsp.endx() & 0x01 != 0,
+            "ENDX.0 should be set after a terminating end-block: endx={:#04x}",
+            dsp.endx()
+        );
+    }
+
+    #[test]
+    fn endx_is_sticky_oring_with_host_written_value() {
+        // Drive voice 0 to set ENDX.0, then verify the bit persists
+        // across an idle sample (no end-block crossed) - i.e. the
+        // mixer ORs into the existing register rather than overwriting.
+        let (mut dsp, mut aram) = endx_test_setup(0x83);
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x01);
+        for _ in 0..18 {
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
+        }
+        assert!(dsp.endx() & 0x01 != 0, "precondition: ENDX.0 set");
+        // Pre-set ENDX.7 by host write; it must survive the next step.
+        let with_host_bit = dsp.endx() | 0x80;
+        dsp.write(global_reg::ENDX, with_host_bit);
+        // One more sample - voice 0 still active, will set its bit
+        // again at some point, but the host-written ENDX.7 must remain.
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert!(
+            dsp.endx() & 0x80 != 0,
+            "host-written ENDX bits must persist (sticky OR): endx={:#04x}",
+            dsp.endx()
+        );
+    }
+
+    #[test]
+    fn host_writing_zero_to_endx_clears_acked_bits() {
+        // Standard SPC driver pattern: write 0 to ENDX to ack, then
+        // poll for new bits. After clearing, only voices that hit a
+        // *new* end-block should reappear.
+        let (mut dsp, mut aram) = endx_test_setup(0x83);
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x01);
+        for _ in 0..18 {
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
+        }
+        assert!(dsp.endx() & 0x01 != 0, "precondition: ENDX.0 set");
+        // Driver acks the bit.
+        dsp.write(global_reg::ENDX, 0);
+        // One sample with no new end-block crossed: ENDX should stay 0.
+        // (Voice 0 just looped, next end-block is ~16 samples away.)
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert_eq!(
+            dsp.endx() & 0x01,
+            0,
+            "ENDX.0 must stay clear until a new end-block fires: endx={:#04x}",
+            dsp.endx()
+        );
+    }
+
+    #[test]
+    fn kon_clears_endx_bit_for_keyed_voice() {
+        // Set up an existing ENDX.0 bit by host write, then KON voice 0.
+        // The same-sample KON must clear ENDX.0 in the writeback.
+        let (mut dsp, mut aram) = endx_test_setup(0x83);
+        let mut mixer = Mixer::new();
+        // Pre-seed ENDX.0 as if a previous run had set it.
+        dsp.write(global_reg::ENDX, 0x01);
+        mixer.latch_kon(0x01);
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert_eq!(
+            dsp.endx() & 0x01,
+            0,
+            "KON must clear ENDX bit for the keyed voice: endx={:#04x}",
+            dsp.endx()
+        );
+    }
+
+    #[test]
+    fn endx_aggregates_across_voices() {
+        // Two voices on independent end-blocks; both bits should
+        // appear in ENDX after enough samples for each to cross.
+        let mut dsp = DspRegs::new();
+        dsp.write(global_reg::MVOLL, 0x40);
+        dsp.write(global_reg::MVOLR, 0x40);
+        dsp.write(global_reg::DIR, 0x05);
+        // Voice 0 -> SRCN 0 -> dir entry at $0500 -> sample at $0600.
+        dsp.write(DspRegs::voice_addr(0, voice_reg::SRCN), 0);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLL), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::VOLR), 0x40);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::PH), 0x10);
+        dsp.write(DspRegs::voice_addr(0, voice_reg::ADSR1), 0x8F);
+        // Voice 3 -> SRCN 1 -> dir entry at $0504 -> sample at $0700.
+        dsp.write(DspRegs::voice_addr(3, voice_reg::SRCN), 1);
+        dsp.write(DspRegs::voice_addr(3, voice_reg::VOLL), 0x40);
+        dsp.write(DspRegs::voice_addr(3, voice_reg::VOLR), 0x40);
+        dsp.write(DspRegs::voice_addr(3, voice_reg::PH), 0x10);
+        dsp.write(DspRegs::voice_addr(3, voice_reg::ADSR1), 0x8F);
+
+        let mut aram = Box::new([0u8; 0x10000]);
+        // Sample 0 directory entry at $0500: start=$0600, loop=$0600.
+        aram[0x0500] = 0x00;
+        aram[0x0501] = 0x06;
+        aram[0x0502] = 0x00;
+        aram[0x0503] = 0x06;
+        aram[0x0600] = 0x83;
+        for i in 1..9 {
+            aram[0x0600 + i] = 0x77;
+        }
+        // Sample 1 directory entry at $0504: start=$0700, loop=$0700.
+        aram[0x0504] = 0x00;
+        aram[0x0505] = 0x07;
+        aram[0x0506] = 0x00;
+        aram[0x0507] = 0x07;
+        aram[0x0700] = 0x83;
+        for i in 1..9 {
+            aram[0x0700 + i] = 0x77;
+        }
+
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x09); // voices 0 + 3
+        for _ in 0..18 {
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
+        }
+        assert_eq!(
+            dsp.endx() & 0x09,
+            0x09,
+            "both voice 0 and voice 3 should have flagged ENDX: endx={:#04x}",
+            dsp.endx()
+        );
     }
 }

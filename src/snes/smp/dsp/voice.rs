@@ -33,11 +33,13 @@
 //!   the voice itself. The voice's last_voice_output is what the
 //!   next voice's PMON stage reads, and is what the mixer routes
 //!   into the echo bus.
-//! - **ENDX / OUTX** voice-status registers: writeback is not yet
-//!   plumbed; the voice records the latest values in
-//!   [`Voice::endx_pending`] / [`Voice::last_raw_sample`] so the
-//!   mixer can publish them when the global register policy is
-//!   wired up.
+//! - **ENDX**: voices set [`Voice::endx_pending`] when their most
+//!   recent BRR block had the end flag (looped or not). The mixer
+//!   aggregates and clears these into the global `$7C` register
+//!   each sample (Phase 5c.9).
+//! - **OUTX**: writeback is not yet plumbed; [`Voice::last_raw_sample`]
+//!   holds the latest pre-volume value the mixer can publish when
+//!   that policy is wired up.
 //!
 //! ## Sources
 //!

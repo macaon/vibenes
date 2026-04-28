@@ -128,7 +128,7 @@ impl ApuSubsystem {
             let aram: &mut [u8; 0x10000] = (&mut self.aram[..])
                 .try_into()
                 .expect("ARAM must be exactly 64 KiB");
-            let sample = self.mixer.step_sample(&self.dsp, aram);
+            let sample = self.mixer.step_sample(&mut self.dsp, aram);
             self.samples.push(sample);
         }
     }
