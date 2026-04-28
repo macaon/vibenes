@@ -157,6 +157,28 @@ pub struct Snes {
     framebuffer: Vec<u8>,
     save_meta: Option<SaveMeta>,
     audio_sink: Option<AudioSink>,
+    /// Debug counters for the audio path - only updated/printed when
+    /// `VIBENES_SNES_AUDIO_DEBUG` is set. Lets a host operator
+    /// observe SMP/DSP traffic without rebuilding.
+    audio_debug: AudioDebug,
+}
+
+#[derive(Debug, Default)]
+struct AudioDebug {
+    enabled: bool,
+    /// Frames since last log emission.
+    frames_since_log: u32,
+    /// Total stereo samples produced by the mixer since reset.
+    total_samples: u64,
+    /// Number of stereo samples in the most recent drain that were
+    /// non-zero on either channel.
+    last_nonzero_count: u32,
+    /// Last drained frame's biggest absolute (L, R) value.
+    last_peak: i16,
+    /// Total times `end_audio_frame` has been called (whether or not
+    /// it logged). Used to print every frame for the first few so
+    /// startup is observable.
+    total_samples_drains: u32,
 }
 
 impl Snes {
@@ -166,6 +188,12 @@ impl Snes {
         let mut cpu = cpu::Cpu::new();
         cpu.reset(&mut bus);
         let apu = ApuSubsystem::new(smp::ipl::Ipl::embedded());
+        if std::env::var("VIBENES_SNES_AUDIO_DEBUG").is_ok() {
+            eprintln!(
+                "[snes-audio] STARTUP: SNES core constructed, reset_pc={:02X}:{:04X} region={:?}",
+                cpu.pbr, cpu.pc, cart.region
+            );
+        }
         Self {
             cart,
             cpu,
@@ -175,6 +203,10 @@ impl Snes {
             framebuffer,
             save_meta: None,
             audio_sink: None,
+            audio_debug: AudioDebug {
+                enabled: std::env::var("VIBENES_SNES_AUDIO_DEBUG").is_ok(),
+                ..AudioDebug::default()
+            },
         }
     }
 
@@ -295,15 +327,36 @@ impl Core for Snes {
         // framebuffer so the host can present it.
         let start = self.bus.frame_count();
         let mut steps = 0u64;
+        // Tighter cap when the audio diagnostic is on so a wedged
+        // CPU surfaces in seconds, not in tens of seconds.
+        let limit: u64 = if self.audio_debug.enabled {
+            500_000
+        } else {
+            5_000_000
+        };
         while self.bus.frame_count() == start {
             self.step_instruction();
             steps += 1;
-            if steps > 5_000_000 {
-                // Safety net: if a misbehaving ROM never enables
-                // NMI / never reaches vblank, surface that to the
-                // host instead of looping forever.
+            if steps > limit {
+                if self.audio_debug.enabled {
+                    eprintln!(
+                        "[snes-audio] STEP-UNTIL-FRAME WEDGE after {steps} steps: \
+                         cpu_pc={:02X}:{:04X} smp_pc={:#06x} smp_cy={} \
+                         master_cy={} frame_count={} mailbox_cpu_view={:02X}{:02X}{:02X}{:02X}",
+                        self.cpu.pbr,
+                        self.cpu.pc,
+                        self.apu.smp.pc,
+                        self.apu.cycles,
+                        self.master_cycles,
+                        self.bus.frame_count(),
+                        self.bus.apu_ports.cpu_read(0),
+                        self.bus.apu_ports.cpu_read(1),
+                        self.bus.apu_ports.cpu_read(2),
+                        self.bus.apu_ports.cpu_read(3),
+                    );
+                }
                 return Err(format!(
-                    "step_until_frame: 5M instructions without a frame edge (PC={:02X}:{:04X})",
+                    "step_until_frame: {limit} instructions without a frame edge (PC={:02X}:{:04X})",
                     self.cpu.pbr, self.cpu.pc
                 ));
             }
@@ -351,8 +404,69 @@ impl Core for Snes {
         // S-DSP output is already band-limited at 32 kHz, so we feed
         // it straight into the linear-interp resampler that lifts it
         // to the host rate.
+        let drained = self.apu.drain_samples();
+        if self.audio_debug.enabled {
+            let mut nonzero = 0u32;
+            let mut peak: i16 = 0;
+            for &(l, r) in &drained {
+                if l != 0 || r != 0 {
+                    nonzero += 1;
+                }
+                let lp = l.saturating_abs();
+                let rp = r.saturating_abs();
+                if lp > peak {
+                    peak = lp;
+                }
+                if rp > peak {
+                    peak = rp;
+                }
+            }
+            self.audio_debug.total_samples += drained.len() as u64;
+            self.audio_debug.last_nonzero_count = nonzero;
+            self.audio_debug.last_peak = peak;
+            self.audio_debug.frames_since_log += 1;
+            // First 5 frames: log every frame so startup is visible.
+            // After that throttle to every 30 frames (~0.5s @ 60Hz)
+            // so the log doesn't drown stderr.
+            let log_now = self.audio_debug.total_samples_drains < 5
+                || self.audio_debug.frames_since_log >= 30;
+            self.audio_debug.total_samples_drains =
+                self.audio_debug.total_samples_drains.saturating_add(1);
+            if log_now {
+                self.audio_debug.frames_since_log = 0;
+                let kon = self.apu.dsp.read(smp::dsp::global_reg::KON);
+                let flg = self.apu.dsp.read(smp::dsp::global_reg::FLG);
+                let mvoll = self.apu.dsp.read(smp::dsp::global_reg::MVOLL) as i8;
+                let mvolr = self.apu.dsp.read(smp::dsp::global_reg::MVOLR) as i8;
+                let endx = self.apu.dsp.read(smp::dsp::global_reg::ENDX);
+                let voices_active = (0..8)
+                    .filter(|&v| self.apu.mixer.voices[v].active)
+                    .count();
+                let smp_pc = self.apu.smp.pc;
+                let smp_cycles = self.apu.cycles;
+                let cpu_pc = self.cpu.pc;
+                eprintln!(
+                    "[snes-audio] frame_total={} drained={} nonzero={} peak={} \
+                     KON={:#04x} FLG={:#04x} MVOL=({},{}) ENDX={:#04x} \
+                     voices_active={} smp_pc={:#06x} smp_cy={} cpu_pc={:#06x}",
+                    self.audio_debug.total_samples,
+                    drained.len(),
+                    nonzero,
+                    peak,
+                    kon,
+                    flg,
+                    mvoll,
+                    mvolr,
+                    endx,
+                    voices_active,
+                    smp_pc,
+                    smp_cycles,
+                    cpu_pc,
+                );
+            }
+        }
         if let Some(sink) = self.audio_sink.as_mut() {
-            for (l, r) in self.apu.drain_samples() {
+            for (l, r) in drained {
                 sink.push_stereo_sample(l, r);
             }
         }
