@@ -184,6 +184,28 @@ impl AudioSink {
         }
     }
 
+    /// Reset all internal resampler state. Called on core swap so
+    /// the new core doesn't inherit the old one's interpolation
+    /// position / BlipBuf delta history. The ring's contents (still
+    /// in flight to the cpal callback) are left alone - the queued
+    /// samples drain naturally into silence as the new core ramps up.
+    pub fn reset(&mut self) {
+        self.cycles = 0;
+        self.last_scaled = 0;
+        // BlipBuf has no public clear; cycling one zero-length frame
+        // discards any pending deltas.
+        self.blip.end_frame(0);
+        loop {
+            let n = self.blip.read_samples(&mut self.scratch, false);
+            if n == 0 {
+                break;
+            }
+        }
+        self.snes_prev_l = 0.0;
+        self.snes_prev_r = 0.0;
+        self.snes_pos = 0.0;
+    }
+
     /// Push one 32 kHz stereo sample from the SNES S-DSP. `l` / `r`
     /// are the post-master-volume signed 16-bit voice mix produced
     /// by [`crate::snes::smp::dsp::mixer::Mixer::step_sample`].

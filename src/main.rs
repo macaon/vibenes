@@ -339,7 +339,9 @@ impl App {
         // The sink is tuned to NTSC at `audio::start` time; a PAL ROM
         // on the command line must retune before attach, otherwise
         // BlipBuf resamples at the wrong CPU clock rate (pitch ~7.6%
-        // off, and the ring drains faster than it fills).
+        // off, and the ring drains faster than it fills). The SNES
+        // path doesn't care about CPU clock - it produces samples at
+        // a fixed 32 kHz that the sink resamples to host rate.
         let (mut nes, pending_audio_sink) = match (nes, audio_sink) {
             (Some(mut nes), Some(mut sink)) => {
                 sink.set_cpu_clock(nes.region().cpu_clock_hz());
@@ -532,6 +534,10 @@ impl App {
                         self.halted_notice_shown = true;
                     }
                 }
+                // Drain the APU's accumulated 32 kHz stereo samples
+                // into the host audio sink so the cpal callback can
+                // present them before the next wakeup.
+                vibenes::core::Core::end_audio_frame(snes);
             }
             if let Some(nes) = self.nes.as_mut() {
                 if !nes.cpu.halted {
@@ -1070,8 +1076,14 @@ impl App {
     /// is plumbed through `App::new`, but kept off the constructor
     /// so existing call sites don't need to thread an `Option<Snes>`
     /// they never use.
-    fn attach_initial_snes(&mut self, snes: vibenes::snes::Snes) {
+    fn attach_initial_snes(&mut self, mut snes: vibenes::snes::Snes) {
         self.frame_period = frame_period_for(map_region(snes.region()));
+        // Hand off the pending host audio sink (held since startup
+        // when no NES was loaded) to the SNES so the first frame
+        // already produces audible output.
+        if let Some(sink) = self.pending_audio_sink.take() {
+            vibenes::core::Core::attach_audio(&mut snes, sink);
+        }
         self.snes = Some(snes);
         self.pending_window_resize = true;
     }
@@ -1084,6 +1096,22 @@ impl App {
                 match vibenes::snes::rom::Cartridge::load(path) {
                     Ok(cart) => {
                         eprintln!("vibenes: loaded {}", cart.describe());
+                        // Reclaim the audio sink before dropping
+                        // whichever core is active so the cpal stream
+                        // keeps producing rather than going silent.
+                        // Sources, in priority order: an active NES,
+                        // an active SNES (rare - you'd be reloading),
+                        // or the pending slot (no core attached yet).
+                        let reclaimed_sink = self
+                            .nes
+                            .as_mut()
+                            .and_then(Nes::detach_audio)
+                            .or_else(|| {
+                                self.snes
+                                    .as_mut()
+                                    .and_then(vibenes::snes::Snes::detach_audio)
+                            })
+                            .or_else(|| self.pending_audio_sink.take());
                         // Drop any active NES (saving its battery
                         // first) so the SNES has the framebuffer
                         // pipeline to itself.
@@ -1092,7 +1120,10 @@ impl App {
                                 eprintln!("vibenes: save before SNES swap failed: {e:#}");
                             }
                         }
-                        let snes = vibenes::snes::Snes::from_cartridge(cart);
+                        let mut snes = vibenes::snes::Snes::from_cartridge(cart);
+                        if let Some(sink) = reclaimed_sink {
+                            vibenes::core::Core::attach_audio(&mut snes, sink);
+                        }
                         self.frame_period =
                             frame_period_for(map_region(snes.region()));
                         self.snes = Some(snes);
@@ -1109,8 +1140,16 @@ impl App {
             }
             Ok(vibenes::core::system::System::Nes) => {
                 // Fall through to NES load. If a SNES was running,
-                // drop it so the NES owns the pipeline.
-                self.snes = None;
+                // reclaim its audio sink (so the cpal stream stays
+                // alive) and drop the SNES so the NES owns the pipeline.
+                if let Some(mut snes) = self.snes.take() {
+                    if let Some(sink) = snes.detach_audio() {
+                        // Park the sink in the pending slot. The
+                        // first-load NES branch below will pick it up
+                        // and retune it for the NES region clock.
+                        self.pending_audio_sink = Some(sink);
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("vibenes: {e:#}");

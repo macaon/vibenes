@@ -266,8 +266,18 @@ impl Nes {
 
     /// Attach a host audio sink. From this point on every CPU cycle's
     /// APU output is fed into the sink's band-limited resampler.
-    pub fn attach_audio(&mut self, sink: AudioSink) {
+    pub fn attach_audio(&mut self, mut sink: AudioSink) {
+        // Reset on attach so we don't carry residual delta history
+        // from a previous core's BlipBuf state.
+        sink.reset();
         self.bus.audio_sink = Some(sink);
+    }
+
+    /// Surrender the host audio sink so it can be re-attached to
+    /// another core when the host swaps ROMs (NES ↔ SNES). Returns
+    /// `None` if no sink was attached.
+    pub fn detach_audio(&mut self) -> Option<AudioSink> {
+        self.bus.audio_sink.take()
     }
 
     /// Replace the loaded cartridge with a new one and cold-reset the
