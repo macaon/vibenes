@@ -255,6 +255,24 @@ fn run(rom_path: &PathBuf) -> Result<Report> {
     step_frames(&mut nes, release)?;
     step_frames(&mut nes, run_frames)?;
 
+    eprintln!(
+        "post-run state: PC=${:04X} A=${:02X} X=${:02X} Y=${:02X} P=${:02X} SP=${:02X}",
+        nes.cpu.pc, nes.cpu.a, nes.cpu.x, nes.cpu.y, nes.cpu.p.to_u8(), nes.cpu.sp
+    );
+    eprintln!(
+        "  Debug_EC=${:02X} ErrorCode=${:02X} initialSubTest=${:02X} suitePointer=${:04X}",
+        nes.bus.peek(0xEC),
+        nes.bus.peek(0x10),
+        nes.bus.peek(0x11),
+        u16::from_le_bytes([nes.bus.peek(0x05), nes.bus.peek(0x06)])
+    );
+    eprintln!(
+        "  result_DMADMASync_PreTest=${:02X} result_VblankSync_PreTest=${:02X} PostAllTestTally=${:02X}",
+        nes.bus.peek(0x12),
+        nes.bus.peek(0x3A),
+        nes.bus.peek(0x37)
+    );
+
     Ok(format_report(&nes))
 }
 

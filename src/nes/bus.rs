@@ -436,8 +436,14 @@ impl Bus {
                     // the PRG bus sees the DMC address, not
                     // `pending_addr` (matches Mesen2 line 406:
                     // `ProcessDmaRead(_apu->GetDmcReadAddress(), …)`).
+                    // The fetched byte also drives the CPU data bus -
+                    // AccuracyCoin's "DMA + Open Bus" pretest reads
+                    // `LDA $4000` immediately after a DMC fetch and
+                    // expects the sample byte (typically $00) on the
+                    // open-bus latch.
                     self.tick_pre_access(true);
                     let byte = self.mapper.cpu_read(self.dmc_dma_addr);
+                    self.open_bus = byte;
                     self.tick_post_access(true);
                     self.apu.dmc_dma_complete(byte);
                     self.dmc_dma_running = false;
