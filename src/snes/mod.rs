@@ -133,6 +133,31 @@ impl ApuSubsystem {
         }
     }
 
+    /// Run one SMP instruction against the integrated SMP bus,
+    /// advancing [`Self::cycles`] by the instruction's cost and
+    /// catching the DSP up to the new SMP cycle count. Takes
+    /// `ports` separately from `&mut self` so callers (notably the
+    /// scheduler context) can hold disjoint borrows of the
+    /// `LoRomBus` (which owns the ports) and the `ApuSubsystem`.
+    pub fn step_smp_one_instruction(&mut self, ports: &mut smp::state::ApuPorts) {
+        let cycles_before = self.cycles;
+        {
+            let mut spc_bus = smp::bus::IntegratedSmpBus {
+                aram: &mut self.aram,
+                ipl: &self.ipl.bytes,
+                control: &mut self.control,
+                timers: &mut self.timers,
+                dsp: &mut self.dsp,
+                ports,
+                cycles: &mut self.cycles,
+                mixer: &mut self.mixer,
+            };
+            self.smp.step(&mut spc_bus);
+        }
+        let smp_delta = (self.cycles - cycles_before) as u32;
+        self.advance_dsp(smp_delta);
+    }
+
     /// Drain accumulated samples, returning the buffered `(L, R)`
     /// pairs and clearing the internal vector. Used by hosts /
     /// resamplers to lift produced audio into a downstream sink.
@@ -238,65 +263,33 @@ impl Snes {
             // signal cancels a pending entry.
             self.cpu.irq_pending = false;
         }
-        let cycles = self.cpu.step(&mut self.bus);
-        // SMP catch-up is driven off the *bus*-side master clock
-        // (`LoRomBus::master`), the single source of truth for master
-        // cycles in this core. Each CPU bus access charges its
-        // region's actual master-cycle cost (FAST=6 / SLOW=8 /
-        // XSLOW=12) via `LoRomBus::advance_master`; reading that
-        // counter here keeps the SMP synchronised to the real clock
-        // ratio (master / 21 ≈ SMP cycles) instead of an approximation
-        // built from CPU-instruction cycle counts.
-        self.run_smp_to_master_cycles();
+        // Construct a per-call scheduler context that wraps both the
+        // CPU bus and the APU subsystem. The CPU still runs one
+        // logical instruction at a time, but the wrapper interleaves
+        // SMP catch-up *after every CPU bus access* against the bus's
+        // master clock, matching the cooperative scheduling model
+        // higan / Mesen2 use. Per-instruction batching (the prior
+        // model) didn't give the SMP a chance to react between the
+        // four mailbox writes of an `STA $2140` (16-bit) sequence,
+        // which broke the standard SPC IPL block-upload protocol;
+        // per-access interleaving fixes that.
+        let cycles = {
+            let mut ctx = SchedulerCtx {
+                bus: &mut self.bus,
+                apu: &mut self.apu,
+            };
+            self.cpu.step(&mut ctx)
+        };
         cycles
     }
 
-    /// Run SMP instructions until [`ApuSubsystem::cycles`] catches up
-    /// with `bus.master / SMP_MASTER_DIVIDER`. SMP instructions
-    /// run in their own cycle granularity (2-12 SMP cycles each), so
-    /// the SMP may overshoot the target slightly - those cycles are
-    /// pre-paid for the next round, which is correct.
-    pub fn run_smp_to_master_cycles(&mut self) {
-        let target = self.bus.master_cycles() / SMP_MASTER_DIVIDER;
-        // Cap the per-call work so a runaway CPU loop can't wedge us
-        // in here forever. The cap is generous - far more than any
-        // sensible per-instruction SMP debt.
-        let mut budget = 4096usize;
-        while self.apu.cycles < target && budget > 0 {
-            self.step_smp_one_instruction();
-            budget -= 1;
-        }
-    }
-
     /// Run exactly one SMP instruction against the integrated bus.
-    /// Borrows disjoint mutable fields of `self` to construct the
-    /// transient bus.
+    /// Kept as a thin wrapper over [`ApuSubsystem::step_smp_one_instruction`]
+    /// for callers that want to drive the SMP without going through
+    /// the scheduler (e.g. unit tests).
     pub fn step_smp_one_instruction(&mut self) {
-        let cycles_before = self.apu.cycles;
-        {
-            let mut spc_bus = smp::bus::IntegratedSmpBus {
-                aram: &mut self.apu.aram,
-                ipl: &self.apu.ipl.bytes,
-                control: &mut self.apu.control,
-                timers: &mut self.apu.timers,
-                dsp: &mut self.apu.dsp,
-                ports: &mut self.bus.apu_ports,
-                cycles: &mut self.apu.cycles,
-                mixer: &mut self.apu.mixer,
-            };
-            self.apu.smp.step(&mut spc_bus);
-        }
-        // Commit any CPU-side mailbox writes that landed in the
-        // pending shadow during this instruction. The just-finished
-        // instruction read the pre-write value; the next one will
-        // see the new byte.
-        self.bus.apu_ports.commit_pending();
-        // Advance the 32 kHz DSP sample clock by the SMP cycles this
-        // instruction consumed. May produce zero, one, or two samples
-        // depending on the prior accumulator state and instruction
-        // length (SMP instructions are 2-12 cycles).
-        let smp_delta = (self.apu.cycles - cycles_before) as u32;
-        self.apu.advance_dsp(smp_delta);
+        self.apu
+            .step_smp_one_instruction(&mut self.bus.apu_ports);
     }
 
     pub fn attach_save_metadata(&mut self, rom_path: PathBuf, rom_crc32: u32) {
@@ -312,6 +305,74 @@ impl Snes {
     /// `None` if no sink was attached.
     pub fn detach_audio(&mut self) -> Option<AudioSink> {
         self.audio_sink.take()
+    }
+}
+
+/// Per-call scheduling context. Wraps `&mut LoRomBus` plus
+/// `&mut ApuSubsystem` and implements [`SnesBus`] so the CPU sees
+/// the same access surface as before. The wrapper's job is to run
+/// the SMP forward to the bus's current master clock after every
+/// access, so CPU↔SMP communication via the `$2140-$2143` mailbox
+/// is interleaved at access granularity rather than at CPU-
+/// instruction granularity. This is what real SNES hardware does
+/// (both processors run continuously off the same master clock)
+/// and what bsnes / higan / Mesen2 emulate via cooperative
+/// coroutines; per-access catch-up is the same observable model
+/// without the coroutine machinery.
+struct SchedulerCtx<'a> {
+    bus: &'a mut bus::LoRomBus,
+    apu: &'a mut ApuSubsystem,
+}
+
+impl SchedulerCtx<'_> {
+    /// Run SMP instructions until the SMP clock catches up with the
+    /// bus's master clock divided by [`SMP_MASTER_DIVIDER`]. Bounded
+    /// by a small budget per call (way more than the ~1 SMP
+    /// instruction a single CPU access would need at the 21:1 master
+    /// ratio) so a pathological CPU access can't wedge here.
+    #[inline]
+    fn smp_catchup(&mut self) {
+        let target = self.bus.master_cycles() / SMP_MASTER_DIVIDER;
+        let mut budget = 8usize;
+        while self.apu.cycles < target && budget > 0 {
+            self.apu.step_smp_one_instruction(&mut self.bus.apu_ports);
+            budget -= 1;
+        }
+    }
+}
+
+impl cpu::bus::SnesBus for SchedulerCtx<'_> {
+    fn read(&mut self, addr: u32) -> u8 {
+        // Hardware order: advance the master clock by the access
+        // duration, run the SMP forward over those just-elapsed
+        // cycles, THEN latch the data. This is what makes a CPU
+        // read of `$2140` return the byte the SMP just wrote
+        // *during* the access window rather than the stale value
+        // from before it. (The previous order - read then catchup -
+        // races every IPL upload echo by one CPU iteration.)
+        let speed = self.bus.region_speed(addr);
+        self.bus.advance_master(speed);
+        self.smp_catchup();
+        self.bus.read_internal(addr)
+    }
+
+    fn write(&mut self, addr: u32, value: u8) {
+        // Same order for writes: tick the clock + run the SMP first
+        // (so any SMP-side state that the new write should land on
+        // top of has been computed), then commit the byte.
+        let speed = self.bus.region_speed(addr);
+        self.bus.advance_master(speed);
+        self.smp_catchup();
+        self.bus.write_internal(addr, value);
+    }
+
+    fn idle(&mut self) {
+        self.bus.idle();
+        self.smp_catchup();
+    }
+
+    fn master_cycles(&self) -> u64 {
+        self.bus.master_cycles()
     }
 }
 

@@ -281,7 +281,7 @@ impl LoRomBus {
     /// and (if NMI is enabled) raise the CPU NMI line. The CPU
     /// reads the line via [`LoRomBus::take_nmi`] at instruction
     /// boundaries.
-    fn advance_master(&mut self, cycles: u64) {
+    pub(super) fn advance_master(&mut self, cycles: u64) {
         let prev = self.master;
         self.master = self.master.wrapping_add(cycles);
         let line_total = self.lines_per_frame() * LINE_CYCLES;
@@ -422,7 +422,7 @@ impl LoRomBus {
         }
     }
 
-    fn read_internal(&mut self, addr: u32) -> u8 {
+    pub(super) fn read_internal(&mut self, addr: u32) -> u8 {
         let bank = (addr >> 16) as u8;
         let off = (addr & 0xFFFF) as u16;
         if let Some(i) = Self::wram_index(addr) {
@@ -526,7 +526,7 @@ impl LoRomBus {
         }
     }
 
-    fn write_internal(&mut self, addr: u32, value: u8) {
+    pub(super) fn write_internal(&mut self, addr: u32, value: u8) {
         let bank = (addr >> 16) as u8;
         let off = (addr & 0xFFFF) as u16;
         self.open_bus = value;
