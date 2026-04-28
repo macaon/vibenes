@@ -1151,9 +1151,16 @@ impl Ppu {
                     // Palette read: low 6 bits come from palette,
                     // high 2 bits keep decaying. Buffer refills from
                     // the mirrored nametable byte behind palette RAM.
+                    // When $2001 bit 0 (greyscale) is set, the PPU
+                    // masks the lower 4 bits of the returned palette
+                    // value to zero - AccuracyCoin "Palette RAM
+                    // Quirks" #6. Writes are not masked (#7).
                     self.data_buffer =
                         self.ppu_bus_read(vram_addr.wrapping_sub(0x1000), PpuFetchKind::Idle, mapper);
-                    let palette = self.read_palette(vram_addr) & 0x3F;
+                    let mut palette = self.read_palette(vram_addr) & 0x3F;
+                    if self.mask & 0x01 != 0 {
+                        palette &= 0x30;
+                    }
                     let bus_high = self.open_bus_decayed() & 0xC0;
                     (palette | bus_high, 0x3Fu8)
                 } else {
@@ -1254,6 +1261,20 @@ impl Ppu {
     }
 
     fn increment_v(&mut self) {
+        // When the CPU accesses $2007 during rendering on a visible or
+        // pre-render scanline, the PPU performs the same coarse-X +
+        // fine-Y "end of tile fetch" increment that the rendering
+        // pipeline does at dot 256, ignoring the $2000 bit-2 step.
+        // AccuracyCoin "$2007 read w/ rendering" #2 gates on this.
+        let rendering = (self.mask & 0x18) != 0;
+        let pre_render = self.region.pre_render_scanline();
+        let on_render_line = (self.scanline >= 0 && self.scanline < FRAME_HEIGHT as i16)
+            || self.scanline == pre_render;
+        if rendering && on_render_line {
+            self.inc_coarse_x();
+            self.inc_y();
+            return;
+        }
         let step: u16 = if (self.ctrl & 0x04) != 0 { 32 } else { 1 };
         self.v = self.v.wrapping_add(step) & 0x7FFF;
     }
