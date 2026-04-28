@@ -151,9 +151,6 @@ pub struct Snes {
     pub cpu: cpu::Cpu,
     pub bus: bus::LoRomBus,
     pub apu: ApuSubsystem,
-    /// Total master clock cycles the CPU has consumed since reset.
-    /// Drives the SMP catch-up scheduler in [`Snes::step_instruction`].
-    pub master_cycles: u64,
     framebuffer: Vec<u8>,
     save_meta: Option<SaveMeta>,
     audio_sink: Option<AudioSink>,
@@ -199,7 +196,6 @@ impl Snes {
             cpu,
             bus,
             apu,
-            master_cycles: 0,
             framebuffer,
             save_meta: None,
             audio_sink: None,
@@ -243,24 +239,25 @@ impl Snes {
             self.cpu.irq_pending = false;
         }
         let cycles = self.cpu.step(&mut self.bus);
-        // The CPU's per-instruction cycle count is in 5A22 cycles
-        // (master / 6 fast or master / 8 slow). For the orchestrator
-        // we treat it as master cycles - close enough that the SMP
-        // tracks within ~6x of real time, which is plenty for SPC
-        // ISA tests and commercial-game mailbox handshakes. Real
-        // master-cycle accounting per access lands with the PPU.
-        self.master_cycles = self.master_cycles.wrapping_add(cycles as u64);
+        // SMP catch-up is driven off the *bus*-side master clock
+        // (`LoRomBus::master`), the single source of truth for master
+        // cycles in this core. Each CPU bus access charges its
+        // region's actual master-cycle cost (FAST=6 / SLOW=8 /
+        // XSLOW=12) via `LoRomBus::advance_master`; reading that
+        // counter here keeps the SMP synchronised to the real clock
+        // ratio (master / 21 ≈ SMP cycles) instead of an approximation
+        // built from CPU-instruction cycle counts.
         self.run_smp_to_master_cycles();
         cycles
     }
 
     /// Run SMP instructions until [`ApuSubsystem::cycles`] catches up
-    /// with `master_cycles / SMP_MASTER_DIVIDER`. SMP instructions
+    /// with `bus.master / SMP_MASTER_DIVIDER`. SMP instructions
     /// run in their own cycle granularity (2-12 SMP cycles each), so
     /// the SMP may overshoot the target slightly - those cycles are
     /// pre-paid for the next round, which is correct.
     pub fn run_smp_to_master_cycles(&mut self) {
-        let target = self.master_cycles / SMP_MASTER_DIVIDER;
+        let target = self.bus.master_cycles() / SMP_MASTER_DIVIDER;
         // Cap the per-call work so a runaway CPU loop can't wedge us
         // in here forever. The cap is generous - far more than any
         // sensible per-instruction SMP debt.
@@ -347,7 +344,7 @@ impl Core for Snes {
                         self.cpu.pc,
                         self.apu.smp.pc,
                         self.apu.cycles,
-                        self.master_cycles,
+                        self.bus.master_cycles(),
                         self.bus.frame_count(),
                         self.bus.apu_ports.cpu_read(0),
                         self.bus.apu_ports.cpu_read(1),

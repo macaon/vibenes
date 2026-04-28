@@ -337,6 +337,14 @@ impl LoRomBus {
         self.frame_count
     }
 
+    /// Inherent accessor for the bus's master clock counter. Mirrors
+    /// the [`SnesBus::master_cycles`] trait method but is callable
+    /// from outside the trait. Single source of truth for SMP catch-up
+    /// scheduling and (eventually) PPU dot timing.
+    pub fn master_cycles(&self) -> u64 {
+        self.master
+    }
+
     /// Master-cycle cost of one access at `addr`. Same shape every
     /// SNES emulator uses: WRAM and most cart space cost 8, B-bus
     /// MMIO and FastROM cost 6, the legacy joypad strip costs 12.
