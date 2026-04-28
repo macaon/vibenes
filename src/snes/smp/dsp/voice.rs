@@ -37,9 +37,11 @@
 //!   recent BRR block had the end flag (looped or not). The mixer
 //!   aggregates and clears these into the global `$7C` register
 //!   each sample (Phase 5c.9).
-//! - **OUTX**: writeback is not yet plumbed; [`Voice::last_raw_sample`]
-//!   holds the latest pre-volume value the mixer can publish when
-//!   that policy is wired up.
+//! - **ENVX / OUTX**: the mixer publishes each voice's current
+//!   envelope level (envelope.level >> 4 -> `$X8`) and post-
+//!   envelope output ([`Voice::last_voice_output`] >> 8 -> `$X9`)
+//!   at end-of-sample (Phase 5c.10). Voices don't track these
+//!   themselves - the mixer reads them off the existing fields.
 //!
 //! ## Sources
 //!

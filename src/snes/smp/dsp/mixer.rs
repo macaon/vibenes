@@ -34,6 +34,16 @@
 //! cycles (a 1-sample staging buffer); we collapse it - drivers
 //! poll ENDX between samples, so the visible behaviour matches.
 //!
+//! ENVX / OUTX writeback (5c.10): each voice's `$X8` (current
+//! envelope level) and `$X9` (current voice output) registers are
+//! refreshed at the same end-of-sample point. Per Mesen2
+//! `DspVoice.cpp` Step6/Step7:
+//! `EnvRegBuffer = envVolume >> 4` and
+//! `OutRegBuffer = (uint8_t)(VoiceOutput >> 8)`. Hardware uses a
+//! 1-sample staging buffer (Step8/Step9 commit); we publish
+//! immediately, which is invisible to drivers that poll between
+//! samples.
+//!
 //! ## Deferred for future sub-phases
 //!
 //! - **KON polling cadence**: Mesen2 / hardware polls KON / KOFF
@@ -221,6 +231,20 @@ impl Mixer {
         }
         let new_endx = (dsp.endx() | endx_set) & !kon_dispatched;
         dsp.write(super::global_reg::ENDX, new_endx);
+
+        // ENVX / OUTX writeback. ENVX = envelope.level >> 4 (11-bit
+        // level into the high 7 bits of an 8-bit unsigned register);
+        // OUTX = high byte of last_voice_output (post-envelope, LSB-
+        // masked - matches Mesen2 `(uint8_t)(VoiceOutput >> 8)`,
+        // signed when interpreted as i8 by the SMP). Both publish
+        // every sample; hardware's 1-sample staging buffer is
+        // invisible to between-sample polls.
+        for v in 0..8 {
+            let envx = (self.voices[v].envelope.level >> 4) as u8;
+            let outx = (self.voices[v].last_voice_output >> 8) as u8;
+            dsp.set_voice_reg(v, super::voice_reg::ENVX, envx);
+            dsp.set_voice_reg(v, super::voice_reg::OUTX, outx);
+        }
 
         // Run the echo pipeline. Returns the echo contribution that
         // is added to the dry mix; also writes the feedback back to
@@ -882,6 +906,132 @@ mod tests {
             "KON must clear ENDX bit for the keyed voice: endx={:#04x}",
             dsp.endx()
         );
+    }
+
+    #[test]
+    fn envx_and_outx_are_zero_for_idle_voices() {
+        // Fresh mixer + idle DSP: every voice's $X8 / $X9 should be
+        // zero after one step (no voice was KON'd, envelopes are 0,
+        // outputs are 0).
+        let mut mixer = Mixer::new();
+        let mut dsp = dsp_with_master_volume(0x40, 0x40);
+        let mut aram = Box::new([0u8; 0x10000]);
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        for v in 0..8 {
+            assert_eq!(
+                dsp.voice_reg(v, voice_reg::ENVX),
+                0,
+                "voice {v} ENVX should be 0 when idle"
+            );
+            assert_eq!(
+                dsp.voice_reg(v, voice_reg::OUTX),
+                0,
+                "voice {v} OUTX should be 0 when idle"
+            );
+        }
+    }
+
+    #[test]
+    fn envx_reflects_envelope_level_shifted_right_four() {
+        // KON a voice with fast attack and let it ramp up; ENVX must
+        // track the 7-bit-shifted envelope level (Mesen2: envVolume >> 4).
+        let (mut dsp, mut aram) = endx_test_setup(0x83);
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x01);
+        // Run until envelope crosses some non-trivial level.
+        let mut crossed = false;
+        for _ in 0..200 {
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
+            let internal = mixer.voices[0].envelope.level;
+            let written = dsp.voice_reg(0, voice_reg::ENVX);
+            assert_eq!(
+                written as u16,
+                internal >> 4,
+                "ENVX byte must equal envelope.level >> 4 (level={internal:#06x}, written={written:#04x})"
+            );
+            if internal >= 0x100 {
+                crossed = true;
+            }
+        }
+        assert!(crossed, "envelope should have ramped past 0x100 in 200 samples");
+    }
+
+    #[test]
+    fn outx_reflects_high_byte_of_last_voice_output() {
+        // Drive a voice that produces non-trivial output; OUTX should
+        // equal the high byte of last_voice_output (Mesen2: u8 cast of
+        // VoiceOutput >> 8). LSB of last_voice_output is masked off so
+        // the >>8 value occupies the full i8 range.
+        let (mut dsp, mut aram) = endx_test_setup(0x83);
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x01);
+        let mut got_nonzero = false;
+        for _ in 0..400 {
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
+            let internal = mixer.voices[0].last_voice_output;
+            let written = dsp.voice_reg(0, voice_reg::OUTX);
+            assert_eq!(
+                written,
+                (internal >> 8) as u8,
+                "OUTX byte must equal (last_voice_output >> 8) as u8 \
+                 (output={internal}, written={written:#04x})"
+            );
+            if written != 0 {
+                got_nonzero = true;
+            }
+        }
+        assert!(
+            got_nonzero,
+            "OUTX should have shown some non-zero value over 400 samples"
+        );
+    }
+
+    #[test]
+    fn envx_and_outx_decay_to_zero_after_voice_releases() {
+        // Voice plays one block (header 0x81: end-without-loop), goes
+        // into Release; both ENVX and OUTX should eventually return
+        // to zero as the envelope decays.
+        let (mut dsp, mut aram) = endx_test_setup(0x81);
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x01);
+        // Run plenty of samples - enough for the voice to release and
+        // its envelope to fully decay (Release rate from ADSR = 0x8F
+        // is fast).
+        for _ in 0..2048 {
+            let _ = mixer.step_sample(&mut dsp, &mut aram);
+        }
+        assert_eq!(mixer.voices[0].envelope.level, 0, "envelope should have decayed");
+        assert_eq!(
+            dsp.voice_reg(0, voice_reg::ENVX),
+            0,
+            "ENVX should reflect fully-decayed envelope"
+        );
+        assert_eq!(
+            dsp.voice_reg(0, voice_reg::OUTX),
+            0,
+            "OUTX should be zero once envelope is zero"
+        );
+    }
+
+    #[test]
+    fn host_writes_to_envx_outx_are_overwritten_each_sample() {
+        // ENVX / OUTX are read-only mirrors: any host write is
+        // clobbered on the next sample tick. Pre-seed garbage values
+        // and verify they're replaced.
+        let (mut dsp, mut aram) = endx_test_setup(0x83);
+        dsp.set_voice_reg(0, voice_reg::ENVX, 0x55);
+        dsp.set_voice_reg(0, voice_reg::OUTX, 0xAA);
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x01);
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        // Voice was just KON'd this sample so envelope.level == 0
+        // post-attack-rate-application of one tick (or near-zero).
+        // The point isn't the exact value but that whatever the host
+        // wrote is gone.
+        let envx = dsp.voice_reg(0, voice_reg::ENVX);
+        let outx = dsp.voice_reg(0, voice_reg::OUTX);
+        assert_ne!(envx, 0x55, "ENVX must have been overwritten by mixer");
+        assert_ne!(outx, 0xAA, "OUTX must have been overwritten by mixer");
     }
 
     #[test]
