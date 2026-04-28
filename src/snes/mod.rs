@@ -442,10 +442,26 @@ impl Core for Snes {
                 let smp_pc = self.apu.smp.pc;
                 let smp_cycles = self.apu.cycles;
                 let cpu_pc = self.cpu.pc;
+                let mb_cpu_view: [u8; 4] = [
+                    self.bus.apu_ports.cpu_read(0),
+                    self.bus.apu_ports.cpu_read(1),
+                    self.bus.apu_ports.cpu_read(2),
+                    self.bus.apu_ports.cpu_read(3),
+                ];
+                let mb_smp_view: [u8; 4] = [
+                    self.bus.apu_ports.smp_read(0),
+                    self.bus.apu_ports.smp_read(1),
+                    self.bus.apu_ports.smp_read(2),
+                    self.bus.apu_ports.smp_read(3),
+                ];
+                let mb_pending = self.bus.apu_ports.pending_dirty;
                 eprintln!(
                     "[snes-audio] frame_total={} drained={} nonzero={} peak={} \
                      KON={:#04x} FLG={:#04x} MVOL=({},{}) ENDX={:#04x} \
-                     voices_active={} smp_pc={:#06x} smp_cy={} cpu_pc={:#06x}",
+                     voices_active={} smp_pc={:#06x} smp_cy={} cpu_pc={:#06x} \
+                     mb_cpu_view=[{:02X} {:02X} {:02X} {:02X}] \
+                     mb_smp_view=[{:02X} {:02X} {:02X} {:02X}] \
+                     pending_dirty={:#04x}",
                     self.audio_debug.total_samples,
                     drained.len(),
                     nonzero,
@@ -459,6 +475,9 @@ impl Core for Snes {
                     smp_pc,
                     smp_cycles,
                     cpu_pc,
+                    mb_cpu_view[0], mb_cpu_view[1], mb_cpu_view[2], mb_cpu_view[3],
+                    mb_smp_view[0], mb_smp_view[1], mb_smp_view[2], mb_smp_view[3],
+                    mb_pending,
                 );
             }
         }
@@ -713,18 +732,14 @@ mod tests {
 
     #[test]
     fn cpu_to_smp_mailbox_handoff_through_shared_apu_ports() {
-        // CPU writes to the shared mailbox; after the per-instruction
-        // commit fires, the SMP bus reads the new byte. Locks in that
-        // LoRomBus and IntegratedSmpBus both route through the same
-        // ApuPorts struct, plus the dual-latch delay model.
+        // CPU and SMP both route mailbox traffic through the same
+        // ApuPorts. Writes are immediately visible to the other side
+        // (no buffering, matching real hardware). Locks in that
+        // LoRomBus and IntegratedSmpBus see consistent state.
         let mut ports = smp::state::ApuPorts::RESET;
-        // Simulate CPU side write to $2140 - lands in pending shadow.
         ports.cpu_write(0, 0x42);
-        // Until commit, SMP still sees the old value.
-        assert_eq!(ports.smp_read(0), 0x00, "pending hidden until commit");
-        ports.commit_pending();
-        assert_eq!(ports.smp_read(0), 0x42);
-        // SMP writes to $F4 - CPU sees it on $2140 immediately.
+        assert_eq!(ports.smp_read(0), 0x42, "CPU write visible to SMP immediately");
+        // SMP writes to $F4 - CPU sees it on $2140.
         ports.smp_write(0, 0x99);
         assert_eq!(ports.cpu_read(0), 0x99);
         // The two halves are disjoint: writing the SMP side did not

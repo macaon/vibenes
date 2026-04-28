@@ -234,28 +234,40 @@ impl ApuPorts {
         pending_dirty: 0,
     };
 
-    /// CPU writes `value` to `$2140 + idx`. Lands in the pending
-    /// shadow; the SMP will see it after the next instruction
-    /// boundary commit.
+    /// CPU writes `value` to `$2140 + idx`. Visible to the SMP on
+    /// its next read of `$F4 + idx`.
+    ///
+    /// **Earlier model (5b.x)** routed writes through a one-SMP-
+    /// instruction-delayed `pending_cpu_to_smp` shadow on the theory
+    /// that hiding fresh writes from the in-flight SMP read would
+    /// fix a boot race in Kishin Douji Zenki / Kawasaki Superbike.
+    /// In practice it broke the IPL block-upload protocol for SMW
+    /// (and presumably every other game that uses the standard
+    /// upload path): a 1-instruction lag desynchronises the
+    /// counter↔echo handshake just enough that the SMP misorders
+    /// bytes in the uploaded driver, eventually following a
+    /// corrupted `JMP [$0000+X]` out of IPL ROM into ARAM garbage.
+    /// Real hardware has no such delay - the mailbox is a single
+    /// register the SMP reads at the access cycle, not a queue.
+    /// The Zenki/Kawasaki race needs to be re-investigated against
+    /// proper master-cycle scheduling, not papered over here.
     pub fn cpu_write(&mut self, idx: usize, value: u8) {
         debug_assert!(idx < 4);
+        self.cpu_to_smp[idx] = value;
+        // `pending_*` fields are kept on the struct for ABI stability
+        // with any external state-snapshot code, but no longer drive
+        // visibility. They stay zero so `pending_dirty` still works as
+        // a "no-op writes pending" indicator.
         self.pending_cpu_to_smp[idx] = value;
-        self.pending_dirty |= 1 << idx;
+        self.pending_dirty = 0;
     }
 
-    /// Promote pending CPU writes into the SMP-visible latch. Called
-    /// once per SMP instruction (post-step) so any read inside the
-    /// just-finished instruction saw the pre-write value, while the
-    /// next instruction sees the new one. This is the granularity
-    /// game compat needs (Mesen2 commits per cycle for cycle-exact
-    /// fidelity; per-instruction is conservative but sufficient).
+    /// Retained for callers that explicitly synchronise mailbox
+    /// state at instruction boundaries; with the dual-latch removed
+    /// this is a no-op.
     pub fn commit_pending(&mut self) {
-        for i in 0..4 {
-            if self.pending_dirty & (1 << i) != 0 {
-                self.cpu_to_smp[i] = self.pending_cpu_to_smp[i];
-            }
-        }
-        self.pending_dirty = 0;
+        // No-op: writes are now immediately visible. See `cpu_write`
+        // doc for the rationale.
     }
 
     /// CPU reads `$2140 + idx`. Returns whatever the SMP last wrote.
@@ -393,10 +405,11 @@ mod tests {
     #[test]
     fn apu_ports_round_trip_each_direction_independently() {
         let mut p = ApuPorts::RESET;
-        // CPU -> SMP - landing in pending until commit.
+        // CPU -> SMP: writes are immediately visible to the SMP, no
+        // commit step. Real hardware exhibits no buffering on this
+        // path - the mailbox is a single shared register.
         p.cpu_write(0, 0x11);
         p.cpu_write(3, 0x44);
-        p.commit_pending();
         assert_eq!(p.smp_read(0), 0x11);
         assert_eq!(p.smp_read(3), 0x44);
         // SMP -> CPU (overrides reset boot signature)
@@ -408,34 +421,37 @@ mod tests {
     }
 
     #[test]
-    fn apu_ports_cpu_write_invisible_to_smp_until_commit() {
-        // The dual-latch holds the new CPU byte in shadow. The SMP
-        // continues to observe the pre-write value until commit.
+    fn apu_ports_cpu_write_immediately_visible_to_smp() {
+        // The previous build hid CPU writes behind a one-instruction
+        // pending-shadow latch. That broke the standard SPC IPL
+        // block-upload protocol (SMW etc.) by desynchronising the
+        // counter↔echo handshake. Real hardware exposes the new byte
+        // on the very next SMP read.
         let mut p = ApuPorts::RESET;
         p.cpu_write(1, 0x55);
-        assert_eq!(p.smp_read(1), 0x00, "still pre-commit (reset value)");
-        p.commit_pending();
-        assert_eq!(p.smp_read(1), 0x55, "post-commit, byte is visible");
+        assert_eq!(p.smp_read(1), 0x55, "byte must be visible immediately");
     }
 
     #[test]
-    fn apu_ports_commit_only_promotes_dirty_slots() {
+    fn apu_ports_commit_pending_is_now_a_noop() {
+        // Retained as a no-op so any external state-snapshot code
+        // doesn't break, but it should make zero observable change
+        // when called.
         let mut p = ApuPorts::RESET;
-        p.cpu_to_smp = [0x10, 0x20, 0x30, 0x40];
-        p.cpu_write(2, 0xFF); // only slot 2 dirty
+        p.cpu_write(2, 0xFF);
+        let before = p.cpu_to_smp;
         p.commit_pending();
-        assert_eq!(p.cpu_to_smp, [0x10, 0x20, 0xFF, 0x40]);
+        assert_eq!(p.cpu_to_smp, before, "commit_pending no longer promotes anything");
     }
 
     #[test]
-    fn apu_ports_repeated_cpu_writes_collapse_to_latest_at_commit() {
-        // Multiple CPU writes between commits leave only the most
-        // recent value visible to the SMP.
+    fn apu_ports_repeated_cpu_writes_keep_only_the_latest() {
+        // Multiple CPU writes between any two SMP reads leave only
+        // the most recent value visible.
         let mut p = ApuPorts::RESET;
         p.cpu_write(0, 0xAA);
         p.cpu_write(0, 0xBB);
         p.cpu_write(0, 0xCC);
-        p.commit_pending();
         assert_eq!(p.smp_read(0), 0xCC);
     }
 }
