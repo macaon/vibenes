@@ -1,36 +1,44 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Host audio output.
 //!
-//! The APU produces a single analog-style sample in 0.0..=1.0 on every
-//! CPU cycle (~1.789 MHz NTSC / ~1.662 MHz PAL). We need to feed that
-//! into the host's audio device (typically 48 kHz) without aliasing.
+//! Two producer paths share a single stereo ring buffer + cpal output:
 //!
-//! Resampling is done with Blargg's `blip_buf` - a band-limited step
-//! synthesizer designed for exactly this problem: you hand it signal
-//! *deltas* at the high clock rate and it reads out properly
-//! bandlimited samples at the target rate. It handles anti-aliasing,
-//! rational-ratio resampling, and DC blocking in one pass, and is what
-//! every serious NES/Game Boy/SNES emulator uses.
+//! - **NES path** (`on_cpu_cycle`): the APU produces a single
+//!   analog-style sample in 0.0..=1.0 on every CPU cycle
+//!   (~1.789 MHz NTSC / ~1.662 MHz PAL). We feed deltas into Blargg's
+//!   `blip_buf` band-limited resampler, which reads out properly
+//!   anti-aliased samples at the host rate. Each mono output sample
+//!   is duplicated to both stereo channels.
+//! - **SNES path** (`push_stereo_sample`): the S-DSP produces
+//!   pre-band-limited stereo at 32 kHz natively (every 32 SMP
+//!   cycles). Resampling 32 kHz → host rate is straight linear
+//!   interpolation - no need for a brick-wall filter, since the
+//!   input is already mixed at sub-Nyquist. Both channels survive
+//!   to the host device.
 //!
 //! Thread layout:
 //!
 //!   emulator thread                          audio thread (cpal callback)
 //!   ───────────────                          ───────────────────────────
-//!   Bus::tick_post_access                    HeapCons::try_pop
-//!     → AudioSink::on_cpu_cycle               → writes f32 into device buffer
+//!   NES Bus::tick_post_access                HeapCons::try_pop ×2
+//!     → AudioSink::on_cpu_cycle               → writes (L, R) into device frame
 //!         → BlipBuf::add_delta
-//!   every ~20 ms:
+//!   every ~5 ms:
 //!     → flush(): BlipBuf::read_samples
-//!     → HeapProd::try_push
+//!     → HeapProd::try_push (s, s) interleaved
 //!
-//! The ring buffer between threads is a lock-free SPSC queue (`ringbuf`
-//! 0.4). Sizing it generously (~300 ms) is deliberate: the emulator
-//! produces ~734 samples in a burst at end-of-frame, while cpal drains
-//! continuously, so a slow frame (wgpu present blocking on compositor,
-//! OS scheduler hiccup, DMA-heavy scene) can starve the ring for
-//! 30–100 ms at a time. Pre-filling ~100 ms of silence at startup
-//! prevents the very first frame's setup cost from causing an
-//! immediate underrun click.
+//!   SNES Snes::end_audio_frame
+//!     → drain mixer.samples
+//!     → AudioSink::push_stereo_sample(l, r)
+//!         → linear-interp 32k → host rate
+//!         → HeapProd::try_push (l_f, r_f) interleaved
+//!
+//! The ring is interleaved L,R: every two consecutive `f32` slots form
+//! one stereo frame. Capacity (`ring_cap` below) is doubled so the
+//! ~300 ms latency budget is preserved in stereo. cpal's output
+//! callback chunks `data` into device frames and pops one (L, R)
+//! pair per frame. For a mono device (channels==1) we average L+R;
+//! for >2 channels the extras are zeroed.
 //!
 //! Back-pressure policy: if the ring ever *does* fill, `try_push`
 //! silently drops the oldest-not-yet-written sample; if it drains,
@@ -79,8 +87,9 @@ const PREFILL_MILLIS: u32 = 100;
 const FLUSH_MILLIS: u32 = 5;
 
 /// Produces samples on the emulator thread. Holds the `BlipBuf`
-/// resampler and the ring-buffer producer side. `on_cpu_cycle` is
-/// called from [`crate::nes::bus::Bus::tick_post_access`] every CPU cycle.
+/// resampler (NES path) plus a linear-interp resampler (SNES path)
+/// and the ring-buffer producer side. The ring is interleaved
+/// stereo (`f32` pairs).
 pub struct AudioSink {
     blip: blip_buf::BlipBuf,
     /// Cycles accumulated since the last `blip.end_frame()` call. Reset
@@ -97,6 +106,16 @@ pub struct AudioSink {
     /// of the stream; cached so we can re-tune BlipBuf after a region
     /// change.
     sample_rate: u32,
+    /// Linear-interp resampler state for the SNES 32 kHz stereo path.
+    /// `prev_l`/`prev_r` hold the most recent input pair (in
+    /// `[-1.0, 1.0]`); `pos` is the current output position relative
+    /// to that pair, expressed in input-sample units. `step` is
+    /// `input_rate / output_rate` - the amount `pos` advances per
+    /// output sample emitted.
+    snes_prev_l: f32,
+    snes_prev_r: f32,
+    snes_pos: f64,
+    snes_step: f64,
 }
 
 impl AudioSink {
@@ -156,9 +175,39 @@ impl AudioSink {
             }
             for &s in &self.scratch[..n] {
                 let f = s as f32 / 32_768.0;
+                // Mono → stereo: same value for L and R, written as an
+                // interleaved (L, R) pair so the cpal callback sees a
+                // proper stereo frame.
+                let _ = self.producer.try_push(f);
                 let _ = self.producer.try_push(f);
             }
         }
+    }
+
+    /// Push one 32 kHz stereo sample from the SNES S-DSP. `l` / `r`
+    /// are the post-master-volume signed 16-bit voice mix produced
+    /// by [`crate::snes::smp::dsp::mixer::Mixer::step_sample`].
+    /// Resamples linearly to the host rate and pushes interleaved
+    /// (L, R) pairs into the same ring the NES path uses.
+    pub fn push_stereo_sample(&mut self, l: i16, r: i16) {
+        let l = l as f32 / 32_768.0;
+        let r = r as f32 / 32_768.0;
+        // Emit any output samples that fall between the previous
+        // input pair (snes_prev) and the new one (l, r). Each
+        // emitted sample's interpolation weight is `pos`, in
+        // input-sample units (so `0.0` aligns with the previous
+        // input, `1.0` with the new one).
+        while self.snes_pos < 1.0 {
+            let t = self.snes_pos as f32;
+            let out_l = self.snes_prev_l + (l - self.snes_prev_l) * t;
+            let out_r = self.snes_prev_r + (r - self.snes_prev_r) * t;
+            let _ = self.producer.try_push(out_l);
+            let _ = self.producer.try_push(out_r);
+            self.snes_pos += self.snes_step;
+        }
+        self.snes_pos -= 1.0;
+        self.snes_prev_l = l;
+        self.snes_prev_r = r;
     }
 }
 
@@ -189,16 +238,23 @@ pub fn start(cpu_clock_hz: f64) -> Result<(AudioSink, AudioStream)> {
     let channels = supported.channels();
     let stream_config: StreamConfig = supported.into();
 
-    let ring_cap = ((sample_rate as u64 * RING_MILLIS as u64) / 1000) as usize;
-    let ring_cap = ring_cap.max(4096);
+    // Ring is interleaved stereo, so capacity is doubled compared
+    // with the old mono path: every two consecutive `f32` slots are
+    // one (L, R) frame. The latency budget (RING_MILLIS) stays the
+    // same in *frames*.
+    let ring_frames = ((sample_rate as u64 * RING_MILLIS as u64) / 1000) as usize;
+    let ring_cap = ring_frames.max(4096) * 2;
     let rb: HeapRb<f32> = HeapRb::new(ring_cap);
     let (mut producer, consumer) = rb.split();
 
     // Pre-fill the ring with silence so the cpal callback has
     // something to drain during the emulator's first frame of
-    // startup work.
-    let prefill = ((sample_rate as u64 * PREFILL_MILLIS as u64) / 1000) as usize;
-    for _ in 0..prefill {
+    // startup work. Push (0.0, 0.0) pairs.
+    let prefill_frames = ((sample_rate as u64 * PREFILL_MILLIS as u64) / 1000) as usize;
+    for _ in 0..prefill_frames {
+        if producer.try_push(0.0).is_err() {
+            break;
+        }
         if producer.try_push(0.0).is_err() {
             break;
         }
@@ -217,6 +273,12 @@ pub fn start(cpu_clock_hz: f64) -> Result<(AudioSink, AudioStream)> {
     let cycles_per_flush = ((cpu_clock_hz * FLUSH_MILLIS as f64) / 1000.0).max(1.0) as u32;
     let scratch = vec![0i16; blip_cap as usize];
 
+    // SNES path: input rate is fixed at the S-DSP's 32 kHz output
+    // (`Mixer::step_sample`'s output cadence). `step` is
+    // `input_rate / output_rate` - the per-output-sample advance in
+    // input-sample units that drives the linear-interp loop.
+    const SNES_INPUT_RATE: f64 = 32_000.0;
+    let snes_step = SNES_INPUT_RATE / sample_rate as f64;
     let sink = AudioSink {
         blip,
         cycles: 0,
@@ -225,6 +287,10 @@ pub fn start(cpu_clock_hz: f64) -> Result<(AudioSink, AudioStream)> {
         scratch,
         cycles_per_flush,
         sample_rate,
+        snes_prev_l: 0.0,
+        snes_prev_r: 0.0,
+        snes_pos: 0.0,
+        snes_step,
     };
     let stream = AudioStream {
         _stream: stream,
@@ -243,16 +309,20 @@ fn build_stream(
 ) -> Result<Stream> {
     let err_fn = |e: cpal::StreamError| log::warn!("vibenes audio: {e}");
     let ch = channels as usize;
+    // Pop one (L, R) frame from the interleaved ring. For mono
+    // devices, average the two channels (NES path pushes the same
+    // value twice so this is a no-op; SNES path collapses real
+    // stereo to mono cleanly). For >2 channels, the extras are
+    // zeroed - we don't synthesise surround.
     let stream = match fmt {
         SampleFormat::F32 => device
             .build_output_stream(
                 config,
                 move |data: &mut [f32], _| {
                     for frame in data.chunks_mut(ch) {
-                        let s = consumer.try_pop().unwrap_or(0.0);
-                        for c in frame {
-                            *c = s;
-                        }
+                        let l = consumer.try_pop().unwrap_or(0.0);
+                        let r = consumer.try_pop().unwrap_or(0.0);
+                        write_stereo_frame(frame, l, r, ch, |s| s);
                     }
                 },
                 err_fn,
@@ -264,11 +334,11 @@ fn build_stream(
                 config,
                 move |data: &mut [i16], _| {
                     for frame in data.chunks_mut(ch) {
-                        let s = consumer.try_pop().unwrap_or(0.0).clamp(-1.0, 1.0);
-                        let v = (s * i16::MAX as f32) as i16;
-                        for c in frame {
-                            *c = v;
-                        }
+                        let l = consumer.try_pop().unwrap_or(0.0);
+                        let r = consumer.try_pop().unwrap_or(0.0);
+                        write_stereo_frame(frame, l, r, ch, |s| {
+                            (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+                        });
                     }
                 },
                 err_fn,
@@ -280,11 +350,11 @@ fn build_stream(
                 config,
                 move |data: &mut [u16], _| {
                     for frame in data.chunks_mut(ch) {
-                        let s = consumer.try_pop().unwrap_or(0.0).clamp(-1.0, 1.0);
-                        let v = ((s * 0.5 + 0.5) * u16::MAX as f32) as u16;
-                        for c in frame {
-                            *c = v;
-                        }
+                        let l = consumer.try_pop().unwrap_or(0.0);
+                        let r = consumer.try_pop().unwrap_or(0.0);
+                        write_stereo_frame(frame, l, r, ch, |s| {
+                            ((s.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16
+                        });
                     }
                 },
                 err_fn,
@@ -294,4 +364,190 @@ fn build_stream(
         other => return Err(anyhow!("unsupported cpal sample format: {other:?}")),
     };
     Ok(stream)
+}
+
+#[cfg(test)]
+impl AudioSink {
+    /// Build an AudioSink without a live cpal stream, returning the
+    /// consumer side of the ring so tests can observe what the
+    /// producer pushed. Sample rate is parameterised so we can cover
+    /// the common 32 → 48 / 32 → 44.1 / equal-rate ratios.
+    pub fn for_test(sample_rate: u32) -> (Self, HeapCons<f32>) {
+        const SNES_INPUT_RATE: f64 = 32_000.0;
+        let ring_cap = 16384;
+        let rb: HeapRb<f32> = HeapRb::new(ring_cap);
+        let (producer, consumer) = rb.split();
+        let cpu_clock_hz = 1_789_773.0;
+        let blip_cap = (sample_rate / 1000 * FLUSH_MILLIS * 4).max(2048);
+        let mut blip = blip_buf::BlipBuf::new(blip_cap);
+        blip.set_rates(cpu_clock_hz, sample_rate as f64);
+        let cycles_per_flush = ((cpu_clock_hz * FLUSH_MILLIS as f64) / 1000.0).max(1.0) as u32;
+        let scratch = vec![0i16; blip_cap as usize];
+        let sink = AudioSink {
+            blip,
+            cycles: 0,
+            last_scaled: 0,
+            producer,
+            scratch,
+            cycles_per_flush,
+            sample_rate,
+            snes_prev_l: 0.0,
+            snes_prev_r: 0.0,
+            snes_pos: 0.0,
+            snes_step: SNES_INPUT_RATE / sample_rate as f64,
+        };
+        (sink, consumer)
+    }
+}
+
+/// Place a stereo (L, R) f32 pair into the device frame, converting
+/// each sample with `cvt`. Mono device: average L+R; >2 channels:
+/// L → 0, R → 1, rest zeroed.
+#[inline]
+fn write_stereo_frame<S: Default + Copy>(
+    frame: &mut [S],
+    l: f32,
+    r: f32,
+    ch: usize,
+    cvt: impl Fn(f32) -> S,
+) {
+    if ch == 1 {
+        frame[0] = cvt((l + r) * 0.5);
+    } else {
+        frame[0] = cvt(l);
+        frame[1] = cvt(r);
+        for c in &mut frame[2..] {
+            *c = S::default();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ringbuf::traits::Consumer;
+
+    /// Pop `n` interleaved samples (L, R, L, R, ...) into a Vec.
+    fn drain(consumer: &mut HeapCons<f32>, n: usize) -> Vec<f32> {
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            out.push(consumer.try_pop().unwrap_or(0.0));
+        }
+        out
+    }
+
+    #[test]
+    fn nes_path_pushes_each_mono_sample_to_both_channels() {
+        // Simulate enough cycles for BlipBuf to emit at least a few
+        // output samples, with a varying input so we can see deltas.
+        // Then assert that every output frame on the ring has L == R
+        // (mono content broadcast to stereo).
+        let (mut sink, mut consumer) = AudioSink::for_test(48_000);
+        // Drive the input as a slow ramp at CPU rate. Even a few thousand
+        // cycles is enough at 48 kHz output to land a handful of samples.
+        for i in 0..40_000u32 {
+            sink.on_cpu_cycle((i as f32 * 1e-5).sin() * 0.5);
+        }
+        sink.end_frame();
+        let drained = drain(&mut consumer, 256);
+        // Skip the leading zeros (BlipBuf has a small startup transient
+        // before deltas show up). Find the first non-zero pair.
+        let first_nonzero = drained
+            .chunks_exact(2)
+            .position(|f| f[0] != 0.0 || f[1] != 0.0)
+            .expect("ring should contain non-zero NES audio");
+        let mut compared = 0;
+        for frame in drained.chunks_exact(2).skip(first_nonzero) {
+            assert_eq!(
+                frame[0], frame[1],
+                "NES mono frame must be duplicated (L=={}, R=={})",
+                frame[0], frame[1]
+            );
+            compared += 1;
+        }
+        assert!(compared > 0, "should have compared at least one stereo frame");
+    }
+
+    #[test]
+    fn snes_path_preserves_stereo_separation() {
+        // Equal-rate (32 kHz device) so linear interp degenerates to
+        // pass-through (with a 1-sample delay): every input pair lands
+        // verbatim on the ring once interpolation has primed.
+        let (mut sink, mut consumer) = AudioSink::for_test(32_000);
+        // Push a sequence with distinct L vs R values so we can verify
+        // they don't get crossed or averaged.
+        for i in 0..16i16 {
+            sink.push_stereo_sample(i * 100, i * -100);
+        }
+        let drained = drain(&mut consumer, 32);
+        // After the 1-sample priming delay the resampler should emit
+        // `prev_l, prev_r` pairs in order. Just check that L and R
+        // have opposite signs (matching the input pattern).
+        let mut found_distinct = false;
+        for frame in drained.chunks_exact(2) {
+            if frame[0] != 0.0 && frame[1] != 0.0 {
+                assert!(
+                    (frame[0] > 0.0 && frame[1] < 0.0) || (frame[0] < 0.0 && frame[1] > 0.0),
+                    "stereo pair must keep L/R distinct: ({}, {})",
+                    frame[0],
+                    frame[1]
+                );
+                found_distinct = true;
+            }
+        }
+        assert!(found_distinct, "should have emitted a non-silent stereo pair");
+    }
+
+    #[test]
+    fn snes_resampler_emits_correct_number_of_samples_for_32_to_48k() {
+        // 32 kHz input -> 48 kHz output: ratio 1.5, so N inputs should
+        // produce ~1.5*N outputs (within ±1 to account for fractional
+        // accumulator state).
+        let (mut sink, mut consumer) = AudioSink::for_test(48_000);
+        let n_inputs = 1_000;
+        for i in 0..n_inputs {
+            // Slow ramp so interpolation produces meaningful values.
+            let v = (i as i16).wrapping_mul(10);
+            sink.push_stereo_sample(v, v);
+        }
+        // Count drained interleaved samples (each pair = 1 frame).
+        let mut frames = 0usize;
+        while consumer.try_pop().is_some() {
+            // Pop the matching R; if missing the ring was inconsistent.
+            assert!(consumer.try_pop().is_some(), "ring must be a multiple of 2");
+            frames += 1;
+        }
+        let expected = (n_inputs as f64 * 1.5) as usize;
+        let diff = (frames as i64 - expected as i64).unsigned_abs() as usize;
+        assert!(
+            diff <= 2,
+            "expected ~{expected} frames at 48k from {n_inputs} 32k inputs, got {frames}"
+        );
+    }
+
+    #[test]
+    fn write_stereo_frame_mono_device_averages_channels() {
+        let mut frame = [0.0f32];
+        write_stereo_frame(&mut frame, 0.4, -0.2, 1, |s| s);
+        assert!((frame[0] - 0.1).abs() < 1e-6, "mono should be (L+R)/2: {}", frame[0]);
+    }
+
+    #[test]
+    fn write_stereo_frame_stereo_device_keeps_channels_separate() {
+        let mut frame = [0.0f32; 2];
+        write_stereo_frame(&mut frame, 0.4, -0.2, 2, |s| s);
+        assert_eq!(frame[0], 0.4);
+        assert_eq!(frame[1], -0.2);
+    }
+
+    #[test]
+    fn write_stereo_frame_surround_device_zeros_extra_channels() {
+        let mut frame = [9.0f32; 6];
+        write_stereo_frame(&mut frame, 0.4, -0.2, 6, |s| s);
+        assert_eq!(frame[0], 0.4);
+        assert_eq!(frame[1], -0.2);
+        for c in &frame[2..] {
+            assert_eq!(*c, 0.0);
+        }
+    }
 }
