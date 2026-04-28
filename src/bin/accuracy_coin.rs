@@ -248,12 +248,12 @@ fn run(rom_path: &PathBuf) -> Result<Report> {
     let release = env_frames("ACC_RELEASE_FRAMES", 4);
     let run_frames = env_frames("ACC_RUN_FRAMES", 12_000);
 
-    step_frames(&mut nes, boot)?;
+    step_frames(&mut nes, boot, false)?;
     nes.bus.controllers[0].buttons = BUTTON_START;
-    step_frames(&mut nes, hold)?;
+    step_frames(&mut nes, hold, false)?;
     nes.bus.controllers[0].buttons = 0;
-    step_frames(&mut nes, release)?;
-    step_frames(&mut nes, run_frames)?;
+    step_frames(&mut nes, release, false)?;
+    step_frames(&mut nes, run_frames, true)?;
 
     eprintln!(
         "post-run state: PC=${:04X} A=${:02X} X=${:02X} Y=${:02X} P=${:02X} SP=${:02X}",
@@ -276,7 +276,16 @@ fn run(rom_path: &PathBuf) -> Result<Report> {
     Ok(format_report(&nes))
 }
 
-fn step_frames(nes: &mut Nes, frames: u32) -> Result<()> {
+fn step_frames(nes: &mut Nes, frames: u32, detect_trap: bool) -> Result<()> {
+    // The test ROM's "fail-and-trap" landing pad at $80DF is a tight
+    // self-loop reached from a few internal panic paths (notably the
+    // Implied Dummy Reads test, which currently hangs vibenes there).
+    // Once execution is parked at $80DF the rest of the suite is dead
+    // weight: every subsequent test slot stays untouched. Bail early so
+    // the report renders without burning the full 12k+ frame budget.
+    // See docs/accuracy_coin/idr_crash.md for the open investigation.
+    const TRAP_PC: u16 = 0x80DF;
+    let mut trap_frames: u32 = 0;
     for _ in 0..frames {
         if nes.cpu.halted {
             anyhow::bail!(
@@ -287,7 +296,29 @@ fn step_frames(nes: &mut Nes, frames: u32) -> Result<()> {
                     .unwrap_or_else(|| "no reason".into())
             );
         }
-        nes.step_until_frame().map_err(anyhow::Error::msg)?;
+        if detect_trap {
+            let start_frame = nes.bus.ppu.frame();
+            let mut visited_trap = false;
+            while nes.bus.ppu.frame() == start_frame {
+                if nes.cpu.halted { break; }
+                if nes.cpu.pc == TRAP_PC { visited_trap = true; }
+                nes.step().map_err(anyhow::Error::msg)?;
+            }
+            if visited_trap {
+                trap_frames += 1;
+                if trap_frames >= 32 {
+                    eprintln!(
+                        "note: test ROM trapped at ${TRAP_PC:04X} (panic landing pad). \
+                         Aborting frame loop; report reflects state at trap entry."
+                    );
+                    return Ok(());
+                }
+            } else {
+                trap_frames = 0;
+            }
+        } else {
+            nes.step_until_frame().map_err(anyhow::Error::msg)?;
+        }
     }
     Ok(())
 }

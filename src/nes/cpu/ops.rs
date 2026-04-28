@@ -87,6 +87,52 @@ fn addr_ind_y_rmw(cpu: &mut Cpu, bus: &mut Bus) -> u16 {
     effective
 }
 
+// ---------- SH* family (SHA / SHX / SHY / SHS) --------------------------
+// Mesen2 NesCpu.h:716 `SyaSxaAxa` is the canonical model. The dummy read
+// uses the un-carried address; the final store uses the carried address
+// with the high byte ANDed with `valueReg` on page cross. The value
+// itself is `valueReg & (base_hi + 1)`, EXCEPT when DMC DMA hijacks the
+// dummy-read cycle - then the value is just `valueReg`. AccuracyCoin
+// Page 10 tests this exact corner.
+
+#[derive(Clone, Copy)]
+enum IndexReg { X, Y }
+#[derive(Clone, Copy)]
+enum ValueReg { X, Y, AandX }
+
+fn sha_family_abs(cpu: &mut Cpu, bus: &mut Bus, idx: IndexReg, val: ValueReg) {
+    let lo = cpu.fetch_byte(bus);
+    let hi = cpu.fetch_byte(bus);
+    let base = u16::from_le_bytes([lo, hi]);
+    let index = match idx { IndexReg::X => cpu.x, IndexReg::Y => cpu.y };
+    let value_reg = match val {
+        ValueReg::X => cpu.x,
+        ValueReg::Y => cpu.y,
+        ValueReg::AandX => cpu.a & cpu.x,
+    };
+    sh_store(bus, base, index, value_reg);
+}
+
+fn sh_store(bus: &mut Bus, base: u16, index: u8, value_reg: u8) {
+    let effective = base.wrapping_add(index as u16);
+    let dummy_addr = (base & 0xFF00) | (effective & 0x00FF);
+    let cyc_before = bus.clock.cpu_cycles();
+    bus.read(dummy_addr);
+    let had_dma = bus.clock.cpu_cycles().wrapping_sub(cyc_before) > 1;
+
+    let hi = (base >> 8) as u8;
+    let value = if had_dma { value_reg } else { value_reg & hi.wrapping_add(1) };
+
+    let store_addr = if (base & 0xFF00) != (effective & 0xFF00) {
+        // Page cross: high byte of effective address ANDed with valueReg,
+        // low byte preserved.
+        effective & (((value_reg as u16) << 8) | 0x00FF)
+    } else {
+        effective
+    };
+    bus.write(store_addr, value);
+}
+
 // ---------- ALU helpers -------------------------------------------------
 
 fn adc(cpu: &mut Cpu, value: u8) {
@@ -1230,37 +1276,13 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
         }
 
         // SHY abs,X ($9C). value = Y & (base_hi + 1); on page cross the
-        // store's high byte is ANDed with Y (see Nestopia NstCpu.cpp Shy /
-        // puNES cpu.c SXX macro / Mesen2 SyaSxaAxa).
-        0x9C => {
-            let lo = cpu.fetch_byte(bus);
-            let hi = cpu.fetch_byte(bus);
-            let base = u16::from_le_bytes([lo, hi]);
-            let effective = base.wrapping_add(cpu.x as u16);
-            bus.read((base & 0xFF00) | (effective & 0x00FF));
-            let value = cpu.y & hi.wrapping_add(1);
-            let store_addr = if (base & 0xFF00) != (effective & 0xFF00) {
-                effective & (((cpu.y as u16) << 8) | 0x00FF)
-            } else {
-                effective
-            };
-            bus.write(store_addr, value);
-        }
+        // store's high byte is ANDed with Y. When DMC DMA hijacks the
+        // dummy-read cycle, the (high+1) AND is skipped and value = Y
+        // unchanged - matches Mesen2 NesCpu.h:716 (SyaSxaAxa, hadDma
+        // path). AccuracyCoin Page 10 SH* tests gate on this.
+        0x9C => sha_family_abs(cpu, bus, IndexReg::X, ValueReg::Y),
         // SHX abs,Y ($9E). Same pattern, swap X/Y roles.
-        0x9E => {
-            let lo = cpu.fetch_byte(bus);
-            let hi = cpu.fetch_byte(bus);
-            let base = u16::from_le_bytes([lo, hi]);
-            let effective = base.wrapping_add(cpu.y as u16);
-            bus.read((base & 0xFF00) | (effective & 0x00FF));
-            let value = cpu.x & hi.wrapping_add(1);
-            let store_addr = if (base & 0xFF00) != (effective & 0xFF00) {
-                effective & (((cpu.x as u16) << 8) | 0x00FF)
-            } else {
-                effective
-            };
-            bus.write(store_addr, value);
-        }
+        0x9E => sha_family_abs(cpu, bus, IndexReg::Y, ValueReg::X),
         // SHA / AHX (ind),Y. Same page-cross magic-store as SHX/SHY:
         // when the Y indexing crosses a page, the write address's high
         // byte is ANDed with `A & X` (the same mask used in the value).
@@ -1269,50 +1291,21 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             let lo = bus.read(ptr as u16);
             let hi = bus.read(ptr.wrapping_add(1) as u16);
             let base = u16::from_le_bytes([lo, hi]);
-            let effective = base.wrapping_add(cpu.y as u16);
-            bus.read((base & 0xFF00) | (effective & 0x00FF));
-            let mask = cpu.a & cpu.x;
-            let value = mask & hi.wrapping_add(1);
-            let store_addr = if (base & 0xFF00) != (effective & 0xFF00) {
-                effective & (((mask as u16) << 8) | 0x00FF)
-            } else {
-                effective
-            };
-            bus.write(store_addr, value);
+            sh_store(bus, base, cpu.y, cpu.a & cpu.x);
         }
         // SHA / AHX abs,Y - same magic as $93, just absolute addressing.
-        0x9F => {
-            let lo = cpu.fetch_byte(bus);
-            let hi = cpu.fetch_byte(bus);
-            let base = u16::from_le_bytes([lo, hi]);
-            let effective = base.wrapping_add(cpu.y as u16);
-            bus.read((base & 0xFF00) | (effective & 0x00FF));
-            let mask = cpu.a & cpu.x;
-            let value = mask & hi.wrapping_add(1);
-            let store_addr = if (base & 0xFF00) != (effective & 0xFF00) {
-                effective & (((mask as u16) << 8) | 0x00FF)
-            } else {
-                effective
-            };
-            bus.write(store_addr, value);
-        }
-        // TAS / SHS abs,Y. SP = A & X; the page-cross address corruption
-        // uses the freshly-written SP as the high-byte mask (matches the
-        // value's mask).
+        0x9F => sha_family_abs(cpu, bus, IndexReg::Y, ValueReg::AandX),
+        // TAS / SHS abs,Y. SP = A & X first (always, even when DMA
+        // interrupts), then store using SP as both value mask and
+        // high-byte mask. Matches Mesen2 TAS() which calls SHAA() then
+        // SetSP(A&X); since SHAA uses (A&X) as valueReg, the order is
+        // observably equivalent.
         0x9B => {
             let lo = cpu.fetch_byte(bus);
             let hi = cpu.fetch_byte(bus);
             let base = u16::from_le_bytes([lo, hi]);
-            let effective = base.wrapping_add(cpu.y as u16);
-            bus.read((base & 0xFF00) | (effective & 0x00FF));
             cpu.sp = cpu.a & cpu.x;
-            let value = cpu.sp & hi.wrapping_add(1);
-            let store_addr = if (base & 0xFF00) != (effective & 0xFF00) {
-                effective & (((cpu.sp as u16) << 8) | 0x00FF)
-            } else {
-                effective
-            };
-            bus.write(store_addr, value);
+            sh_store(bus, base, cpu.y, cpu.sp);
         }
         0xBB => {
             // LAS abs,Y: value = mem & SP; A=X=SP=value
