@@ -24,11 +24,6 @@
 //!
 //! ## Deferred features
 //!
-//! - **KON delay**: hardware spends 5 samples after KON priming the
-//!   buffer before audible output starts. We start audible output
-//!   immediately after the 4-sample warm-up (which is implicit in the
-//!   sampler since the buffer fills as samples are pushed). Most
-//!   music is unaffected.
 //! - **Echo** (EON): handled by the master mixer + EchoUnit, not
 //!   the voice itself. The voice's last_voice_output is what the
 //!   next voice's PMON stage reads, and is what the mixer routes
@@ -88,6 +83,16 @@ pub struct Voice {
     /// flag set (regardless of loop). The mixer publishes the OR
     /// across voices into the global ENDX register when wired up.
     pub endx_pending: bool,
+    /// Priming-delay countdown applied after KON. While non-zero the
+    /// voice forces silent output, holds envelope.level at 0, and
+    /// skips the envelope rate machine. Initialised to 6 in
+    /// [`Voice::start`]: that gives 6 silent samples total -
+    /// matching Mesen2 `DspVoice.cpp` (1 dispatch sample where the
+    /// previous envVolume=0 produces 0 output and KON then sets
+    /// `_keyOnDelay = 5` at end-of-sample, plus 5 priming samples
+    /// where the delay block at line 245 decrements 5..0). Audible
+    /// attack starts on the sample after this reaches zero.
+    pub key_on_delay: u8,
     /// Last per-sample raw output (post-Gaussian / noise, pre-
     /// envelope, pre-volume).
     pub last_raw_sample: i16,
@@ -115,6 +120,7 @@ impl Voice {
             },
             active: false,
             endx_pending: false,
+            key_on_delay: 0,
             last_raw_sample: 0,
             last_voice_output: 0,
         }
@@ -148,6 +154,12 @@ impl Voice {
         };
         self.active = true;
         self.endx_pending = false;
+        // 6 silent samples before audible attack: 1 for the dispatch
+        // sample (Mesen2 line 297: KON sets `_keyOnDelay = 5` at end,
+        // so this sample's output is computed with the prior envVolume
+        // = 0) plus 5 priming samples where the delay block forces
+        // silence (Mesen2 line 245-258).
+        self.key_on_delay = 6;
         self.last_raw_sample = 0;
         self.last_voice_output = 0;
     }
@@ -239,6 +251,20 @@ impl Voice {
         // envelope so the host's ENVX read stays sensible.
         if !self.active {
             step_envelope(&mut self.envelope, adsr1, adsr2, gain, counter);
+            self.last_raw_sample = 0;
+            self.last_voice_output = 0;
+            return (0, 0);
+        }
+
+        // KON priming delay (Mesen2 `_keyOnDelay`). For 5 samples
+        // after KON the voice forces silent output, pins envelope
+        // at 0, and does NOT advance the envelope rate machine.
+        // Hardware also primes the BRR buffer here; in our model the
+        // sampler's rolling buffer fills lazily on the first non-
+        // delayed sample, which is observably equivalent.
+        if self.key_on_delay > 0 {
+            self.key_on_delay -= 1;
+            self.envelope.level = 0;
             self.last_raw_sample = 0;
             self.last_voice_output = 0;
             return (0, 0);

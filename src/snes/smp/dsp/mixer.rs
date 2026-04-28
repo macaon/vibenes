@@ -44,11 +44,15 @@
 //! immediately, which is invisible to drivers that poll between
 //! samples.
 //!
-//! ## Deferred for future sub-phases
-//!
-//! - **KON polling cadence**: Mesen2 / hardware polls KON / KOFF
-//!   every 2 samples (in their 5-step pipeline). We poll every
-//!   sample. Audibly indistinguishable for normal music.
+//! KON / KOFF cadence (5c.11): hardware processes KON and KOFF on
+//! alternating samples (Mesen2 `_state.EveryOtherSample` toggle in
+//! `Dsp.cpp` cycle 29; voice Step3 wraps both KOFF and KON in
+//! `if(EveryOtherSample)`). We mirror this with [`Mixer::every_other_sample`]:
+//! init `true`, toggled at the head of every `step_sample`, with
+//! KON dispatch and KOFF application gated on the post-toggle
+//! value. Combined with the per-voice 5-sample priming delay
+//! (`Voice::key_on_delay`), audible KON output starts ~5-6 samples
+//! after the host writes KON.
 //!
 //! ## Source pointers
 //!
@@ -77,6 +81,12 @@ pub struct Mixer {
     /// raw sample with `(lfsr * 2)` (LSB-zeroed s16). Reset value
     /// is `0x4000` per Anomie / Mesen2 documentation.
     pub noise_lfsr: u16,
+    /// Toggles each `step_sample`. Mesen2 calls this `EveryOtherSample`
+    /// (init = 1, then `^= 1` first thing each sample). KON / KOFF
+    /// dispatch only happens on samples where the post-toggle value
+    /// is `true`, matching the hardware "every-other-sample" cadence
+    /// in `DspVoice.cpp::Step3`.
+    pub every_other_sample: bool,
 }
 
 impl Mixer {
@@ -102,6 +112,7 @@ impl Mixer {
             echo: EchoUnit::new(),
             kon_pending: 0,
             noise_lfsr: 0x4000,
+            every_other_sample: true,
         }
     }
 
@@ -132,22 +143,33 @@ impl Mixer {
         // running any voice (so all voices see the same value).
         self.counter.tick();
 
-        // Resolve KOFF bitmask.
-        let koff = dsp.koff();
+        // Toggle the every-other-sample flag at the head of each
+        // sample (matches Mesen2 cycle 29: `EveryOtherSample ^= 1;
+        // if(EveryOtherSample) { ... }`). KON / KOFF / kon_pending
+        // are only consumed on samples where the post-toggle value
+        // is true.
+        self.every_other_sample = !self.every_other_sample;
+        let dispatch = self.every_other_sample;
+
+        // Resolve KOFF bitmask (only acted on this sample if dispatch).
+        let koff = if dispatch { dsp.koff() } else { 0 };
         let eon = dsp.eon();
 
         // Capture the KON dispatch mask BEFORE clearing kon_pending,
         // so the ENDX writeback at end-of-sample knows which voices
         // were just keyed on (their ENDX bits must be cleared, per
-        // Mesen2 DspVoice.cpp step S7).
-        let kon_dispatched = self.kon_pending;
+        // Mesen2 DspVoice.cpp step S7). Non-dispatch samples produce
+        // a zero mask (no voices key on) and leave kon_pending intact
+        // so the host's latched bits roll over to the next dispatch
+        // sample.
+        let kon_dispatched = if dispatch { self.kon_pending } else { 0 };
 
         // Dispatch any pending KONs - now (after the counter tick so
         // attack rate computations see this sample's counter).
         let dir_base = dsp.sample_directory_addr();
         for v in 0..8 {
             let bit = 1u8 << v;
-            if self.kon_pending & bit != 0 {
+            if kon_dispatched & bit != 0 {
                 let srcn = dsp.voice_source_number(v);
                 self.voices[v].start(srcn, dir_base, aram);
             }
@@ -155,7 +177,9 @@ impl Mixer {
                 self.voices[v].envelope.key_off();
             }
         }
-        self.kon_pending = 0;
+        if dispatch {
+            self.kon_pending = 0;
+        }
 
         // Mute flag (FLG.6) silences the output amplifier but voices
         // continue to step (envelopes / BRR keep advancing).
@@ -364,8 +388,13 @@ mod tests {
         aram[0x0600] = 0x03;
 
         mixer.latch_kon(0x01); // bit 0 -> voice 0
+        // KON dispatch is gated to every-other-sample. Mixer init has
+        // every_other_sample=true; first step toggles to false (no
+        // dispatch); second step toggles back to true (dispatch).
         let _ = mixer.step_sample(&mut dsp, &mut aram);
-        assert!(mixer.voices[0].active, "voice 0 should be active after KON");
+        assert!(!mixer.voices[0].active, "first sample is non-dispatch; KON deferred");
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert!(mixer.voices[0].active, "voice 0 should be active after dispatch sample");
         assert_eq!(mixer.voices[0].brr_addr, 0x0600);
         assert_eq!(mixer.voices[0].envelope.mode, EnvelopeMode::Attack);
     }
@@ -379,6 +408,8 @@ mod tests {
         mixer.voices[0].envelope.mode = EnvelopeMode::Attack;
         dsp.write(global_reg::KOFF, 0x01);
         let mut aram = Box::new([0u8; 0x10000]);
+        // KOFF is also every-other-sample; need two steps.
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
         let _ = mixer.step_sample(&mut dsp, &mut aram);
         assert_eq!(mixer.voices[0].envelope.mode, EnvelopeMode::Release);
     }
@@ -812,7 +843,7 @@ mod tests {
         mixer.latch_kon(0x01);
         // 18 samples > 16 sample/block, guaranteed to cross at least
         // one end-block boundary.
-        for _ in 0..18 {
+        for _ in 0..32 {
             let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
         assert!(
@@ -830,7 +861,7 @@ mod tests {
         let (mut dsp, mut aram) = endx_test_setup(0x81);
         let mut mixer = Mixer::new();
         mixer.latch_kon(0x01);
-        for _ in 0..18 {
+        for _ in 0..32 {
             let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
         assert!(
@@ -848,7 +879,7 @@ mod tests {
         let (mut dsp, mut aram) = endx_test_setup(0x83);
         let mut mixer = Mixer::new();
         mixer.latch_kon(0x01);
-        for _ in 0..18 {
+        for _ in 0..32 {
             let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
         assert!(dsp.endx() & 0x01 != 0, "precondition: ENDX.0 set");
@@ -873,7 +904,7 @@ mod tests {
         let (mut dsp, mut aram) = endx_test_setup(0x83);
         let mut mixer = Mixer::new();
         mixer.latch_kon(0x01);
-        for _ in 0..18 {
+        for _ in 0..32 {
             let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
         assert!(dsp.endx() & 0x01 != 0, "precondition: ENDX.0 set");
@@ -893,17 +924,22 @@ mod tests {
     #[test]
     fn kon_clears_endx_bit_for_keyed_voice() {
         // Set up an existing ENDX.0 bit by host write, then KON voice 0.
-        // The same-sample KON must clear ENDX.0 in the writeback.
+        // The KON dispatch sample must clear ENDX.0 in the writeback.
+        // (KON cadence is every-other-sample, so the first step is a
+        // non-dispatch tick that leaves the latch alone; the second
+        // step actually dispatches and clears the bit.)
         let (mut dsp, mut aram) = endx_test_setup(0x83);
         let mut mixer = Mixer::new();
         // Pre-seed ENDX.0 as if a previous run had set it.
         dsp.write(global_reg::ENDX, 0x01);
         mixer.latch_kon(0x01);
         let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert_eq!(dsp.endx() & 0x01, 0x01, "non-dispatch tick: KON deferred");
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
         assert_eq!(
             dsp.endx() & 0x01,
             0,
-            "KON must clear ENDX bit for the keyed voice: endx={:#04x}",
+            "KON dispatch must clear ENDX bit for the keyed voice: endx={:#04x}",
             dsp.endx()
         );
     }
@@ -1035,6 +1071,111 @@ mod tests {
     }
 
     #[test]
+    fn kon_dispatch_alternates_with_every_other_sample_flag() {
+        // Two consecutive KONs (one to voice 0, one to voice 1)
+        // latched between the same pair of samples should both
+        // dispatch on the same dispatch tick.
+        let (mut dsp, mut aram) = endx_test_setup(0x83);
+        // Voice 1 mirrors voice 0 (uses SRCN 0 too -> same sample).
+        dsp.write(DspRegs::voice_addr(1, voice_reg::VOLL), 0x40);
+        dsp.write(DspRegs::voice_addr(1, voice_reg::VOLR), 0x40);
+        dsp.write(DspRegs::voice_addr(1, voice_reg::PH), 0x10);
+        dsp.write(DspRegs::voice_addr(1, voice_reg::ADSR1), 0x8F);
+
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x03);
+        // Sample 1: every_other_sample toggles true -> false; no dispatch.
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert!(!mixer.voices[0].active, "no dispatch on first (non-dispatch) sample");
+        assert!(!mixer.voices[1].active);
+        // KON latch must persist - host's writes are not lost.
+        assert_eq!(mixer.kon_pending, 0x03, "kon_pending preserved across non-dispatch tick");
+        // Sample 2: dispatch tick - both voices key on simultaneously.
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert!(mixer.voices[0].active);
+        assert!(mixer.voices[1].active);
+        assert_eq!(mixer.kon_pending, 0, "latch consumed on dispatch sample");
+    }
+
+    #[test]
+    fn koff_only_fires_on_dispatch_sample() {
+        // Pre-active voice 0 in Attack; write KOFF; one step (non-
+        // dispatch) must NOT change envelope mode; second step
+        // (dispatch) must apply KOFF.
+        let mut mixer = Mixer::new();
+        let mut dsp = dsp_with_master_volume(0x40, 0x40);
+        mixer.voices[0].active = true;
+        mixer.voices[0].envelope.mode = EnvelopeMode::Attack;
+        dsp.write(global_reg::KOFF, 0x01);
+        let mut aram = Box::new([0u8; 0x10000]);
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert_eq!(
+            mixer.voices[0].envelope.mode,
+            EnvelopeMode::Attack,
+            "KOFF must not apply on non-dispatch sample"
+        );
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert_eq!(mixer.voices[0].envelope.mode, EnvelopeMode::Release);
+    }
+
+    #[test]
+    fn key_on_delay_pins_envelope_at_zero_for_six_samples() {
+        // After KON dispatches, the voice's key_on_delay starts at 6
+        // (1 dispatch + 5 priming) and counts down to 0. Envelope.level
+        // must stay at 0 for all 6 silent samples regardless of the
+        // configured Attack rate.
+        let (mut dsp, mut aram) = endx_test_setup(0x83);
+        let mut mixer = Mixer::new();
+        mixer.latch_kon(0x01);
+        // Sample 1: non-dispatch (cadence skip).
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        // Sample 2: KON dispatches; voice.start sets key_on_delay=6 then
+        // step decrements to 5 immediately. Output silent.
+        let (l, r) = mixer.step_sample(&mut dsp, &mut aram);
+        assert!(mixer.voices[0].active);
+        assert_eq!(mixer.voices[0].key_on_delay, 5);
+        assert_eq!(mixer.voices[0].envelope.level, 0);
+        assert_eq!((l, r), (0, 0), "dispatch sample is silent");
+        // Samples 3..7: priming countdown 4, 3, 2, 1, 0. All silent.
+        for expected_remaining in (0..5).rev() {
+            let (l, r) = mixer.step_sample(&mut dsp, &mut aram);
+            assert_eq!(
+                mixer.voices[0].key_on_delay, expected_remaining,
+                "key_on_delay should countdown each sample"
+            );
+            assert_eq!(
+                mixer.voices[0].envelope.level, 0,
+                "envelope level must stay 0 during priming (delay={expected_remaining})"
+            );
+            assert_eq!(
+                mixer.voices[0].last_voice_output, 0,
+                "voice output must be silent during priming"
+            );
+            assert_eq!(l, 0, "master output L silent during priming");
+            assert_eq!(r, 0, "master output R silent during priming");
+        }
+        // Sample 8: delay=0 on entry; envelope processes normally. With
+        // ADSR1 = 0x8F (fast attack) the level should leave 0.
+        let _ = mixer.step_sample(&mut dsp, &mut aram);
+        assert_eq!(mixer.voices[0].key_on_delay, 0);
+        assert!(
+            mixer.voices[0].envelope.level > 0,
+            "Attack should have begun ramping after priming: level={}",
+            mixer.voices[0].envelope.level
+        );
+    }
+
+    #[test]
+    fn fresh_mixer_starts_with_every_other_sample_true() {
+        // Mesen2 reset: EveryOtherSample = 1. We mirror that so the
+        // first call to step_sample toggles to false (non-dispatch),
+        // matching hardware's first-cycle behaviour after FLG soft-
+        // reset / power-on.
+        let m = Mixer::new();
+        assert!(m.every_other_sample);
+    }
+
+    #[test]
     fn endx_aggregates_across_voices() {
         // Two voices on independent end-blocks; both bits should
         // appear in ENDX after enough samples for each to cross.
@@ -1077,7 +1218,7 @@ mod tests {
 
         let mut mixer = Mixer::new();
         mixer.latch_kon(0x09); // voices 0 + 3
-        for _ in 0..18 {
+        for _ in 0..32 {
             let _ = mixer.step_sample(&mut dsp, &mut aram);
         }
         assert_eq!(
