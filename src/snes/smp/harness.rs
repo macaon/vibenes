@@ -72,16 +72,26 @@ where
         if should_stop(apu, ports) {
             break;
         }
-        let mut bus = IntegratedSmpBus {
-            aram: &mut apu.aram,
-            ipl: &apu.ipl.bytes,
-            control: &mut apu.control,
-            timers: &mut apu.timers,
-            dsp: &mut apu.dsp,
-            ports,
-            cycles: &mut apu.cycles,
-        };
-        apu.smp.step(&mut bus);
+        let cycles_before = apu.cycles;
+        {
+            let mut bus = IntegratedSmpBus {
+                aram: &mut apu.aram,
+                ipl: &apu.ipl.bytes,
+                control: &mut apu.control,
+                timers: &mut apu.timers,
+                dsp: &mut apu.dsp,
+                ports,
+                cycles: &mut apu.cycles,
+                mixer: &mut apu.mixer,
+            };
+            apu.smp.step(&mut bus);
+        }
+        // Same 32 kHz sample-clock advance the orchestrator does after
+        // every SMP step; keeps DSP-driven tests (PeterLemon SPC700
+        // ISA harness, future DSP test ROMs) producing audio samples
+        // through the same path the real Snes orchestrator uses.
+        let delta = (apu.cycles - cycles_before) as u32;
+        apu.advance_dsp(delta);
     }
     apu.cycles - start
 }
@@ -107,18 +117,24 @@ pub fn run_smp_until_mailbox_byte(
 /// code.
 #[cfg(test)]
 pub fn tick_idle(apu: &mut ApuSubsystem, ports: &mut ApuPorts, count: u64) {
-    let mut bus = IntegratedSmpBus {
-        aram: &mut apu.aram,
-        ipl: &apu.ipl.bytes,
-        control: &mut apu.control,
-        timers: &mut apu.timers,
-        dsp: &mut apu.dsp,
-        ports,
-        cycles: &mut apu.cycles,
-    };
-    for _ in 0..count {
-        bus.idle();
+    let cycles_before = apu.cycles;
+    {
+        let mut bus = IntegratedSmpBus {
+            aram: &mut apu.aram,
+            ipl: &apu.ipl.bytes,
+            control: &mut apu.control,
+            timers: &mut apu.timers,
+            dsp: &mut apu.dsp,
+            ports,
+            cycles: &mut apu.cycles,
+            mixer: &mut apu.mixer,
+        };
+        for _ in 0..count {
+            bus.idle();
+        }
     }
+    let delta = (apu.cycles - cycles_before) as u32;
+    apu.advance_dsp(delta);
 }
 
 #[cfg(test)]

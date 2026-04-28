@@ -141,6 +141,12 @@ pub struct IntegratedSmpBus<'a> {
     pub dsp: &'a mut super::state::DspRegs,
     pub ports: &'a mut super::state::ApuPorts,
     pub cycles: &'a mut u64,
+    /// DSP master mixer. Writes to the DSP data port (`$F3`) at
+    /// register `$4C` (KON) are routed here as `latch_kon` calls so
+    /// the next 32 kHz sample tick dispatches the key-on. The mixer's
+    /// other state (voice runtime, envelopes, echo unit, sample
+    /// production) is owned by the orchestrator outside the bus.
+    pub mixer: &'a mut super::dsp::mixer::Mixer,
 }
 
 impl<'a> IntegratedSmpBus<'a> {
@@ -211,7 +217,18 @@ impl<'a> IntegratedSmpBus<'a> {
                 }
             }
             0x00F2 => self.dsp.address = value,
-            0x00F3 => self.dsp.write_data(value),
+            0x00F3 => {
+                // Hook KON ($4C) writes to the mixer's pending latch so
+                // the next 32 kHz sample tick keys-on the requested
+                // voices. Other DSP register writes are pure register-
+                // file updates that the mixer reads on demand from
+                // [`super::dsp::DspRegs`] during `step_sample`.
+                let addr = self.dsp.address;
+                self.dsp.write_data(value);
+                if addr == super::dsp::global_reg::KON {
+                    self.mixer.latch_kon(value);
+                }
+            }
             0x00F4..=0x00F7 => self.ports.smp_write((addr - 0x00F4) as usize, value),
             0x00F8 | 0x00F9 => self.aram[addr as usize] = value,
             0x00FA => self.timers.set_target(0, value),
@@ -282,6 +299,7 @@ mod tests {
 
     // ----- IntegratedSmpBus -------------------------------------------
 
+    use super::super::dsp::mixer::Mixer;
     use super::super::ipl::IPL_ROM;
     use super::super::state::{ApuPorts, DspRegs, SmpControl, SmpTimers};
 
@@ -297,6 +315,7 @@ mod tests {
         dsp: DspRegs,
         ports: ApuPorts,
         cycles: u64,
+        mixer: Mixer,
     }
 
     impl IntegratedHarness {
@@ -309,6 +328,7 @@ mod tests {
                 dsp: DspRegs::new(),
                 ports: ApuPorts::RESET,
                 cycles: 0,
+                mixer: Mixer::new(),
             }
         }
         fn bus(&mut self) -> IntegratedSmpBus<'_> {
@@ -320,6 +340,7 @@ mod tests {
                 dsp: &mut self.dsp,
                 ports: &mut self.ports,
                 cycles: &mut self.cycles,
+                mixer: &mut self.mixer,
             }
         }
     }
@@ -477,6 +498,49 @@ mod tests {
         smp.step(&mut bus);
         assert_eq!(smp.x, 0xEF, "IPL byte 0 = MOV X, #$EF");
         assert_eq!(smp.pc, 0xFFC2);
+    }
+
+    #[test]
+    fn dsp_kon_write_latches_pending_voices_in_mixer() {
+        // SPC writes the DSP address latch ($F2) to the KON register
+        // ($4C), then writes the data port ($F3) with a voice mask.
+        // The integrated bus must forward that to mixer.latch_kon so
+        // the next 32 kHz sample tick keys-on the requested voices.
+        let mut h = IntegratedHarness::new();
+        let mut bus = h.bus();
+        bus.write(0x00F2, super::super::dsp::global_reg::KON); // address = $4C
+        bus.write(0x00F3, 0b0000_1010); // KON voices 1 and 3
+        drop(bus);
+        assert_eq!(h.mixer.kon_pending, 0b0000_1010);
+        // The DSP register file also stores the byte (mixer latch is
+        // additive, not consuming the register write).
+        assert_eq!(h.dsp.read(super::super::dsp::global_reg::KON), 0b0000_1010);
+    }
+
+    #[test]
+    fn dsp_non_kon_writes_do_not_disturb_mixer_kon_pending() {
+        // A write to a non-KON DSP register must leave mixer.kon_pending
+        // alone. This proves the bus discriminates on the address latch.
+        let mut h = IntegratedHarness::new();
+        h.mixer.kon_pending = 0b0000_0001;
+        let mut bus = h.bus();
+        bus.write(0x00F2, super::super::dsp::global_reg::MVOLL);
+        bus.write(0x00F3, 0x42);
+        drop(bus);
+        assert_eq!(h.mixer.kon_pending, 0b0000_0001, "non-KON write must not touch latch");
+    }
+
+    #[test]
+    fn dsp_kon_latch_accumulates_across_writes() {
+        // Two KON writes between sample ticks must OR-combine, matching
+        // the documented Mixer.latch_kon behaviour.
+        let mut h = IntegratedHarness::new();
+        let mut bus = h.bus();
+        bus.write(0x00F2, super::super::dsp::global_reg::KON);
+        bus.write(0x00F3, 0b0000_0011);
+        bus.write(0x00F3, 0b0001_0000); // address still $4C
+        drop(bus);
+        assert_eq!(h.mixer.kon_pending, 0b0001_0011);
     }
 
     #[test]

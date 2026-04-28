@@ -62,6 +62,12 @@ pub struct Mixer {
 }
 
 impl Mixer {
+    /// SMP master cycles per 32 kHz output sample. The SPC700 runs at
+    /// 24.576 MHz / 24 = 1.024 MHz; the S-DSP outputs at 24.576 MHz /
+    /// 24 / 32 = 32 kHz. So the host scheduler should call
+    /// [`Self::step_sample`] every 32 SMP cycles.
+    pub const SMP_CYCLES_PER_SAMPLE: u32 = 32;
+
     pub const fn new() -> Self {
         Self {
             voices: [

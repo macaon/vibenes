@@ -63,6 +63,20 @@ pub struct ApuSubsystem {
     pub dsp: smp::state::DspRegs,
     /// Total SMP cycles consumed since reset.
     pub cycles: u64,
+    /// S-DSP master mixer: 8 voices, envelopes, echo, noise, master
+    /// volume. Stepped once per 32 kHz output sample by
+    /// [`Self::advance_dsp`]. KON writes to DSP register `$4C` are
+    /// latched here through the integrated bus.
+    pub mixer: smp::dsp::mixer::Mixer,
+    /// SMP cycles accumulated since the last 32 kHz mixer tick. When
+    /// this crosses [`smp::dsp::mixer::Mixer::SMP_CYCLES_PER_SAMPLE`]
+    /// (32), one stereo sample is produced.
+    pub sample_cycle_accum: u32,
+    /// Stereo samples produced by the mixer since the last drain.
+    /// Phase 5c.8 buffers these in-core; later phases will resample
+    /// and forward them to the host [`AudioSink`]. Held as `(L, R)`
+    /// signed 16-bit at the DSP's native 32 kHz rate.
+    pub samples: Vec<(i16, i16)>,
 }
 
 impl ApuSubsystem {
@@ -85,7 +99,45 @@ impl ApuSubsystem {
             timers: smp::state::SmpTimers::default(),
             dsp: smp::state::DspRegs::new(),
             cycles: 0,
+            mixer: smp::dsp::mixer::Mixer::new(),
+            sample_cycle_accum: 0,
+            samples: Vec::new(),
         }
+    }
+
+    /// Advance the 32 kHz DSP sample clock by `smp_cycles` SMP cycles.
+    /// For every full [`smp::dsp::mixer::Mixer::SMP_CYCLES_PER_SAMPLE`]
+    /// crossed, the mixer steps and a stereo sample is appended to
+    /// [`Self::samples`].
+    ///
+    /// Called once per SMP instruction by
+    /// [`Snes::step_smp_one_instruction`]; the per-call cycle count is
+    /// 2-12 (one instruction's worth), so at most one or two samples
+    /// land per call. The `while` loop is robust to larger deltas if
+    /// callers ever batch-tick the DSP outside the per-instruction
+    /// scheduler.
+    pub fn advance_dsp(&mut self, smp_cycles: u32) {
+        self.sample_cycle_accum += smp_cycles;
+        let period = smp::dsp::mixer::Mixer::SMP_CYCLES_PER_SAMPLE;
+        while self.sample_cycle_accum >= period {
+            self.sample_cycle_accum -= period;
+            // Coerce the 64 KiB ARAM Vec into a fixed-size array
+            // reference for the mixer. The Vec is initialised with
+            // `vec![0; 0x10000]` in [`Self::new`] and never resized,
+            // so the conversion always succeeds.
+            let aram: &mut [u8; 0x10000] = (&mut self.aram[..])
+                .try_into()
+                .expect("ARAM must be exactly 64 KiB");
+            let sample = self.mixer.step_sample(&self.dsp, aram);
+            self.samples.push(sample);
+        }
+    }
+
+    /// Drain accumulated samples, returning the buffered `(L, R)`
+    /// pairs and clearing the internal vector. Used by hosts /
+    /// resamplers to lift produced audio into a downstream sink.
+    pub fn drain_samples(&mut self) -> Vec<(i16, i16)> {
+        std::mem::take(&mut self.samples)
     }
 }
 
@@ -191,21 +243,31 @@ impl Snes {
     /// Borrows disjoint mutable fields of `self` to construct the
     /// transient bus.
     pub fn step_smp_one_instruction(&mut self) {
-        let mut spc_bus = smp::bus::IntegratedSmpBus {
-            aram: &mut self.apu.aram,
-            ipl: &self.apu.ipl.bytes,
-            control: &mut self.apu.control,
-            timers: &mut self.apu.timers,
-            dsp: &mut self.apu.dsp,
-            ports: &mut self.bus.apu_ports,
-            cycles: &mut self.apu.cycles,
-        };
-        self.apu.smp.step(&mut spc_bus);
+        let cycles_before = self.apu.cycles;
+        {
+            let mut spc_bus = smp::bus::IntegratedSmpBus {
+                aram: &mut self.apu.aram,
+                ipl: &self.apu.ipl.bytes,
+                control: &mut self.apu.control,
+                timers: &mut self.apu.timers,
+                dsp: &mut self.apu.dsp,
+                ports: &mut self.bus.apu_ports,
+                cycles: &mut self.apu.cycles,
+                mixer: &mut self.apu.mixer,
+            };
+            self.apu.smp.step(&mut spc_bus);
+        }
         // Commit any CPU-side mailbox writes that landed in the
         // pending shadow during this instruction. The just-finished
         // instruction read the pre-write value; the next one will
         // see the new byte.
         self.bus.apu_ports.commit_pending();
+        // Advance the 32 kHz DSP sample clock by the SMP cycles this
+        // instruction consumed. May produce zero, one, or two samples
+        // depending on the prior accumulator state and instruction
+        // length (SMP instructions are 2-12 cycles).
+        let smp_delta = (self.apu.cycles - cycles_before) as u32;
+        self.apu.advance_dsp(smp_delta);
     }
 
     pub fn attach_save_metadata(&mut self, rom_path: PathBuf, rom_crc32: u32) {
@@ -333,6 +395,7 @@ mod tests {
             dsp: &mut apu.dsp,
             ports: &mut ports,
             cycles: &mut apu.cycles,
+            mixer: &mut apu.mixer,
         };
         apu.smp.step(&mut bus);
         assert_eq!(apu.smp.x, 0xEF);
@@ -374,6 +437,7 @@ mod tests {
                     dsp: &mut apu.dsp,
                     ports: &mut ports,
                     cycles: &mut apu.cycles,
+                    mixer: &mut apu.mixer,
                 };
                 apu.smp.step(&mut bus);
             }
@@ -390,6 +454,75 @@ mod tests {
             "IPL did not produce $AA $BB at $F4/$F5 within {} SMP \
              instructions (took {} so far; PC=${:04X})",
             max_steps, steps, apu.smp.pc
+        );
+    }
+
+    #[test]
+    fn advance_dsp_emits_one_sample_per_32_smp_cycles() {
+        // The S-DSP outputs at 32 kHz, the SMP runs at ~1.024 MHz, so
+        // one sample lands every 32 SMP cycles. With a fresh subsystem
+        // (no voices keyed-on), the produced samples are silent but
+        // their COUNT is what matters for the scheduler.
+        let mut apu = ApuSubsystem::new(smp::ipl::Ipl::embedded());
+        let period = smp::dsp::mixer::Mixer::SMP_CYCLES_PER_SAMPLE;
+        // Just under the period: zero samples.
+        apu.advance_dsp(period - 1);
+        assert_eq!(apu.samples.len(), 0);
+        // One more cycle crosses the boundary -> 1 sample.
+        apu.advance_dsp(1);
+        assert_eq!(apu.samples.len(), 1);
+        // Two more periods: 3 total.
+        apu.advance_dsp(period * 2);
+        assert_eq!(apu.samples.len(), 3);
+        // Drain clears the buffer but leaves the accumulator alone.
+        let drained = apu.drain_samples();
+        assert_eq!(drained.len(), 3);
+        assert_eq!(apu.samples.len(), 0);
+    }
+
+    #[test]
+    fn advance_dsp_handles_multi_sample_deltas_in_one_call() {
+        // Robustness: a single advance_dsp call with cycles >> period
+        // must produce floor(cycles/period) samples.
+        let mut apu = ApuSubsystem::new(smp::ipl::Ipl::embedded());
+        let period = smp::dsp::mixer::Mixer::SMP_CYCLES_PER_SAMPLE;
+        apu.advance_dsp(period * 100 + 5); // 100 full periods + 5 cycles
+        assert_eq!(apu.samples.len(), 100);
+        assert_eq!(apu.sample_cycle_accum, 5);
+    }
+
+    #[test]
+    fn fresh_apu_subsystem_has_silent_mixer_and_empty_sample_buffer() {
+        let apu = ApuSubsystem::new(smp::ipl::Ipl::embedded());
+        assert_eq!(apu.samples.len(), 0);
+        assert_eq!(apu.sample_cycle_accum, 0);
+        assert_eq!(apu.mixer.kon_pending, 0);
+        // LFSR resets to 0x4000 per Anomie / Mesen2.
+        assert_eq!(apu.mixer.noise_lfsr, 0x4000);
+    }
+
+    #[test]
+    fn smp_harness_run_loop_drives_dsp_sample_clock() {
+        // Run an SPC fragment (NOPs in a tight BRA loop) through the
+        // harness's run loop and verify the DSP scheduler accumulated
+        // samples via the same path the Snes orchestrator uses. Each
+        // NOP is 2 SMP cycles, BRA is 4 - so a handful of iterations
+        // is plenty to cross the 32-cycle sample boundary.
+        let mut apu = ApuSubsystem::new(smp::ipl::Ipl::embedded());
+        let mut ports = smp::state::ApuPorts::RESET;
+        // NOP, NOP, NOP, BRA -3 -> spins forever, each loop ~10 cycles.
+        let prog = [0x00, 0x00, 0x00, 0x2F, 0xFD];
+        smp::harness::load_raw_spc_image(&mut apu, &mut ports, &prog, 0x0200);
+        smp::harness::run_smp_until(&mut apu, &mut ports, 1000, |_, _| false);
+        assert!(
+            !apu.samples.is_empty(),
+            "harness loop must drive the DSP sample clock"
+        );
+        // Cycle budget 1000 / 32 = ~31 expected samples (loose lower bound).
+        assert!(
+            apu.samples.len() >= 25,
+            "expected ~31 samples, got {}",
+            apu.samples.len()
         );
     }
 
