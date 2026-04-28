@@ -1261,29 +1261,45 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             };
             bus.write(store_addr, value);
         }
+        // SHA / AHX (ind),Y. Same page-cross magic-store as SHX/SHY:
+        // when the Y indexing crosses a page, the write address's high
+        // byte is ANDed with `A & X` (the same mask used in the value).
         0x93 => {
-            // AHX (ind),Y
             let ptr = cpu.fetch_byte(bus);
             let lo = bus.read(ptr as u16);
             let hi = bus.read(ptr.wrapping_add(1) as u16);
             let base = u16::from_le_bytes([lo, hi]);
             let effective = base.wrapping_add(cpu.y as u16);
             bus.read((base & 0xFF00) | (effective & 0x00FF));
-            let value = cpu.a & cpu.x & hi.wrapping_add(1);
-            bus.write(effective, value);
+            let mask = cpu.a & cpu.x;
+            let value = mask & hi.wrapping_add(1);
+            let store_addr = if (base & 0xFF00) != (effective & 0xFF00) {
+                effective & (((mask as u16) << 8) | 0x00FF)
+            } else {
+                effective
+            };
+            bus.write(store_addr, value);
         }
+        // SHA / AHX abs,Y - same magic as $93, just absolute addressing.
         0x9F => {
-            // AHX abs,Y
             let lo = cpu.fetch_byte(bus);
             let hi = cpu.fetch_byte(bus);
             let base = u16::from_le_bytes([lo, hi]);
             let effective = base.wrapping_add(cpu.y as u16);
             bus.read((base & 0xFF00) | (effective & 0x00FF));
-            let value = cpu.a & cpu.x & hi.wrapping_add(1);
-            bus.write(effective, value);
+            let mask = cpu.a & cpu.x;
+            let value = mask & hi.wrapping_add(1);
+            let store_addr = if (base & 0xFF00) != (effective & 0xFF00) {
+                effective & (((mask as u16) << 8) | 0x00FF)
+            } else {
+                effective
+            };
+            bus.write(store_addr, value);
         }
+        // TAS / SHS abs,Y. SP = A & X; the page-cross address corruption
+        // uses the freshly-written SP as the high-byte mask (matches the
+        // value's mask).
         0x9B => {
-            // TAS abs,Y: SP = A & X; then store SP & (high+1)
             let lo = cpu.fetch_byte(bus);
             let hi = cpu.fetch_byte(bus);
             let base = u16::from_le_bytes([lo, hi]);
@@ -1291,7 +1307,12 @@ pub fn execute(cpu: &mut Cpu, bus: &mut Bus, op: u8) -> OpResult {
             bus.read((base & 0xFF00) | (effective & 0x00FF));
             cpu.sp = cpu.a & cpu.x;
             let value = cpu.sp & hi.wrapping_add(1);
-            bus.write(effective, value);
+            let store_addr = if (base & 0xFF00) != (effective & 0xFF00) {
+                effective & (((cpu.sp as u16) << 8) | 0x00FF)
+            } else {
+                effective
+            };
+            bus.write(store_addr, value);
         }
         0xBB => {
             // LAS abs,Y: value = mem & SP; A=X=SP=value

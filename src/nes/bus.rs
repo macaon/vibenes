@@ -159,12 +159,22 @@ impl Bus {
             self.process_pending_dma(addr);
         }
         self.tick_pre_access(true);
+        // $4015 reads do NOT update the floating data bus latch on real
+        // hardware - the APU's status read is one of the registers that
+        // doesn't actually drive the bus. AccuracyCoin "Open Bus" #7
+        // gates on this. Snapshot and restore around the match below.
+        let preserved_open_bus = self.open_bus;
+        let suppress_open_bus_update = matches!(addr, 0x4015);
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
-            0x4015 => self.apu.read_status(),
-            0x4016 => 0x40 | (self.controllers[0].read() & 1),
-            0x4017 => 0x40 | (self.controllers[1].read() & 1),
+            // $4015 bit 5 reads as open bus; the APU drives bits 0-4 / 6-7.
+            0x4015 => (self.apu.read_status() & 0xDF) | (self.open_bus & 0x20),
+            // $4016/$4017: bit 0 = controller, bits 1-4 = 0, bit 6 = 1
+            // (A14-decode coupling on the data lines), bits 5 and 7 come
+            // from CPU open bus.
+            0x4016 => (self.open_bus & 0xA0) | 0x40 | (self.controllers[0].read() & 1),
+            0x4017 => (self.open_bus & 0xA0) | 0x40 | (self.controllers[1].read() & 1),
             0x4018..=0x401F => self.open_bus,
             // $4020-$5FFF is cartridge-claimable expansion space. Most
             // mappers (NROM / MMC1 / UxROM / CNROM / AxROM / MMC3)
@@ -180,7 +190,11 @@ impl Bus {
             0x6000..=0xFFFF => self.mapper.cpu_read(addr),
             _ => self.open_bus,
         };
-        self.open_bus = value;
+        if suppress_open_bus_update {
+            self.open_bus = preserved_open_bus;
+        } else {
+            self.open_bus = value;
+        }
         self.tick_post_access(true);
         value
     }
@@ -484,9 +498,9 @@ impl Bus {
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
-            0x4015 => self.apu.read_status(),
-            0x4016 => 0x40 | (self.controllers[0].read() & 1),
-            0x4017 => 0x40 | (self.controllers[1].read() & 1),
+            0x4015 => (self.apu.read_status() & 0xDF) | (self.open_bus & 0x20),
+            0x4016 => (self.open_bus & 0xA0) | 0x40 | (self.controllers[0].read() & 1),
+            0x4017 => (self.open_bus & 0xA0) | 0x40 | (self.controllers[1].read() & 1),
             0x4018..=0x401F => self.open_bus,
             0x4020..=0x5FFF => self.mapper.cpu_read_ex(addr).unwrap_or(self.open_bus),
             0x6000..=0xFFFF => self.mapper.cpu_read(addr),
