@@ -95,7 +95,7 @@ developers in any way.
 | 64 | Tengen RAMBO-1 (Klax JP, Skull & Crossbones, Rolling Thunder, Hard Drivin') | done |
 | 66 | GxROM / MHROM | done |
 | 67 | Sunsoft-3 (Fantasy Zone II, Mito Koumon) | done |
-| 68 | Sunsoft-4 (After Burner II, incl. CHR-as-nametable replacement) | done |
+| 68 | Sunsoft-4 (After Burner II, Sugoro Quest; incl. CHR-as-nametable replacement and submapper-1 Maeda licensing chip) | done |
 | 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
 | 73 | Konami VRC3 (Salamander) | done |
 | 75 | Konami VRC1 (Tetsuwan Atom, Ganbare Goemon!) | done |
@@ -118,11 +118,6 @@ All ROMs in these suites pass:
 - **Additional mappers.** The Namco 118 family (mappers 88 / 95 /
   154 / 206 plus the TxSROM / TQROM Nintendo variants 118 / 119) is
   the next licensed batch on the list.
-- **Sunsoft-4 submapper 1.** The Maeda-licensing external-ROM
-  access window (`$6000-$7FFF` write triggers a ~107K-cycle PRG
-  swap-in) used by a handful of JP-only protected carts isn't
-  modeled. Standard Sunsoft-4 carts (After Burner II, Maharaja,
-  Ripple Island) work.
 - **Second controller + rebinding.** Player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.

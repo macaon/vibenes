@@ -38,13 +38,42 @@
 //! protection-chip artifact that doesn't affect the bank index
 //! since we mod by `chr_bank_count_1k` before indexing.
 //!
-//! ## Out of scope
+//! ## Sunsoft-Maeda licensing chip (NES 2.0 submapper 1)
 //!
-//! Sunsoft-4 submapper 1 ("FME-7-style" / Maeda-protected carts -
-//! roughly the *Ripple Island* / *Sugoro Quest* set) carries an
-//! external-ROM access window gated by a ~107 K-cycle licensing
-//! timer triggered by `$6000-$7FFF` writes. None of the commercial
-//! US releases use it; we don't model it.
+//! Standard Sunsoft-4 hardware has only 3 PRG-bank lines, capping
+//! commercial carts at 128 KiB. The Sunsoft-Maeda licensing
+//! variant adds a 4th bank line via an external chip that gates
+//! `$8000-$BFFF` access on a "license check is alive" keep-alive
+//! signal. The chip works like this:
+//!
+//! 1. The game disables PRG-RAM at `$F000.b4`.
+//! 2. The game writes to `$6000-$7FFF`. With PRG-RAM gated off the
+//!    write would normally drop, but the licensing chip catches it
+//!    as a keep-alive ping and arms a ~107520 CPU-cycle (60 ms)
+//!    timer.
+//! 3. While the timer is armed AND `$F000.b3 = 0` (external bank
+//!    select), `$8000-$BFFF` reads from the upper PRG banks
+//!    (8..). When `$F000.b3 = 1`, `$8000-$BFFF` reads from the
+//!    inner bank set (0..=7) regardless.
+//! 4. If the game stops sending keep-alive pings, the timer
+//!    expires and `$8000-$BFFF` reads return open bus until the
+//!    next ping. Games re-arm via a NMI / IRQ handler that pings
+//!    every frame.
+//!
+//! Carts that depend on this: *Sugoro Quest: Dice no Senshitachi*
+//! and a small set of JP-only Sunsoft-published licensing-
+//! protected titles. Nesdev / Mesen2 list them under submapper 1.
+//! Standard 128-KiB carts (After Burner II, Maharaja, Ripple
+//! Island) never trigger any of this because the gate
+//! `prg_bank_count > 8` is never true for them.
+//!
+//! Implementation cross-checked against
+//! `~/Git/Mesen2/Core/NES/Mappers/Sunsoft/Sunsoft4.h` (always-on
+//! licensing logic) and `~/Git/punes/src/core/mappers/mapper_068.c`
+//! (PRG-RAM-disabled-write keep-alive trigger). We follow puNES's
+//! tighter gate (only PRG-RAM-disabled writes arm the timer) so a
+//! battery-RAM cart that's also mapper-68 doesn't accidentally arm
+//! the licensing chip on every save write.
 //!
 //! References:
 //! - <https://www.nesdev.org/wiki/INES_Mapper_068>
@@ -57,6 +86,12 @@ use crate::nes::rom::{Cartridge, Mirroring};
 const PRG_BANK_16K: usize = 16 * 1024;
 const CHR_BANK_2K: usize = 2 * 1024;
 const CHR_BANK_1K: usize = 1024;
+
+/// Licensing-chip keep-alive timer reload. ~107520 CPU cycles is
+/// the canonical Mesen2 value (`1024 * 105`); games typically ping
+/// once per frame (~29830 cycles NTSC), so this gives ~3.6 frames
+/// of slack before the chip revokes external ROM access.
+const LICENSING_TIMER_RELOAD: u32 = 1024 * 105;
 
 pub struct Sunsoft4 {
     prg_rom: Vec<u8>,
@@ -86,6 +121,25 @@ pub struct Sunsoft4 {
     chr_bank_count_1k: usize,
 
     mirroring: Mirroring,
+
+    /// Sunsoft-Maeda licensing chip keep-alive countdown in CPU
+    /// cycles. Reloaded by writes to `$6000-$7FFF` while PRG-RAM
+    /// is disabled (the chip's keep-alive trigger). Decremented
+    /// once per CPU cycle in [`Mapper::on_cpu_cycle`]; when it
+    /// reaches zero, external-ROM `$8000-$BFFF` reads return open
+    /// bus until the next keep-alive ping. Always 0 on power-on
+    /// and on every cart with prg_bank_count_16k <= 8.
+    licensing_timer: u32,
+    /// Latched at `$F000` write time: `bit 3 == 0` AND the cart
+    /// has more than 8 PRG-bank lines. While true (and the timer
+    /// is armed), `$8000-$BFFF` reads route through `external_page`
+    /// instead of `prg_bank`. False forces internal-bank routing
+    /// regardless of the timer.
+    using_external_rom: bool,
+    /// Resolved external-bank index (>= 8). Mesen2's formula:
+    /// `0x08 | ((value & 0x07) % (count - 8))`. Cached at write
+    /// time so the read path stays branch-light.
+    external_page: u8,
 
     battery: bool,
     save_dirty: bool,
@@ -122,14 +176,34 @@ impl Sunsoft4 {
             chr_bank_count_2k,
             chr_bank_count_1k,
             mirroring: cart.mirroring,
+            licensing_timer: 0,
+            using_external_rom: false,
+            external_page: 0x08,
             battery: cart.battery_backed,
             save_dirty: false,
         }
     }
 
+    /// True when the licensing chip is keeping `$8000-$BFFF`
+    /// pointed at external ROM right now: external mode latched,
+    /// timer armed, and the cart has enough PRG banks to need
+    /// it. Standard 128-KiB carts return false unconditionally.
+    fn external_active(&self) -> bool {
+        self.using_external_rom && self.licensing_timer > 0 && self.prg_bank_count_16k > 8
+    }
+
     fn prg_index(&self, addr: u16) -> usize {
         let bank = if addr < 0xC000 {
-            (self.prg_bank as usize) % self.prg_bank_count_16k
+            // Standard chip has 3 PRG-bank lines (low 3 bits of
+            // `prg_bank`). Submapper-1 licensing variant routes
+            // `$8000-$BFFF` through the external bank when the
+            // chip is keeping the keep-alive timer alive.
+            let internal = (self.prg_bank as usize & 0x07) % self.prg_bank_count_16k;
+            if self.external_active() {
+                (self.external_page as usize) % self.prg_bank_count_16k
+            } else {
+                internal
+            }
         } else {
             self.prg_bank_count_16k - 1
         };
@@ -171,6 +245,19 @@ impl Mapper for Sunsoft4 {
                 let i = (addr - 0x6000) as usize;
                 self.prg_ram.get(i).copied().unwrap_or(0)
             }
+            // Licensing-chip unmap: when external-ROM mode is
+            // latched but the keep-alive timer has expired, the
+            // chip detaches `$8000-$BFFF` and reads return open
+            // bus (Mesen2's `RemoveCpuMemoryMapping`). `$C000-
+            // $FFFF` stays on the last bank regardless because
+            // the licensing chip only gates the lower window.
+            0x8000..=0xBFFF
+                if self.using_external_rom
+                    && self.licensing_timer == 0
+                    && self.prg_bank_count_16k > 8 =>
+            {
+                0
+            }
             0x8000..=0xFFFF => {
                 let idx = self.prg_index(addr);
                 self.prg_rom.get(idx).copied().unwrap_or(0)
@@ -188,6 +275,13 @@ impl Mapper for Sunsoft4 {
                 let i = (addr - 0x6000) as usize;
                 self.prg_ram.get(i).copied().unwrap_or(0)
             }
+            0x8000..=0xBFFF
+                if self.using_external_rom
+                    && self.licensing_timer == 0
+                    && self.prg_bank_count_16k > 8 =>
+            {
+                0
+            }
             0x8000..=0xFFFF => {
                 let idx = self.prg_index(addr);
                 self.prg_rom.get(idx).copied().unwrap_or(0)
@@ -199,17 +293,24 @@ impl Mapper for Sunsoft4 {
     fn cpu_write(&mut self, addr: u16, data: u8) {
         match addr {
             0x6000..=0x7FFF => {
-                if !self.prg_ram_enabled {
-                    return;
-                }
-                let i = (addr - 0x6000) as usize;
-                if let Some(slot) = self.prg_ram.get_mut(i) {
-                    if *slot != data {
-                        *slot = data;
-                        if self.battery {
-                            self.save_dirty = true;
+                if self.prg_ram_enabled {
+                    let i = (addr - 0x6000) as usize;
+                    if let Some(slot) = self.prg_ram.get_mut(i) {
+                        if *slot != data {
+                            *slot = data;
+                            if self.battery {
+                                self.save_dirty = true;
+                            }
                         }
                     }
+                } else if self.prg_bank_count_16k > 8 {
+                    // PRG-RAM gated off, write would normally drop.
+                    // The Sunsoft-Maeda licensing chip catches it
+                    // as a keep-alive ping and rearms the
+                    // external-ROM access timer. Standard 128-KiB
+                    // submapper-0 carts skip this branch via the
+                    // bank-count gate.
+                    self.licensing_timer = LICENSING_TIMER_RELOAD;
                 }
             }
             0x8000..=0xFFFF => match addr & 0xF000 {
@@ -231,6 +332,21 @@ impl Mapper for Sunsoft4 {
                 0xF000 => {
                     self.prg_bank = data & 0x0F;
                     self.prg_ram_enabled = (data & 0x10) != 0;
+                    // Submapper-1 licensing decode: bit 3 clear
+                    // selects external bank set, bit 3 set forces
+                    // internal. Carts with <= 8 PRG banks never
+                    // engage the external path regardless.
+                    if self.prg_bank_count_16k > 8 {
+                        if (data & 0x08) == 0 {
+                            self.using_external_rom = true;
+                            let modulus =
+                                (self.prg_bank_count_16k - 8).max(1);
+                            self.external_page =
+                                0x08 | (((data & 0x07) as usize) % modulus) as u8;
+                        } else {
+                            self.using_external_rom = false;
+                        }
+                    }
                 }
                 _ => {}
             },
@@ -259,6 +375,16 @@ impl Mapper for Sunsoft4 {
 
     fn mirroring(&self) -> Mirroring {
         self.mirroring
+    }
+
+    fn on_cpu_cycle(&mut self) {
+        // Sunsoft-Maeda licensing-chip keep-alive countdown. Non-
+        // licensing carts never arm the timer (the cpu_write gate
+        // requires `prg_bank_count_16k > 8`), so this is a single
+        // predicated decrement on the hot path - cheap.
+        if self.licensing_timer > 0 {
+            self.licensing_timer -= 1;
+        }
     }
 
     fn ppu_nametable_read(&mut self, slot: u8, offset: u16) -> NametableSource {
@@ -306,6 +432,9 @@ impl Mapper for Sunsoft4 {
             nt_regs: self.nt_regs,
             use_chr_for_nametables: self.use_chr_for_nametables,
             mirroring: MirroringSnap::from_live(self.mirroring),
+            licensing_timer: self.licensing_timer,
+            using_external_rom: self.using_external_rom,
+            external_page: self.external_page,
             save_dirty: self.save_dirty,
         }))
     }
@@ -329,6 +458,9 @@ impl Mapper for Sunsoft4 {
         self.nt_regs = snap.nt_regs;
         self.use_chr_for_nametables = snap.use_chr_for_nametables;
         self.mirroring = snap.mirroring.to_live();
+        self.licensing_timer = snap.licensing_timer;
+        self.using_external_rom = snap.using_external_rom;
+        self.external_page = snap.external_page;
         self.save_dirty = snap.save_dirty;
         Ok(())
     }
@@ -433,5 +565,113 @@ mod tests {
             m.ppu_nametable_read(0, 0),
             NametableSource::Default,
         );
+    }
+
+    /// 256-KiB cart for licensing tests. Submapper 1 carts
+    /// (Sugoro Quest etc.) need 16 PRG banks; the licensing
+    /// timer's `prg_bank_count_16k > 8` gate becomes true here.
+    fn licensing_cart() -> Cartridge {
+        let mut prg = vec![0u8; 0x40000]; // 256 KiB → 16x 16 KiB banks
+        // Plant a sentinel at the top of bank 8 (first external
+        // bank) so we can verify external mapping reads it.
+        prg[8 * PRG_BANK_16K] = 0xE8;
+        // Plant a different sentinel at the top of bank 0 (first
+        // internal bank) for the no-external-ROM case.
+        prg[0] = 0x10;
+        Cartridge {
+            prg_rom: prg,
+            chr_rom: vec![0u8; 0x20000],
+            chr_ram: false,
+            mapper_id: 68,
+            submapper: 1,
+            mirroring: Mirroring::Vertical,
+            battery_backed: false,
+            prg_ram_size: 0x2000,
+            prg_nvram_size: 0,
+            tv_system: TvSystem::Ntsc,
+            is_nes2: true,
+            prg_chr_crc32: 0,
+            db_matched: false,
+            fds_data: None,
+        }
+    }
+
+    #[test]
+    fn licensing_chip_inert_on_128kib_carts() {
+        // Standard cart: no external ROM, no timer, ever.
+        let mut m = Sunsoft4::new(cart()); // 128 KiB → 8 banks
+        // Disable PRG-RAM and write to $6000-$7FFF. On a
+        // submapper-1 cart this would arm the timer; here it
+        // must stay zero.
+        m.cpu_write(0xF000, 0x00); // bit 4 = 0 → PRG-RAM disabled
+        m.cpu_write(0x6000, 0x55);
+        assert_eq!(m.licensing_timer, 0);
+        assert!(!m.using_external_rom);
+    }
+
+    #[test]
+    fn keep_alive_arms_timer_only_when_prg_ram_disabled() {
+        let mut m = Sunsoft4::new(licensing_cart());
+        // PRG-RAM enabled: write goes to RAM, timer doesn't arm.
+        m.cpu_write(0xF000, 0x10);
+        m.cpu_write(0x6000, 0x42);
+        assert_eq!(m.licensing_timer, 0);
+        assert_eq!(m.cpu_read(0x6000), 0x42);
+        // Disable PRG-RAM, write again: that's the keep-alive.
+        m.cpu_write(0xF000, 0x00);
+        m.cpu_write(0x6000, 0xFF);
+        assert_eq!(m.licensing_timer, LICENSING_TIMER_RELOAD);
+    }
+
+    #[test]
+    fn external_rom_bit_clear_routes_to_upper_banks_when_armed() {
+        let mut m = Sunsoft4::new(licensing_cart());
+        // Arm the keep-alive timer first.
+        m.cpu_write(0xF000, 0x00); // PRG-RAM off
+        m.cpu_write(0x6000, 0x01); // arm timer
+        // Now select external mode: bit 3 = 0, low 3 bits = 0
+        // → external_page = 0x08 | 0 = 8.
+        m.cpu_write(0xF000, 0x00);
+        assert!(m.using_external_rom);
+        assert_eq!(m.external_page, 0x08);
+        // Read the sentinel at the top of bank 8.
+        assert_eq!(m.cpu_read(0x8000), 0xE8);
+    }
+
+    #[test]
+    fn external_rom_bit_set_forces_internal() {
+        let mut m = Sunsoft4::new(licensing_cart());
+        // Arm timer.
+        m.cpu_write(0xF000, 0x00);
+        m.cpu_write(0x6000, 0x01);
+        // bit 3 set → internal mode despite armed timer.
+        m.cpu_write(0xF000, 0x08);
+        assert!(!m.using_external_rom);
+        // Read returns internal-bank-0 sentinel.
+        assert_eq!(m.cpu_read(0x8000), 0x10);
+    }
+
+    #[test]
+    fn timer_expiry_unmaps_8000_bfff_to_open_bus() {
+        let mut m = Sunsoft4::new(licensing_cart());
+        // Arm + select external.
+        m.cpu_write(0xF000, 0x00);
+        m.cpu_write(0x6000, 0x01);
+        m.cpu_write(0xF000, 0x00);
+        assert_eq!(m.cpu_read(0x8000), 0xE8);
+        // Tick the timer to zero. Cheap: reload is ~107k cycles
+        // and on_cpu_cycle is a single decrement.
+        for _ in 0..LICENSING_TIMER_RELOAD {
+            m.on_cpu_cycle();
+        }
+        assert_eq!(m.licensing_timer, 0);
+        // $8000-$BFFF returns open bus (we surface 0).
+        assert_eq!(m.cpu_read(0x8000), 0);
+        assert_eq!(m.cpu_read(0xBFFF), 0);
+        // $C000-$FFFF still maps to the last bank (unaffected).
+        // The last bank's last byte is index 0x3FFFF; we didn't
+        // plant anything there so it's 0 too, but the read
+        // doesn't go through the open-bus branch.
+        let _ = m.cpu_read(0xFFFF);
     }
 }

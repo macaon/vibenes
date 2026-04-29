@@ -635,9 +635,13 @@ pub struct Sunsoft3Snap {
     pub save_dirty: bool,
 }
 
-/// Sunsoft-4 (mapper 68). Tracks 4× 2 KiB CHR banks plus the 2
-/// nametable-replacement registers, the NTRAM enable bit, and the
-/// PRG bank + RAM-enable gate. Used by *After Burner II*.
+/// Sunsoft-4 (mapper 68). Tracks 4x 2 KiB CHR banks plus the 2
+/// nametable-replacement registers, the NTRAM enable bit, the
+/// PRG bank + RAM-enable gate, and the Sunsoft-Maeda licensing
+/// chip's keep-alive timer / external-bank-select state used by
+/// submapper-1 carts (Sugoro Quest et al.). Standard 128-KiB
+/// carts (After Burner II, Maharaja, Ripple Island) leave the
+/// licensing fields at zero / false throughout the run.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Sunsoft4Snap {
     pub prg_ram: Vec<u8>,
@@ -648,6 +652,9 @@ pub struct Sunsoft4Snap {
     pub nt_regs: [u8; 2],
     pub use_chr_for_nametables: bool,
     pub mirroring: MirroringSnap,
+    pub licensing_timer: u32,
+    pub using_external_rom: bool,
+    pub external_page: u8,
     pub save_dirty: bool,
 }
 
