@@ -44,8 +44,9 @@
 use crate::nes::mapper::Mapper;
 use crate::nes::rom::{Cartridge, Mirroring};
 
-const PRG_BANK_32K: usize = 32 * 1024;
 const CHR_BANK_4K: usize = 4 * 1024;
+#[cfg(test)]
+const PRG_BANK_32K: usize = 32 * 1024;
 
 pub struct Sunsoft1 {
     prg_rom: Vec<u8>,
