@@ -618,6 +618,37 @@ pub struct Mapper037Snap {
     pub block: u8,
 }
 
+/// Namco 118 family variant tag. Mirrors the live
+/// [`crate::nes::mapper::namco_118::Variant`] so the on-disk schema
+/// is decoupled from the live struct's enum layout. Used to
+/// reject cross-variant `apply` (the file header's mapper-id
+/// check is the primary guard, this is belt-and-suspenders).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum Namco118VariantSnap {
+    #[default]
+    Mapper206 = 0,
+    Mapper88 = 1,
+    Mapper95 = 2,
+    Mapper154 = 3,
+}
+
+/// Namco 118 family (mappers 88 / 95 / 154 / 206). Captures the
+/// 8 bank registers, the bank-select latch, current mirroring
+/// (used directly by mapper 154's dynamic single-screen toggle
+/// and as a placeholder for mapper 95's per-slot override),
+/// PRG-RAM, and CHR-RAM (when applicable).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Namco118Snap {
+    pub variant: Namco118VariantSnap,
+    pub prg_ram: Vec<u8>,
+    pub chr_ram_data: Vec<u8>,
+    pub bank_regs: [u8; 8],
+    pub bank_select: u8,
+    pub mirroring: MirroringSnap,
+    pub save_dirty: bool,
+}
+
 /// Sunsoft-3 (mapper 67). Tracks 4× 2 KiB CHR banks, 16 KiB PRG
 /// bank, mirroring, and the 16-bit IRQ counter (with its
 /// two-write-toggle latch) used by *Fantasy Zone II*.
@@ -814,6 +845,7 @@ pub enum MapperState {
     Fds(Box<FdsSnap>),
     Sunsoft3(Sunsoft3Snap),
     Sunsoft4(Sunsoft4Snap),
+    Namco118(Namco118Snap),
     /// Mapper variant not covered by any phase yet. Carries the
     /// live mapper id from [`crate::nes::bus::Bus::mapper_id`]
     /// for error messaging.

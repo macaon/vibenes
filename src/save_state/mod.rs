@@ -805,6 +805,7 @@ mod tests {
             MapperState::Fds(Box::new(FdsSnap::default())),
             MapperState::Sunsoft3(Sunsoft3Snap::default()),
             MapperState::Sunsoft4(Sunsoft4Snap::default()),
+            MapperState::Namco118(Namco118Snap::default()),
             MapperState::Unsupported(255),
         ];
         for v in &variants {

@@ -72,14 +72,15 @@ developers in any way.
 
 ### Supported mappers
 
-32 iNES mapper IDs across 28 distinct chips. Highlights: every
+36 iNES mapper IDs across 29 distinct chips. Highlights: every
 licensed Konami audio expansion (VRC6, VRC7 OPLL via vendored
 emu2413), every Sunsoft licensed chip (FME-7 / 5B audio,
-Sunsoft-3 IRQ, Sunsoft-4 with Maeda licensing chip), Namco 163
-8-channel wavetable audio, FDS RP2C33 audio + IPS-sidecar disk
-saves, MMC3 Rev A / Rev B IRQ semantics, MMC5 ExRAM + scanline
-IRQ + multiplier, Bandai LZ93D50 with 24C01 / 24C02 EEPROM
-preserves.
+Sunsoft-3 IRQ, Sunsoft-4 with Maeda licensing chip), the full
+Namco 118 family (88 / 95 / 154 / 206 with per-cart mirroring
+quirks) plus Namco 163 8-channel wavetable audio, FDS RP2C33
+audio + IPS-sidecar disk saves, MMC3 Rev A / Rev B IRQ semantics,
+MMC5 ExRAM + scanline IRQ + multiplier, Bandai LZ93D50 with
+24C01 / 24C02 EEPROM preserves.
 
 | # | Name | Status |
 |---|---|---|
@@ -110,7 +111,11 @@ preserves.
 | 73 | Konami VRC3 (Salamander) | done |
 | 75 | Konami VRC1 (Tetsuwan Atom, Ganbare Goemon!) | done |
 | 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
+| 88 | Namcot Type C (extra-CHR-line wiring; Devil Man, Mendel Palace) | done |
+| 95 | Namco 118 / Dragon Buster (per-CHR-slot single-screen mirroring) | done |
+| 154 | Namco 118 / Devil World JP (dynamic single-screen mirroring + Type C CHR wiring) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
+| 206 | Namco 118 / Mimic-1 (DigDug II, Mappy-Land, Galaxian) | done |
 
 ### Test-ROM coverage
 
@@ -126,9 +131,10 @@ All ROMs in these suites pass:
 
 ### Known gaps
 
-- **Additional mappers.** The Namco 118 family (mappers 88 / 95 /
-  154 / 206 plus the TxSROM / TQROM Nintendo variants 118 / 119) is
-  the next licensed batch on the list.
+- **Additional mappers.** The Nintendo TxSROM (mapper 118) and
+  TQROM (mapper 119) MMC3 derivatives - per-CHR-bank dynamic
+  mirroring and CHR-RAM/ROM bit-6 mixing respectively - are the
+  next licensed batch.
 - **Second controller + rebinding.** Player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.
