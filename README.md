@@ -57,7 +57,8 @@ developers in any way.
 - Master clock + bus with unified parity-gated DMC + OAM DMA loop
 - PPU with full render pipeline, pixel-precise sprite-0 hit,
   odd-frame dot skip, open-bus decay
-- APU with 5 channels, frame counter, DMC
+- APU with 5 channels (pulse 1+2, triangle, noise, DMC), frame
+  counter, IRQ, DMC DMA
 - Expansion audio via bus-level mixer with per-chip pre-scaled blend
 - Host audio via cpal + blip_buf
 - Windowed runtime on wgpu, NTSC/PAL-paced, keyboard input
@@ -70,6 +71,15 @@ developers in any way.
   saves, RP2C33 audio
 
 ### Supported mappers
+
+32 iNES mapper IDs across 28 distinct chips. Highlights: every
+licensed Konami audio expansion (VRC6, VRC7 OPLL via vendored
+emu2413), every Sunsoft licensed chip (FME-7 / 5B audio,
+Sunsoft-3 IRQ, Sunsoft-4 with Maeda licensing chip), Namco 163
+8-channel wavetable audio, FDS RP2C33 audio + IPS-sidecar disk
+saves, MMC3 Rev A / Rev B IRQ semantics, MMC5 ExRAM + scanline
+IRQ + multiplier, Bandai LZ93D50 with 24C01 / 24C02 EEPROM
+preserves.
 
 | # | Name | Status |
 |---|---|---|
@@ -112,6 +122,7 @@ All ROMs in these suites pass:
 | APU | `apu_test` (8/8), `apu_reset` (6/6), `blargg_apu_2005` (11/11), `dmc_dma_during_read4` (5/5, strict pattern), `sprdma_and_dmc_dma{,_512}` (2/2) | pass |
 | PPU | `sprite_hit_tests_2005` (11/11), `sprite_overflow_tests` (5/5), `ppu_vbl_nmi` (10/10), `oam_read`, `oam_stress`, `ppu_read_buffer`, `ppu_open_bus`, `blargg_ppu_tests_2005.09.15b` (4/5, see below) | pass |
 | MMC3 | `mmc3_test` (6/6), `mmc3_test_2` (6/6), `mmc3_irq_tests` (6/6) | pass |
+| Save state | unit + frame-level integration: capture/apply round-trip, encode + decode + apply to fresh Nes, run-after-restore byte-equal, framebuffer byte-equal 30 frames past round-trip, mapper-variant rollback | pass |
 
 ### Known gaps
 
