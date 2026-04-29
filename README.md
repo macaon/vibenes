@@ -104,6 +104,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
 | 73 | Konami VRC3 (Salamander) | done |
 | 75 | Konami VRC1 (Tetsuwan Atom, Ganbare Goemon!) | done |
+| 80 | Taito X1-005 (Wagyan Land 2 + 3, Famista 89-Pro series, Bakushou!! Jinsei Gekijou series, Don Doko Don, Daikoukai Jidai) | done |
 | 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
 | 88 | Namcot Type C (extra-CHR-line wiring; Devil Man, Mendel Palace) | done |
 | 95 | Namco 118 / Dragon Buster (per-CHR-slot single-screen mirroring) | done |
@@ -112,6 +113,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 154 | Namco 118 / Devil World JP (dynamic single-screen mirroring + Type C CHR wiring) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 | 206 | Namco 118 / Mimic-1 (DigDug II, Mappy-Land, Galaxian) | done |
+| 207 | Taito X1-005 alt-mirroring variant (Fudou Myou-Ou Den) | done |
 
 ### Test-ROM coverage
 

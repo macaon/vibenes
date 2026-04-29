@@ -662,6 +662,46 @@ pub struct Tc0690Snap {
     pub prev_inner_irq: bool,
 }
 
+/// Taito X1-005 (mappers 80 + 207). Captures the chip's
+/// 128-byte on-cart WRAM (battery-backed on save-bearing
+/// carts), the bank-register file at `$7EF0-$7EFF`, the
+/// `$A3` permission latch that gates WRAM access, the
+/// effective mirroring (mapper 80) plus the per-NT-slot
+/// CIRAM cache (mapper 207's bit-7-driven routing), and the
+/// variant flag so a cross-mapper apply (80 -> 207) is
+/// rejected even if the file header check missed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaitoX1005Snap {
+    pub alternate_mirroring: bool,
+    #[serde(with = "BigArray")]
+    pub wram: [u8; 128],
+    pub chr_ram_data: Vec<u8>,
+    pub chr_2k_regs: [u8; 2],
+    pub chr_1k_regs: [u8; 4],
+    pub prg_regs: [u8; 3],
+    pub mirroring: MirroringSnap,
+    pub nt_cache: [u8; 4],
+    pub ram_permission: u8,
+    pub save_dirty: bool,
+}
+
+impl Default for TaitoX1005Snap {
+    fn default() -> Self {
+        Self {
+            alternate_mirroring: false,
+            wram: [0; 128],
+            chr_ram_data: Vec::new(),
+            chr_2k_regs: [0; 2],
+            chr_1k_regs: [0; 4],
+            prg_regs: [0; 3],
+            mirroring: MirroringSnap::default(),
+            nt_cache: [0; 4],
+            ram_permission: 0,
+            save_dirty: false,
+        }
+    }
+}
+
 /// Namco 118 family variant tag. Mirrors the live
 /// [`crate::nes::mapper::namco_118::Variant`] so the on-disk schema
 /// is decoupled from the live struct's enum layout. Used to
@@ -893,6 +933,7 @@ pub enum MapperState {
     Txsrom(Box<TxsromSnap>),
     Tqrom(Box<TqromSnap>),
     Tc0690(Box<Tc0690Snap>),
+    TaitoX1005(Box<TaitoX1005Snap>),
     /// Mapper variant not covered by any phase yet. Carries the
     /// live mapper id from [`crate::nes::bus::Bus::mapper_id`]
     /// for error messaging.

@@ -28,6 +28,7 @@ pub mod sunsoft3;
 pub mod sunsoft4;
 pub mod sunsoft5b_audio;
 pub mod taito_tc0190;
+pub mod taito_x1005;
 pub mod tc0690;
 pub mod tqrom;
 pub mod txsrom;
@@ -355,12 +356,14 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         3 => Ok(Box::new(cnrom::Cnrom::new(cart))),
         4 => Ok(Box::new(mmc3::Mmc3::new(cart))),
         48 => Ok(Box::new(tc0690::Tc0690::new(cart))),
+        80 => Ok(Box::new(taito_x1005::TaitoX1005::new(cart))),
         67 => Ok(Box::new(sunsoft3::Sunsoft3::new(cart))),
         68 => Ok(Box::new(sunsoft4::Sunsoft4::new(cart))),
         88 => Ok(Box::new(namco_118::Namco118::new_88(cart))),
         95 => Ok(Box::new(namco_118::Namco118::new_95(cart))),
         118 => Ok(Box::new(txsrom::Txsrom::new(cart))),
         119 => Ok(Box::new(tqrom::Tqrom::new(cart))),
+        207 => Ok(Box::new(taito_x1005::TaitoX1005::new_207(cart))),
         154 => Ok(Box::new(namco_118::Namco118::new_154(cart))),
         206 => Ok(Box::new(namco_118::Namco118::new_206(cart))),
         9 => Ok(Box::new(mmc2::Mmc2::new(cart))),

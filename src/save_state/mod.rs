@@ -809,6 +809,7 @@ mod tests {
             MapperState::Txsrom(Box::new(TxsromSnap::default())),
             MapperState::Tqrom(Box::new(TqromSnap::default())),
             MapperState::Tc0690(Box::new(Tc0690Snap::default())),
+            MapperState::TaitoX1005(Box::new(TaitoX1005Snap::default())),
             MapperState::Unsupported(255),
         ];
         for v in &variants {
