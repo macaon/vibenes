@@ -283,6 +283,46 @@ impl Mmc3 {
         self.bank_select & 0x07
     }
 
+    /// Raw bank-register value for the slot containing `addr`,
+    /// **without** the `% chr_bank_count_1k` clamp that
+    /// [`Self::chr_bank_for`] applies. Crate-public for TQROM
+    /// (mapper 119), which needs to inspect bits 6/7 of the
+    /// register value as flags - the modulo would erase those
+    /// bits on small CHR-ROMs and break the CHR-RAM selector.
+    pub(crate) fn chr_bank_raw(&self, addr: u16) -> u8 {
+        let r0 = self.bank_regs[0];
+        let r1 = self.bank_regs[1];
+        let r2 = self.bank_regs[2];
+        let r3 = self.bank_regs[3];
+        let r4 = self.bank_regs[4];
+        let r5 = self.bank_regs[5];
+        if !self.chr_inverted() {
+            match addr {
+                0x0000..=0x03FF => r0,
+                0x0400..=0x07FF => r0 | 0x01,
+                0x0800..=0x0BFF => r1,
+                0x0C00..=0x0FFF => r1 | 0x01,
+                0x1000..=0x13FF => r2,
+                0x1400..=0x17FF => r3,
+                0x1800..=0x1BFF => r4,
+                0x1C00..=0x1FFF => r5,
+                _ => 0,
+            }
+        } else {
+            match addr {
+                0x0000..=0x03FF => r2,
+                0x0400..=0x07FF => r3,
+                0x0800..=0x0BFF => r4,
+                0x0C00..=0x0FFF => r5,
+                0x1000..=0x13FF => r0,
+                0x1400..=0x17FF => r0 | 0x01,
+                0x1800..=0x1BFF => r1,
+                0x1C00..=0x1FFF => r1 | 0x01,
+                _ => 0,
+            }
+        }
+    }
+
     fn second_last_prg_bank(&self) -> usize {
         self.prg_bank_count_8k.saturating_sub(2)
     }

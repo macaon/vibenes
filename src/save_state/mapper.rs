@@ -627,6 +627,27 @@ pub struct TxsromSnap {
     pub nt_cache: [u8; 4],
 }
 
+/// TQROM (mapper 119) wraps an MMC3 with 8 KiB of on-cart
+/// CHR-RAM. Each CHR bank value's bits 6/7 select ROM vs RAM
+/// per slot at PPU read time. The full RAM buffer is part of
+/// the snapshot so writes (Mall Madness map updates, pinball
+/// ramp-lit animations) survive a round trip.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TqromSnap {
+    pub inner: Mmc3Snap,
+    #[serde(with = "BigArray")]
+    pub chr_ram: [u8; 0x2000],
+}
+
+impl Default for TqromSnap {
+    fn default() -> Self {
+        Self {
+            inner: Mmc3Snap::default(),
+            chr_ram: [0; 0x2000],
+        }
+    }
+}
+
 /// Namco 118 family variant tag. Mirrors the live
 /// [`crate::nes::mapper::namco_118::Variant`] so the on-disk schema
 /// is decoupled from the live struct's enum layout. Used to
@@ -856,6 +877,7 @@ pub enum MapperState {
     Sunsoft4(Sunsoft4Snap),
     Namco118(Namco118Snap),
     Txsrom(Box<TxsromSnap>),
+    Tqrom(Box<TqromSnap>),
     /// Mapper variant not covered by any phase yet. Carries the
     /// live mapper id from [`crate::nes::bus::Bus::mapper_id`]
     /// for error messaging.
