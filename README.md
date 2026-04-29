@@ -63,6 +63,9 @@ developers in any way.
 - Windowed runtime on wgpu, NTSC/PAL-paced, keyboard input
 - Overlay UI (egui, F1)
 - Battery-backed saves with atomic writes and flush-on-quit/swap
+- Save states: 10 slots, F2/F3 hotkeys, in-memory backup-on-load
+  rollback, region/CRC-tagged file paths so renames and patches
+  don't collide
 - Famicom Disk System (mapper 20) with BIOS, disk swap, IPS sidecar
   saves, RP2C33 audio
 
@@ -135,7 +138,9 @@ and the built-in CRC32 game DB, and the host audio sample rate is
 matched to it.
 
 **Keys**: `Z`=B, `X`=A, `Enter`=Start, `RShift`=Select, arrows=D-pad,
-`R`=reset, `F1`=overlay menu, `F4`=FDS disk swap, `Esc`=back/quit.
+`R`=reset, `F1`=overlay menu, `F2`=save state to active slot, `F3`=load
+state from active slot, `0`-`9`=select active save-state slot,
+`F4`=FDS disk swap, `F12`=debug submenu, `Esc`=back/quit.
 
 **Gamepad** (P1, fixed mapping for now - remapping UI is future
 work): Xbox-style `A`=A, `X`=B, `Back`=Select, `Menu/Start`=Start,
@@ -190,14 +195,56 @@ captured as a delta against the original `.fds` image and written to
 applied over the pristine disk image, so the on-disk `.fds` stays
 untouched and the save is portable.
 
+## Save states
+
+Save states snapshot the entire emulation state to a slot file. Hit
+`F2` to save, `F3` to load, and the bare digit keys `0`-`9` to pick
+which of the 10 slots is active. The active slot persists across
+launches in `settings.kv` so you can keep working with the same slot
+across sessions.
+
+Slot files live alongside battery saves at
+`~/.config/vibenes/saves/<rom-stem>.<crc>.<region>.state<N>` (or in
+the rom directory under `SaveStyle::NextToRom`). Embedding both the
+ROM CRC32 and the region tag in the path keeps three classes of
+collision from clobbering each other:
+
+- NTSC and PAL builds of the same game (often identical PRG/CHR
+  binaries with different iNES region flags).
+- An IPS-patched hack, fan translation, or revision against the
+  base ROM with the same filename.
+- Any rename to a name another ROM already used.
+
+Cross-ROM, cross-mapper, and cross-region loads are caught by the
+file header and rejected before any state is touched. If the apply
+itself fails partway, an in-memory backup captured at load time
+restores the live state byte-for-byte (puNES rollback pattern).
+
+Mapper coverage: NROM, MMC1, UxROM, CNROM, MMC3 (incl. MMC6),
+MMC5, AxROM, MMC2, MMC4, GxROM, the VRC1/2/3/4/6/7 family, FME-7
+(incl. Sunsoft 5B audio), Bandai FCG (incl. EEPROM), Jaleco
+SS88006, Namco 163 (incl. wavetable audio), RAMBO-1, Irem G-101,
+Taito TC0190, Mapper 037, FDS (incl. RP2C33 audio + disk-side
+state). VRC7 OPLL state is replayed through emu2413 from a
+register-file shadow so the chip is fully restored without
+freezing the format around the C struct.
+
+What's not in scope: rewind buffers, runahead, mid-instruction or
+mid-DMA snapshots, screenshot thumbnails embedded in slot files,
+and migration between save-state format versions. The current
+format version is `1`; loading a future-version state into an
+older build fails cleanly rather than silently corrupting.
+
+## Settings
+
 Runtime settings live in [`src/config.rs`](src/config.rs) as plain
 Rust defaults. The user-tunable subset that the in-game overlay
 already exposes is persisted across launches in
-`~/.config/vibenes/settings.kv` (respects `$XDG_CONFIG_HOME`) - a
+`~/.config/vibenes/settings.kv` (respects `$XDG_CONFIG_HOME`), a
 tiny `key=value` file managed by [`src/settings.rs`](src/settings.rs).
-Today only the integer scale survives a restart; more fields move
-out of `config.rs` and into the persisted file as the settings UI
-grows.
+Today the integer scale and the active save-state slot survive a
+restart; more fields move out of `config.rs` and into the
+persisted file as the settings UI grows.
 
 ## Testing
 
@@ -225,6 +272,11 @@ Integration test suites gate against curated ROM sets:
 - `tests/battery_save.rs` for a synthetic NROM battery cart; writes
   PRG-RAM via the bus, saves, drops the Nes, reloads, verifies
   persistence; asserts non-battery carts never create a `.sav`.
+- `tests/save_state_integration.rs` for end-to-end save-state
+  correctness on a synthetic in-memory NROM cart: capture/apply
+  is a no-op, encode + decode + apply to a fresh Nes is byte-equal
+  to the source, run-after-restore matches a continuous run, and
+  the framebuffer is byte-identical 30 frames past a round trip.
 
 ## License
 
