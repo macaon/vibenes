@@ -72,15 +72,8 @@ developers in any way.
 
 ### Supported mappers
 
-38 iNES mapper IDs across 31 distinct chips. Highlights: every
-licensed Konami audio expansion (VRC6, VRC7 OPLL via vendored
-emu2413), every Sunsoft licensed chip (FME-7 / 5B audio,
-Sunsoft-3 IRQ, Sunsoft-4 with Maeda licensing chip), the full
-Namco 118 family (88 / 95 / 154 / 206 with per-cart mirroring
-quirks) plus Namco 163 8-channel wavetable audio, FDS RP2C33
-audio + IPS-sidecar disk saves, MMC3 Rev A / Rev B IRQ semantics,
-MMC5 ExRAM + scanline IRQ + multiplier, Bandai LZ93D50 with
-24C01 / 24C02 EEPROM preserves.
+I've opted to supporting licensed mappers only. Running multi-carts with custom
+mappers and unofficial mappers overall is not in scope for now.
 
 | # | Name | Status |
 |---|---|---|
