@@ -618,6 +618,15 @@ pub struct Mapper037Snap {
     pub block: u8,
 }
 
+/// TxSROM (mapper 118) wraps an MMC3 with per-NT-slot CIRAM
+/// routing latched at `$8001` write time. The 4-byte `nt_cache`
+/// is the only state TxSROM adds on top of the inner MMC3.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct TxsromSnap {
+    pub inner: Mmc3Snap,
+    pub nt_cache: [u8; 4],
+}
+
 /// Namco 118 family variant tag. Mirrors the live
 /// [`crate::nes::mapper::namco_118::Variant`] so the on-disk schema
 /// is decoupled from the live struct's enum layout. Used to
@@ -846,6 +855,7 @@ pub enum MapperState {
     Sunsoft3(Sunsoft3Snap),
     Sunsoft4(Sunsoft4Snap),
     Namco118(Namco118Snap),
+    Txsrom(Box<TxsromSnap>),
     /// Mapper variant not covered by any phase yet. Carries the
     /// live mapper id from [`crate::nes::bus::Bus::mapper_id`]
     /// for error messaging.

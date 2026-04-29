@@ -267,8 +267,20 @@ impl Mmc3 {
         (self.bank_select & 0x40) != 0
     }
 
-    fn chr_inverted(&self) -> bool {
+    /// CHR window inversion bit (`$8000.b7`). When false the 2 KiB
+    /// `R0`/`R1` banks live at PPU `$0000-$0FFF` and the 1 KiB
+    /// `R2`-`R5` banks at `$1000-$1FFF`; when true the layout
+    /// flips. Crate-public so wrappers (e.g. TxSROM) can inspect
+    /// the live mode without re-decoding `bank_select`.
+    pub(crate) fn chr_inverted(&self) -> bool {
         (self.bank_select & 0x80) != 0
+    }
+
+    /// Low-3-bit `R` index latched by the most recent `$8000`
+    /// write. The next `$8001` write targets `bank_regs[idx]`.
+    /// Crate-public for the same wrapper-introspection reason.
+    pub(crate) fn current_register_index(&self) -> u8 {
+        self.bank_select & 0x07
     }
 
     fn second_last_prg_bank(&self) -> usize {

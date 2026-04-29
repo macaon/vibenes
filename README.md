@@ -72,7 +72,7 @@ developers in any way.
 
 ### Supported mappers
 
-36 iNES mapper IDs across 29 distinct chips. Highlights: every
+37 iNES mapper IDs across 30 distinct chips. Highlights: every
 licensed Konami audio expansion (VRC6, VRC7 OPLL via vendored
 emu2413), every Sunsoft licensed chip (FME-7 / 5B audio,
 Sunsoft-3 IRQ, Sunsoft-4 with Maeda licensing chip), the full
@@ -113,6 +113,7 @@ MMC5 ExRAM + scanline IRQ + multiplier, Bandai LZ93D50 with
 | 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
 | 88 | Namcot Type C (extra-CHR-line wiring; Devil Man, Mendel Palace) | done |
 | 95 | Namco 118 / Dragon Buster (per-CHR-slot single-screen mirroring) | done |
+| 118 | Nintendo TxSROM / TLSROM / TKSROM (MMC3 + per-CHR-bank dynamic mirroring; Armadillo, Goal! Two, Ys III) | done |
 | 154 | Namco 118 / Devil World JP (dynamic single-screen mirroring + Type C CHR wiring) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 | 206 | Namco 118 / Mimic-1 (DigDug II, Mappy-Land, Galaxian) | done |
@@ -131,9 +132,8 @@ All ROMs in these suites pass:
 
 ### Known gaps
 
-- **Additional mappers.** The Nintendo TxSROM (mapper 118) and
-  TQROM (mapper 119) MMC3 derivatives - per-CHR-bank dynamic
-  mirroring and CHR-RAM/ROM bit-6 mixing respectively - are the
+- **Additional mappers.** The Nintendo TQROM (mapper 119) MMC3
+  derivative - CHR-RAM / ROM bit-6 mixing per CHR slot - is the
   next licensed batch.
 - **Second controller + rebinding.** Player 1 is wired to the
   keyboard; player 2 and configurable bindings are future work.
