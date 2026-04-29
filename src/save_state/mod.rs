@@ -797,6 +797,7 @@ mod tests {
             MapperState::Fme7(Box::new(Fme7Snap::default())),
             MapperState::BandaiFcg(Box::new(BandaiFcgSnap::default())),
             MapperState::Jaleco(Box::new(JalecoSnap::default())),
+            MapperState::JalecoJf17(JalecoJf17Snap::default()),
             MapperState::Namco163(Box::new(Namco163Snap::default())),
             MapperState::Rambo1(Box::new(Rambo1Snap::default())),
             MapperState::IremG101(IremG101Snap::default()),

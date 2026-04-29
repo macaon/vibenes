@@ -662,6 +662,21 @@ pub struct Tc0690Snap {
     pub prev_inner_irq: bool,
 }
 
+/// Jaleco JF-17 / JF-19 (mappers 72 + 92). Captures the live PRG
+/// and CHR bank values, the prev-write rising-edge gates, the
+/// PCB wiring (`switchable_high` distinguishes mapper 92 from
+/// mapper 72), and any CHR-RAM bytes for the rare CHR-RAM build.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct JalecoJf17Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub prg_bank: u8,
+    pub chr_bank: u8,
+    pub prev_prg_gate: bool,
+    pub prev_chr_gate: bool,
+    /// `false` for JF-17 (mapper 72), `true` for JF-19 (mapper 92).
+    pub switchable_high: bool,
+}
+
 /// Sunsoft-2 (mapper 89). One register at $8000-$FFFF carrying
 /// PRG bank, single-screen mirroring, and CHR bank. Bus-conflict
 /// AND is applied at write time, so the latched value is what we
@@ -1004,6 +1019,7 @@ pub enum MapperState {
     Fme7(Box<Fme7Snap>),
     BandaiFcg(Box<BandaiFcgSnap>),
     Jaleco(Box<JalecoSnap>),
+    JalecoJf17(JalecoJf17Snap),
     Namco163(Box<Namco163Snap>),
     Rambo1(Box<Rambo1Snap>),
     Bandai74161(Bandai74161Snap),
