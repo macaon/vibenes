@@ -702,6 +702,38 @@ impl Default for TaitoX1005Snap {
     }
 }
 
+/// Taito X1-017 (mapper 82). Captures the chip's 5 KiB
+/// battery-backed WRAM (five 1 KiB banks gated by three
+/// permission latches), the CHR bank file, the CHR mode swap
+/// bit, and the shifted PRG bank values.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaitoX1017Snap {
+    #[serde(with = "BigArray")]
+    pub wram: [u8; 5 * 1024],
+    pub chr_ram_data: Vec<u8>,
+    pub chr_regs: [u8; 6],
+    pub chr_mode: u8,
+    pub ram_permission: [u8; 3],
+    pub prg_regs: [u8; 3],
+    pub mirroring: MirroringSnap,
+    pub save_dirty: bool,
+}
+
+impl Default for TaitoX1017Snap {
+    fn default() -> Self {
+        Self {
+            wram: [0; 5 * 1024],
+            chr_ram_data: Vec::new(),
+            chr_regs: [0; 6],
+            chr_mode: 0,
+            ram_permission: [0; 3],
+            prg_regs: [0; 3],
+            mirroring: MirroringSnap::default(),
+            save_dirty: false,
+        }
+    }
+}
+
 /// Namco 118 family variant tag. Mirrors the live
 /// [`crate::nes::mapper::namco_118::Variant`] so the on-disk schema
 /// is decoupled from the live struct's enum layout. Used to
@@ -934,6 +966,7 @@ pub enum MapperState {
     Tqrom(Box<TqromSnap>),
     Tc0690(Box<Tc0690Snap>),
     TaitoX1005(Box<TaitoX1005Snap>),
+    TaitoX1017(Box<TaitoX1017Snap>),
     /// Mapper variant not covered by any phase yet. Carries the
     /// live mapper id from [`crate::nes::bus::Bus::mapper_id`]
     /// for error messaging.

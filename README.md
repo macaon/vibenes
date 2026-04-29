@@ -105,6 +105,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 73 | Konami VRC3 (Salamander) | done |
 | 75 | Konami VRC1 (Tetsuwan Atom, Ganbare Goemon!) | done |
 | 80 | Taito X1-005 (Wagyan Land 2 + 3, Famista 89-Pro series, Bakushou!! Jinsei Gekijou series, Don Doko Don, Daikoukai Jidai) | done |
+| 82 | Taito X1-017 (SD Keiji: Blader, Kyonshiizu 2; 5 KiB battery WRAM with three independently-gated regions) | done |
 | 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
 | 88 | Namcot Type C (extra-CHR-line wiring; Devil Man, Mendel Palace) | done |
 | 95 | Namco 118 / Dragon Buster (per-CHR-slot single-screen mirroring) | done |
