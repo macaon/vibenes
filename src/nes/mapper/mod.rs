@@ -15,6 +15,7 @@ pub mod gxrom;
 pub mod irem_74x161;
 pub mod irem_g101;
 pub mod irem_h3001;
+pub mod irem_tam_s1;
 pub mod jaleco_jf17;
 pub mod jaleco_ss88006;
 pub mod mapper037;
@@ -390,6 +391,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         70 => Ok(Box::new(bandai_74161::Bandai74161::new_70(cart))),
         72 => Ok(Box::new(jaleco_jf17::JalecoJf17::new_72(cart))),
         92 => Ok(Box::new(jaleco_jf17::JalecoJf17::new_92(cart))),
+        97 => Ok(Box::new(irem_tam_s1::IremTamS1::new(cart))),
         152 => Ok(Box::new(bandai_74161::Bandai74161::new_152(cart))),
         184 => Ok(Box::new(sunsoft1::Sunsoft1::new(cart))),
         69 => Ok(Box::new(fme7::Fme7::new(cart))),

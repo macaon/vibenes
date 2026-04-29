@@ -699,6 +699,20 @@ pub struct Sunsoft1Snap {
     pub reg: u8,
 }
 
+/// Irem TAM-S1 (mapper 97). Captures the latch, the live
+/// mirroring, the submapper-derived 4-mode flag, and any
+/// CHR-RAM bytes (the only known retail cart, Kaiketsu Yanchamaru,
+/// uses CHR-RAM).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct IremTamS1Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+    pub mirroring: MirroringSnap,
+    /// `true` for NES 2.0 submapper 1 (4-mode mirroring); `false`
+    /// for submapper 0 / non-NES-2.0 dumps (2-mode mirroring).
+    pub four_mode: bool,
+}
+
 /// Bandai 74*161/161/32 (mappers 70 + 152). Captures the
 /// single 8-bit latch, the auto-promoted mirroring-control flag
 /// (mapper 70 only), the live mirroring, and any CHR-RAM bytes
@@ -1039,6 +1053,7 @@ pub enum MapperState {
     Irem74x161(Irem74x161Snap),
     IremG101(IremG101Snap),
     IremH3001(Box<IremH3001Snap>),
+    IremTamS1(IremTamS1Snap),
     TaitoTc0190(TaitoTc0190Snap),
     Mapper037(Box<Mapper037Snap>),
     Fds(Box<FdsSnap>),

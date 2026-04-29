@@ -114,6 +114,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 88 | Namcot Type C (extra-CHR-line wiring; Devil Man, Mendel Palace) | done |
 | 89 | Sunsoft-2 with single-screen mirror (Tenka no Goikenban: Mito Koumon; bus-conflict ANDs CPU value with ROM byte) | done |
 | 92 | Jaleco JF-19 (Moero!! Pro Yakyuu '88, Moero!! Pro Tennis; same chip as 72 wired with high-slot switch) | done |
+| 97 | Irem TAM-S1 (Kaiketsu Yanchamaru; inverted PRG with last bank fixed at $8000, switchable at $C000; 2-mode mirroring sub 0, 4-mode sub 1) | done |
 | 95 | Namco 118 / Dragon Buster (per-CHR-slot single-screen mirroring) | done |
 | 118 | Nintendo TxSROM / TLSROM / TKSROM (MMC3 + per-CHR-bank dynamic mirroring; Armadillo, Goal! Two, Ys III) | done |
 | 119 | Nintendo TQROM (MMC3 + 8 KiB CHR-RAM/ROM mix per slot; High Speed, Pin*Bot, Mall Madness) | done |
@@ -245,9 +246,9 @@ Mapper coverage: NROM, MMC1, UxROM, CNROM, MMC3 (incl. MMC6),
 MMC5, AxROM, MMC2, MMC4, GxROM, the VRC1/2/3/4/6/7 family, FME-7
 (incl. Sunsoft 5B audio), Bandai FCG (incl. EEPROM), Jaleco
 SS88006, Jaleco JF-17/JF-19, Namco 163 (incl. wavetable audio),
-RAMBO-1, Irem G-101, Irem H3001, Irem 74*161, Bandai 74*161,
-Sunsoft-1, Sunsoft-2, Taito TC0190, Mapper 037, FDS (incl. RP2C33
-audio + disk-side state). VRC7 OPLL state is replayed through emu2413 from a
+RAMBO-1, Irem G-101, Irem H3001, Irem 74*161, Irem TAM-S1,
+Bandai 74*161, Sunsoft-1, Sunsoft-2, Taito TC0190, Mapper 037,
+FDS (incl. RP2C33 audio + disk-side state). VRC7 OPLL state is replayed through emu2413 from a
 register-file shadow so the chip is fully restored without
 freezing the format around the C struct.
 
