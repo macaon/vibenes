@@ -662,6 +662,23 @@ pub struct Tc0690Snap {
     pub prev_inner_irq: bool,
 }
 
+/// Irem H3001 (mapper 65). Captures PRG-RAM, optional CHR-RAM,
+/// PRG/CHR bank registers, mirroring, and the live IRQ
+/// down-counter state (latch + counter + enable + line).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct IremH3001Snap {
+    pub prg_ram: Vec<u8>,
+    pub chr_ram_data: Vec<u8>,
+    pub prg_regs: [u8; 3],
+    pub chr_regs: [u8; 8],
+    pub mirroring: MirroringSnap,
+    pub irq_enabled: bool,
+    pub irq_counter: u16,
+    pub irq_latch: u16,
+    pub irq_line: bool,
+    pub save_dirty: bool,
+}
+
 /// Taito X1-005 (mappers 80 + 207). Captures the chip's
 /// 128-byte on-cart WRAM (battery-backed on save-bearing
 /// carts), the bank-register file at `$7EF0-$7EFF`, the
@@ -956,6 +973,7 @@ pub enum MapperState {
     Namco163(Box<Namco163Snap>),
     Rambo1(Box<Rambo1Snap>),
     IremG101(IremG101Snap),
+    IremH3001(Box<IremH3001Snap>),
     TaitoTc0190(TaitoTc0190Snap),
     Mapper037(Box<Mapper037Snap>),
     Fds(Box<FdsSnap>),

@@ -800,6 +800,7 @@ mod tests {
             MapperState::Namco163(Box::new(Namco163Snap::default())),
             MapperState::Rambo1(Box::new(Rambo1Snap::default())),
             MapperState::IremG101(IremG101Snap::default()),
+            MapperState::IremH3001(Box::new(IremH3001Snap::default())),
             MapperState::TaitoTc0190(TaitoTc0190Snap::default()),
             MapperState::Mapper037(Box::new(Mapper037Snap::default())),
             MapperState::Fds(Box::new(FdsSnap::default())),
