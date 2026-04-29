@@ -95,6 +95,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 26 | Konami VRC6b | done |
 | 32 | Irem G-101 (incl. Major League submapper) | done |
 | 33 | Taito TC0190 / TC0350 (no-IRQ subset) | done |
+| 34 | BNROM (Deadly Towers; bus-conflict 32 KiB PRG bank) + NINA-001 (Impossible Mission II, Wayne's World; $7FFD-$7FFF register set with 32 KiB PRG + two 4 KiB CHR banks); auto-detect by CHR-ROM presence | done |
 | 37 | Nintendo SMB + Tetris + World Cup multicart | done |
 | 48 | Taito TC0690 (MMC3-style + delayed IRQ; Don Doko Don 2, Power Blazer, Flintstones, Captain Saver, The Jetsons) | done |
 | 64 | Tengen RAMBO-1 (Klax JP, Skull & Crossbones, Rolling Thunder, Hard Drivin') | done |
@@ -247,8 +248,8 @@ MMC5, AxROM, MMC2, MMC4, GxROM, the VRC1/2/3/4/6/7 family, FME-7
 (incl. Sunsoft 5B audio), Bandai FCG (incl. EEPROM), Jaleco
 SS88006, Jaleco JF-17/JF-19, Namco 163 (incl. wavetable audio),
 RAMBO-1, Irem G-101, Irem H3001, Irem 74*161, Irem TAM-S1,
-Bandai 74*161, Sunsoft-1, Sunsoft-2, Taito TC0190, Mapper 037,
-FDS (incl. RP2C33 audio + disk-side state). VRC7 OPLL state is replayed through emu2413 from a
+Bandai 74*161, Sunsoft-1, Sunsoft-2, BNROM/NINA-001, Taito
+TC0190, Mapper 037, FDS (incl. RP2C33 audio + disk-side state). VRC7 OPLL state is replayed through emu2413 from a
 register-file shadow so the chip is fully restored without
 freezing the format around the C struct.
 

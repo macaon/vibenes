@@ -677,6 +677,21 @@ pub struct JalecoJf17Snap {
     pub switchable_high: bool,
 }
 
+/// BNROM / NINA-001 (mapper 34, two distinct chips). Captures
+/// PRG-RAM, CHR-RAM (BNROM only), the PRG bank, the two CHR
+/// bank registers (NINA-001 only), and the variant flag.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct BnromSnap {
+    pub prg_ram: Vec<u8>,
+    pub chr_ram_data: Vec<u8>,
+    pub prg_bank: u8,
+    pub chr_banks: [u8; 2],
+    /// `true` for NINA-001 (submapper 1); `false` for BNROM
+    /// (submapper 2). Cross-variant restore is rejected.
+    pub nina001: bool,
+    pub save_dirty: bool,
+}
+
 /// Sunsoft-2 (mapper 89). One register at $8000-$FFFF carrying
 /// PRG bank, single-screen mirroring, and CHR bank. Bus-conflict
 /// AND is applied at write time, so the latched value is what we
@@ -1050,6 +1065,7 @@ pub enum MapperState {
     Namco163(Box<Namco163Snap>),
     Rambo1(Box<Rambo1Snap>),
     Bandai74161(Bandai74161Snap),
+    Bnrom(BnromSnap),
     Irem74x161(Irem74x161Snap),
     IremG101(IremG101Snap),
     IremH3001(Box<IremH3001Snap>),
