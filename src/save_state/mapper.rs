@@ -648,6 +648,20 @@ impl Default for TqromSnap {
     }
 }
 
+/// Taito TC0690 (mapper 48) wraps an MMC3 with a translated
+/// register surface and a CPU-cycle delay on IRQ assertion.
+/// Submapper 0 (Flintstones / Captain Saver / default) uses
+/// a 22-cycle delay; submapper 1 (The Jetsons) uses a 6-cycle
+/// delay AND adds `+1` to the inverted reload value.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Tc0690Snap {
+    pub inner: Mmc3Snap,
+    pub submapper: u8,
+    pub irq_delay: u8,
+    pub delayed_irq_line: bool,
+    pub prev_inner_irq: bool,
+}
+
 /// Namco 118 family variant tag. Mirrors the live
 /// [`crate::nes::mapper::namco_118::Variant`] so the on-disk schema
 /// is decoupled from the live struct's enum layout. Used to
@@ -878,6 +892,7 @@ pub enum MapperState {
     Namco118(Namco118Snap),
     Txsrom(Box<TxsromSnap>),
     Tqrom(Box<TqromSnap>),
+    Tc0690(Box<Tc0690Snap>),
     /// Mapper variant not covered by any phase yet. Carries the
     /// live mapper id from [`crate::nes::bus::Bus::mapper_id`]
     /// for error messaging.

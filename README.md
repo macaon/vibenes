@@ -96,6 +96,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 32 | Irem G-101 (incl. Major League submapper) | done |
 | 33 | Taito TC0190 / TC0350 (no-IRQ subset) | done |
 | 37 | Nintendo SMB + Tetris + World Cup multicart | done |
+| 48 | Taito TC0690 (MMC3-style + delayed IRQ; Don Doko Don 2, Power Blazer, Flintstones, Captain Saver, The Jetsons) | done |
 | 64 | Tengen RAMBO-1 (Klax JP, Skull & Crossbones, Rolling Thunder, Hard Drivin') | done |
 | 66 | GxROM / MHROM | done |
 | 67 | Sunsoft-3 (Fantasy Zone II, Mito Koumon) | done |

@@ -283,6 +283,63 @@ impl Mmc3 {
         self.bank_select & 0x07
     }
 
+    /// Direct write to `bank_regs[idx & 7]`, bypassing the
+    /// `$8000`/`$8001` bank-select-then-data sequence. Used by
+    /// MMC3-derivative chip wrappers whose register surface
+    /// maps each address to a fixed register (e.g. Taito
+    /// TC0690 at mapper 48). R0 / R1 still get the bit-0 mask
+    /// since they're 2 KiB banks paired with the next 1 KiB
+    /// half via `r | 0x01`.
+    pub(crate) fn set_bank_reg(&mut self, idx: u8, value: u8) {
+        let i = (idx & 0x07) as usize;
+        let masked = if i < 2 { value & 0xFE } else { value };
+        self.bank_regs[i] = masked;
+    }
+
+    /// Direct write to the IRQ reload latch (`$C000` in
+    /// standard MMC3). Wrappers use this when their register
+    /// surface routes IRQ-latch writes through a different
+    /// address (TC0690's `$C000` carries the value
+    /// XOR-inverted, with a submapper-1 `+ 1` offset).
+    pub(crate) fn set_irq_latch(&mut self, value: u8) {
+        self.irq_latch = value;
+    }
+
+    /// Schedule an IRQ-counter reload on the next A12 rise
+    /// (the standard MMC3 `$C001` semantic). Used by wrappers
+    /// that route the trigger through a different address.
+    pub(crate) fn trigger_irq_reload(&mut self) {
+        self.irq_counter = 0;
+        self.irq_reload = true;
+    }
+
+    /// Enable or disable the IRQ counter. Standard MMC3 wires
+    /// these to `$E001` (enable) and `$E000` (disable + ack);
+    /// disabling unconditionally clears the IRQ line so the
+    /// CPU sees the de-assert immediately.
+    pub(crate) fn set_irq_enabled(&mut self, enabled: bool) {
+        self.irq_enabled = enabled;
+        if !enabled {
+            self.irq_line = false;
+        }
+    }
+
+    /// Clear the IRQ line without changing the enable state.
+    /// Standard MMC3 doesn't need this (its `$E000` always
+    /// disables on ack), but TC0690 has separate "ack" and
+    /// "disable" addresses; the wrapper acks via this hook.
+    pub(crate) fn ack_irq(&mut self) {
+        self.irq_line = false;
+    }
+
+    /// Replace the active mirroring mode. Standard MMC3 wires
+    /// `$A000.b0` to a vertical / horizontal toggle; TC0690's
+    /// `$E000.b6` does the same job at a different address,
+    /// and the wrapper drives this directly.
+    pub(crate) fn set_mirroring_mode(&mut self, m: Mirroring) {
+        self.mirroring = m;
+    }
+
     /// Raw bank-register value for the slot containing `addr`,
     /// **without** the `% chr_bank_count_1k` clamp that
     /// [`Self::chr_bank_for`] applies. Crate-public for TQROM

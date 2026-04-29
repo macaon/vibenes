@@ -808,6 +808,7 @@ mod tests {
             MapperState::Namco118(Namco118Snap::default()),
             MapperState::Txsrom(Box::new(TxsromSnap::default())),
             MapperState::Tqrom(Box::new(TqromSnap::default())),
+            MapperState::Tc0690(Box::new(Tc0690Snap::default())),
             MapperState::Unsupported(255),
         ];
         for v in &variants {
