@@ -711,6 +711,19 @@ pub struct Bandai74161Snap {
     pub mirroring: MirroringSnap,
 }
 
+/// Irem 74*161 / Jaleco JF-16 (mapper 78). Captures the latch,
+/// the live mirroring, the submapper-derived mirror-mode flag
+/// (Holy Diver vs Cosmo Carrier), and any CHR-RAM bytes.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Irem74x161Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+    pub mirroring: MirroringSnap,
+    /// `true` for submapper 3 (Holy Diver, H/V mirroring); `false`
+    /// for submapper 1 (Cosmo Carrier, single-screen).
+    pub holy_diver_mode: bool,
+}
+
 /// Irem H3001 (mapper 65). Captures PRG-RAM, optional CHR-RAM,
 /// PRG/CHR bank registers, mirroring, and the live IRQ
 /// down-counter state (latch + counter + enable + line).
@@ -1023,6 +1036,7 @@ pub enum MapperState {
     Namco163(Box<Namco163Snap>),
     Rambo1(Box<Rambo1Snap>),
     Bandai74161(Bandai74161Snap),
+    Irem74x161(Irem74x161Snap),
     IremG101(IremG101Snap),
     IremH3001(Box<IremH3001Snap>),
     TaitoTc0190(TaitoTc0190Snap),

@@ -107,6 +107,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
 | 73 | Konami VRC3 (Salamander) | done |
 | 75 | Konami VRC1 (Tetsuwan Atom, Ganbare Goemon!) | done |
+| 78 | Irem 74*161 / Jaleco JF-16 (Holy Diver sub 3 - H/V mirror, Cosmo Carrier sub 1 - single-screen; bus-conflict ANDs CPU value with ROM byte) | done |
 | 80 | Taito X1-005 (Wagyan Land 2 + 3, Famista 89-Pro series, Bakushou!! Jinsei Gekijou series, Don Doko Don, Daikoukai Jidai) | done |
 | 82 | Taito X1-017 (SD Keiji: Blader, Kyonshiizu 2; 5 KiB battery WRAM with three independently-gated regions) | done |
 | 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
@@ -244,9 +245,9 @@ Mapper coverage: NROM, MMC1, UxROM, CNROM, MMC3 (incl. MMC6),
 MMC5, AxROM, MMC2, MMC4, GxROM, the VRC1/2/3/4/6/7 family, FME-7
 (incl. Sunsoft 5B audio), Bandai FCG (incl. EEPROM), Jaleco
 SS88006, Jaleco JF-17/JF-19, Namco 163 (incl. wavetable audio),
-RAMBO-1, Irem G-101, Irem H3001, Bandai 74*161, Sunsoft-1,
-Sunsoft-2, Taito TC0190, Mapper 037, FDS (incl. RP2C33 audio +
-disk-side state). VRC7 OPLL state is replayed through emu2413 from a
+RAMBO-1, Irem G-101, Irem H3001, Irem 74*161, Bandai 74*161,
+Sunsoft-1, Sunsoft-2, Taito TC0190, Mapper 037, FDS (incl. RP2C33
+audio + disk-side state). VRC7 OPLL state is replayed through emu2413 from a
 register-file shadow so the chip is fully restored without
 freezing the format around the C struct.
 
