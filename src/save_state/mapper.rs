@@ -618,6 +618,39 @@ pub struct Mapper037Snap {
     pub block: u8,
 }
 
+/// Sunsoft-3 (mapper 67). Tracks 4× 2 KiB CHR banks, 16 KiB PRG
+/// bank, mirroring, and the 16-bit IRQ counter (with its
+/// two-write-toggle latch) used by *Fantasy Zone II*.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Sunsoft3Snap {
+    pub prg_ram: Vec<u8>,
+    pub chr_ram_data: Vec<u8>,
+    pub prg_bank: u8,
+    pub chr_banks: [u8; 4],
+    pub mirroring: MirroringSnap,
+    pub irq_toggle: bool,
+    pub irq_counter: u16,
+    pub irq_enabled: bool,
+    pub irq_line: bool,
+    pub save_dirty: bool,
+}
+
+/// Sunsoft-4 (mapper 68). Tracks 4× 2 KiB CHR banks plus the 2
+/// nametable-replacement registers, the NTRAM enable bit, and the
+/// PRG bank + RAM-enable gate. Used by *After Burner II*.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Sunsoft4Snap {
+    pub prg_ram: Vec<u8>,
+    pub chr_ram_data: Vec<u8>,
+    pub prg_bank: u8,
+    pub prg_ram_enabled: bool,
+    pub chr_banks: [u8; 4],
+    pub nt_regs: [u8; 2],
+    pub use_chr_for_nametables: bool,
+    pub mirroring: MirroringSnap,
+    pub save_dirty: bool,
+}
+
 // ---- FDS audio + disk + IRQ ----
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -772,8 +805,10 @@ pub enum MapperState {
     TaitoTc0190(TaitoTc0190Snap),
     Mapper037(Box<Mapper037Snap>),
     Fds(Box<FdsSnap>),
-    /// Mapper variant not covered by either Phase 3a or 3b. Carries
-    /// the live mapper id from [`crate::nes::bus::Bus::mapper_id`]
+    Sunsoft3(Sunsoft3Snap),
+    Sunsoft4(Sunsoft4Snap),
+    /// Mapper variant not covered by any phase yet. Carries the
+    /// live mapper id from [`crate::nes::bus::Bus::mapper_id`]
     /// for error messaging.
     Unsupported(u16),
 }
