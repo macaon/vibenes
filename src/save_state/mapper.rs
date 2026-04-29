@@ -662,6 +662,18 @@ pub struct Tc0690Snap {
     pub prev_inner_irq: bool,
 }
 
+/// Sunsoft-2 (mapper 89). One register at $8000-$FFFF carrying
+/// PRG bank, single-screen mirroring, and CHR bank. Bus-conflict
+/// AND is applied at write time, so the latched value is what we
+/// store here. CHR-RAM bytes captured for completeness (no known
+/// retail cart uses CHR-RAM on this mapper).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Sunsoft2Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+    pub mirroring: MirroringSnap,
+}
+
 /// Sunsoft-1 (mapper 184). One CHR-banking register at
 /// `$6000-$7FFF` plus optional CHR-RAM bytes (none of the known
 /// retail carts use CHR-RAM, but we capture if present for
@@ -1001,6 +1013,7 @@ pub enum MapperState {
     Mapper037(Box<Mapper037Snap>),
     Fds(Box<FdsSnap>),
     Sunsoft1(Sunsoft1Snap),
+    Sunsoft2(Sunsoft2Snap),
     Sunsoft3(Sunsoft3Snap),
     Sunsoft4(Sunsoft4Snap),
     Namco118(Namco118Snap),

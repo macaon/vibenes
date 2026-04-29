@@ -27,6 +27,7 @@ pub mod namco_118;
 pub mod nrom;
 pub mod rambo1;
 pub mod sunsoft1;
+pub mod sunsoft2;
 pub mod sunsoft3;
 pub mod sunsoft4;
 pub mod sunsoft5b_audio;
@@ -365,6 +366,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         67 => Ok(Box::new(sunsoft3::Sunsoft3::new(cart))),
         68 => Ok(Box::new(sunsoft4::Sunsoft4::new(cart))),
         88 => Ok(Box::new(namco_118::Namco118::new_88(cart))),
+        89 => Ok(Box::new(sunsoft2::Sunsoft2::new(cart))),
         95 => Ok(Box::new(namco_118::Namco118::new_95(cart))),
         118 => Ok(Box::new(txsrom::Txsrom::new(cart))),
         119 => Ok(Box::new(tqrom::Tqrom::new(cart))),
