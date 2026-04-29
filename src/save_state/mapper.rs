@@ -662,6 +662,16 @@ pub struct Tc0690Snap {
     pub prev_inner_irq: bool,
 }
 
+/// Sunsoft-1 (mapper 184). One CHR-banking register at
+/// `$6000-$7FFF` plus optional CHR-RAM bytes (none of the known
+/// retail carts use CHR-RAM, but we capture if present for
+/// homebrew completeness).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Sunsoft1Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+}
+
 /// Bandai 74*161/161/32 (mappers 70 + 152). Captures the
 /// single 8-bit latch, the auto-promoted mirroring-control flag
 /// (mapper 70 only), the live mirroring, and any CHR-RAM bytes
@@ -990,6 +1000,7 @@ pub enum MapperState {
     TaitoTc0190(TaitoTc0190Snap),
     Mapper037(Box<Mapper037Snap>),
     Fds(Box<FdsSnap>),
+    Sunsoft1(Sunsoft1Snap),
     Sunsoft3(Sunsoft3Snap),
     Sunsoft4(Sunsoft4Snap),
     Namco118(Namco118Snap),

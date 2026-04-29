@@ -114,6 +114,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 118 | Nintendo TxSROM / TLSROM / TKSROM (MMC3 + per-CHR-bank dynamic mirroring; Armadillo, Goal! Two, Ys III) | done |
 | 119 | Nintendo TQROM (MMC3 + 8 KiB CHR-RAM/ROM mix per slot; High Speed, Pin*Bot, Mall Madness) | done |
 | 152 | Bandai 74*161/161/32 (single-screen variant; Saint Seiya: Ougon Densetsu Kanketsu Hen, Pocket Zaurus, Tigers no Kessho-ban, Arkanoid II) | done |
+| 184 | Sunsoft-1 (Atlantis no Nazo, Wing of Madoola, Hi no Tori, Maharaja, Kid Niki JP, Ripple Island; CHR-only banking with hardware-forced bit 7 on the high slot) | done |
 | 154 | Namco 118 / Devil World JP (dynamic single-screen mirroring + Type C CHR wiring) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 | 206 | Namco 118 / Mimic-1 (DigDug II, Mappy-Land, Galaxian) | done |
@@ -240,8 +241,8 @@ Mapper coverage: NROM, MMC1, UxROM, CNROM, MMC3 (incl. MMC6),
 MMC5, AxROM, MMC2, MMC4, GxROM, the VRC1/2/3/4/6/7 family, FME-7
 (incl. Sunsoft 5B audio), Bandai FCG (incl. EEPROM), Jaleco
 SS88006, Namco 163 (incl. wavetable audio), RAMBO-1, Irem G-101,
-Irem H3001, Bandai 74*161, Taito TC0190, Mapper 037, FDS (incl.
-RP2C33 audio + disk-side state). VRC7 OPLL state is replayed through emu2413 from a
+Irem H3001, Bandai 74*161, Sunsoft-1, Taito TC0190, Mapper 037,
+FDS (incl. RP2C33 audio + disk-side state). VRC7 OPLL state is replayed through emu2413 from a
 register-file shadow so the chip is fully restored without
 freezing the format around the C struct.
 
