@@ -110,6 +110,30 @@ impl Mapper for Axrom {
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{AxromSnap, MirroringSnap};
+        Some(crate::save_state::MapperState::Axrom(AxromSnap {
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            bank: self.bank,
+            mirroring: MirroringSnap::from_live(self.mirroring),
+        }))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Axrom(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.bank = snap.bank;
+        self.mirroring = snap.mirroring.to_live();
+        Ok(())
+    }
 }
 
 #[cfg(test)]

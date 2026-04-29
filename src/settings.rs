@@ -31,12 +31,17 @@ const HEADER: &str = "# vibenes settings - auto-managed by the emulator. Safe to
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub scale: u8,
+    /// Active save-state slot (0..=9). The F2 / F3 hotkeys write to
+    /// and read from this slot. Persisted so a session-spanning
+    /// "Slot 3" choice survives a restart.
+    pub save_state_slot: u8,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             scale: VideoSettings::default().scale,
+            save_state_slot: 0,
         }
     }
 }
@@ -91,6 +96,13 @@ fn parse(text: &str) -> Settings {
                     s.scale = n.clamp(VideoSettings::MIN_SCALE, VideoSettings::MAX_SCALE);
                 }
             }
+            "save_state_slot" => {
+                if let Ok(n) = v.trim().parse::<u8>() {
+                    if n < crate::save_state::SLOT_COUNT {
+                        s.save_state_slot = n;
+                    }
+                }
+            }
             // Forward-compat: ignore unknown keys so a newer
             // vibenes' file doesn't trip up an older binary.
             _ => {}
@@ -102,6 +114,7 @@ fn parse(text: &str) -> Settings {
 fn serialize(s: &Settings) -> String {
     let mut out = String::from(HEADER);
     out.push_str(&format!("scale={}\n", s.scale));
+    out.push_str(&format!("save_state_slot={}\n", s.save_state_slot));
     out
 }
 
@@ -139,7 +152,25 @@ mod tests {
 
     #[test]
     fn serialize_roundtrips() {
-        let s = Settings { scale: 5 };
+        let s = Settings {
+            scale: 5,
+            save_state_slot: 7,
+        };
         assert_eq!(parse(&serialize(&s)), s);
+    }
+
+    #[test]
+    fn parse_recovers_slot() {
+        assert_eq!(parse("save_state_slot=4\n").save_state_slot, 4);
+    }
+
+    #[test]
+    fn parse_clamps_out_of_range_slot() {
+        // Slot 99 is invalid - parser drops it and we fall back to
+        // the default rather than wrap around.
+        assert_eq!(
+            parse("save_state_slot=99\n").save_state_slot,
+            Settings::default().save_state_slot,
+        );
     }
 }

@@ -673,6 +673,65 @@ impl Mapper for Namco163 {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, Namco163Snap};
+        Some(crate::save_state::MapperState::Namco163(Box::new(Namco163Snap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            audio: self.audio.save_state_capture(),
+            not_namco340: self.not_namco340,
+            prg_banks: self.prg_banks,
+            chr_banks: self.chr_banks,
+            low_chr_nt_mode: self.low_chr_nt_mode,
+            high_chr_nt_mode: self.high_chr_nt_mode,
+            write_protect: self.write_protect,
+            irq_counter: self.irq_counter,
+            irq_line: self.irq_line,
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            save_dirty: self.save_dirty,
+        })))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Namco163(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        // N163AudioSnap is owned by `snap`; we need to clone its
+        // contents (it's not Copy because of the [u8; 0x80] payload).
+        self.audio.save_state_apply(crate::save_state::mapper::N163AudioSnap {
+            ram: snap.audio.ram,
+            channel_output: snap.audio.channel_output,
+            update_counter: snap.audio.update_counter,
+            current_channel: snap.audio.current_channel,
+            last_output: snap.audio.last_output,
+            disable_sound: snap.audio.disable_sound,
+            address: snap.audio.address,
+            auto_inc: snap.audio.auto_inc,
+        });
+        self.not_namco340 = snap.not_namco340;
+        self.prg_banks = snap.prg_banks;
+        self.chr_banks = snap.chr_banks;
+        self.low_chr_nt_mode = snap.low_chr_nt_mode;
+        self.high_chr_nt_mode = snap.high_chr_nt_mode;
+        self.write_protect = snap.write_protect;
+        self.irq_counter = snap.irq_counter;
+        self.irq_line = snap.irq_line;
+        self.mirroring = snap.mirroring.to_live();
+        self.save_dirty = snap.save_dirty;
+        // Refresh the save_buffer mirror to match restored state.
+        self.refresh_save_buffer();
+        Ok(())
+    }
 }
 
 #[cfg(test)]

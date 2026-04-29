@@ -129,6 +129,32 @@ impl Mapper for Gxrom {
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{GxromSnap, MirroringSnap};
+        Some(crate::save_state::MapperState::Gxrom(GxromSnap {
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            prg_bank: self.prg_bank,
+            chr_bank: self.chr_bank,
+        }))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Gxrom(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.mirroring = snap.mirroring.to_live();
+        self.prg_bank = snap.prg_bank;
+        self.chr_bank = snap.chr_bank;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

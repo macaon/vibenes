@@ -18,6 +18,7 @@ pub mod gamedb;
 pub mod gfx;
 pub mod nes;
 pub mod save;
+pub mod save_state;
 pub mod snes;
 pub mod settings;
 pub mod ui;

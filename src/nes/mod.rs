@@ -48,8 +48,9 @@ struct SaveMeta {
 impl Nes {
     pub fn from_cartridge(cart: Cartridge) -> Result<Self> {
         let region = Region::from_tv_system(cart.tv_system);
+        let mapper_id = cart.mapper_id;
         let mapper = mapper::build(cart)?;
-        let bus = Bus::new(mapper, region);
+        let bus = Bus::new(mapper, region, mapper_id);
         let mut nes = Self {
             cpu: Cpu::new(),
             bus,
@@ -217,6 +218,16 @@ impl Nes {
         self.save_meta.as_ref().map(|m| m.rom_path.as_path())
     }
 
+    /// CRC32 of the currently-attached cart's PRG + CHR, captured at
+    /// ROM load time. Used by [`crate::save_state`] to stamp every
+    /// state file and refuse cross-ROM loads. `None` when no
+    /// metadata is attached (test harness or a build that loaded a
+    /// cart from raw bytes without calling
+    /// [`Nes::attach_save_metadata`]).
+    pub fn save_meta_crc32(&self) -> Option<u32> {
+        self.save_meta.as_ref().map(|m| m.prg_chr_crc32)
+    }
+
     pub fn region(&self) -> Region {
         self.bus.region()
     }
@@ -291,8 +302,9 @@ impl Nes {
         if let Some(sink) = sink.as_mut() {
             sink.set_cpu_clock(region.cpu_clock_hz());
         }
+        let mapper_id = cart.mapper_id;
         let mapper = mapper::build(cart)?;
-        self.bus = Bus::new(mapper, region);
+        self.bus = Bus::new(mapper, region, mapper_id);
         self.bus.audio_sink = sink;
         self.cpu = Cpu::new();
         self.cpu.reset(&mut self.bus);

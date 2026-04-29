@@ -136,6 +136,38 @@ impl FrameCounter {
 
         event
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::apu::FrameCounterSnap {
+        use crate::save_state::apu::{FrameCounterModeSnap, FrameCounterPendingWriteSnap};
+        crate::save_state::apu::FrameCounterSnap {
+            mode: match self.mode {
+                Mode::FourStep => FrameCounterModeSnap::FourStep,
+                Mode::FiveStep => FrameCounterModeSnap::FiveStep,
+            },
+            irq_inhibit: self.irq_inhibit,
+            counter: self.counter,
+            pending_write: self.pending_write.map(|pw| FrameCounterPendingWriteSnap {
+                value: pw.value,
+                apply_at: pw.apply_at,
+            }),
+            block_ticks_until: self.block_ticks_until,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::apu::FrameCounterSnap) {
+        use crate::save_state::apu::FrameCounterModeSnap;
+        self.mode = match snap.mode {
+            FrameCounterModeSnap::FourStep => Mode::FourStep,
+            FrameCounterModeSnap::FiveStep => Mode::FiveStep,
+        };
+        self.irq_inhibit = snap.irq_inhibit;
+        self.counter = snap.counter;
+        self.pending_write = snap.pending_write.map(|pw| PendingWrite {
+            value: pw.value,
+            apply_at: pw.apply_at,
+        });
+        self.block_ticks_until = snap.block_ticks_until;
+    }
 }
 
 fn mode_period(region: Region, mode: Mode) -> u64 {

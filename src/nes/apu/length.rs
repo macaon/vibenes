@@ -117,6 +117,26 @@ impl LengthCounter {
     pub fn is_nonzero(&self) -> bool {
         self.counter > 0
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::apu::LengthCounterSnap {
+        crate::save_state::apu::LengthCounterSnap {
+            counter: self.counter,
+            halt: self.halt,
+            enabled: self.enabled,
+            pending_halt: self.pending_halt,
+            pending_reload: self.pending_reload,
+            counter_at_write: self.counter_at_write,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::apu::LengthCounterSnap) {
+        self.counter = snap.counter;
+        self.halt = snap.halt;
+        self.enabled = snap.enabled;
+        self.pending_halt = snap.pending_halt;
+        self.pending_reload = snap.pending_reload;
+        self.counter_at_write = snap.counter_at_write;
+    }
 }
 
 #[cfg(test)]

@@ -164,6 +164,28 @@ fn map_region(r: vibenes::core::Region) -> Region {
     }
 }
 
+/// Map a `KeyCode::Digit0..Digit9` to a save-state slot index in
+/// `0..=9`, returning `None` for non-digit keys. The numpad codes
+/// (`Numpad0`/etc.) are deliberately not accepted here - they can
+/// be wired separately if a user requests it; mixing both today
+/// would just create more surface area for the no-bare-digit-on-
+/// controller invariant to break.
+fn digit_keycode_to_slot(code: KeyCode) -> Option<u8> {
+    match code {
+        KeyCode::Digit0 => Some(0),
+        KeyCode::Digit1 => Some(1),
+        KeyCode::Digit2 => Some(2),
+        KeyCode::Digit3 => Some(3),
+        KeyCode::Digit4 => Some(4),
+        KeyCode::Digit5 => Some(5),
+        KeyCode::Digit6 => Some(6),
+        KeyCode::Digit7 => Some(7),
+        KeyCode::Digit8 => Some(8),
+        KeyCode::Digit9 => Some(9),
+        _ => None,
+    }
+}
+
 /// Parsed command-line arguments. Add fields here when new flags
 /// land - keeping all CLI state in one struct keeps `run()` free of
 /// arg-parsing tangles.
@@ -319,6 +341,11 @@ struct App {
     fps_cpu_cycles_at_window_start: u64,
     fps_ppu_frames_at_window_start: u64,
     fps_print_enabled: bool,
+    /// Current save-state slot (0..=9). F2 saves to this slot, F3
+    /// loads from it. Bare digit keys 0..9 retarget the slot. Loaded
+    /// from `settings.kv` on startup and persisted on every change
+    /// so the choice survives a session.
+    save_state_slot: u8,
 }
 
 impl App {
@@ -415,7 +442,14 @@ impl App {
             // so the initial inner_size already matches the user's
             // chosen scale rather than briefly opening at the default
             // and resizing on the first frame.
-            video: VideoSettings::default().with_scale(settings::load().scale),
+            // Persisted preferences read in one pass; a single
+            // `settings.kv` read populates both the video scale and
+            // the active save-state slot.
+            video: {
+                let s = settings::load();
+                VideoSettings::default().with_scale(s.scale)
+            },
+            save_state_slot: settings::load().save_state_slot,
             pending_window_resize: false,
             config,
             frames_since_autosave: 0,
@@ -897,6 +931,17 @@ impl ApplicationHandler for App {
                     if let Some(ui) = self.ui.as_mut() {
                         ui.open_disk_menu();
                     }
+                } else if code == KeyCode::F2 && state == ElementState::Pressed {
+                    // Save the current NES state to the active slot.
+                    // The keyboard handler runs between RedrawRequested
+                    // events, so by the time F2 is observed we're at a
+                    // frame boundary - no mid-frame snapshot risk.
+                    self.save_state_to_active_slot();
+                } else if code == KeyCode::F3 && state == ElementState::Pressed {
+                    // Load the active slot's state. Validation runs
+                    // before any mutation; on failure the cart is
+                    // left untouched.
+                    self.load_state_from_active_slot();
                 } else if code == KeyCode::Escape && state == ElementState::Pressed {
                     // Esc backs out of the overlay (or closes it from
                     // root); when the overlay is closed it quits the
@@ -924,6 +969,17 @@ impl ApplicationHandler for App {
                     // forward to the NES.
                 } else if code == KeyCode::KeyR && state == ElementState::Pressed {
                     self.reset_nes();
+                } else if state == ElementState::Pressed
+                    && digit_keycode_to_slot(code).is_some()
+                {
+                    // Bare digit keys 0..=9 retarget the active save
+                    // slot. Standard NES controllers have no digit
+                    // buttons so this can't shadow gameplay input.
+                    // Persisted to settings.kv so the choice is
+                    // sticky across launches.
+                    if let Some(slot) = digit_keycode_to_slot(code) {
+                        self.select_save_state_slot(slot);
+                    }
                 } else {
                     self.apply_controller_input(code, state);
                 }
@@ -966,7 +1022,10 @@ impl App {
                 self.pending_window_resize = true;
                 // Persist the post-clamp value, not the raw `n` -
                 // `with_scale` already snapped it into MIN..=MAX.
-                let to_save = settings::Settings { scale: self.video.scale };
+                let to_save = settings::Settings {
+                    scale: self.video.scale,
+                    save_state_slot: self.save_state_slot,
+                };
                 if let Err(e) = settings::save(&to_save) {
                     eprintln!("vibenes: save settings failed: {e:#}");
                 }
@@ -1005,6 +1064,138 @@ impl App {
             nes.reset();
             self.halted_notice_shown = false;
             eprintln!("vibenes: reset (PC=${:04X})", nes.cpu.pc);
+        }
+    }
+
+    /// Save the current NES state to the active slot. F2 binding.
+    /// No-op (with stderr notice + on-screen error toast) when no
+    /// NES is loaded or the active mapper isn't covered by
+    /// [`vibenes::save_state`] yet.
+    fn save_state_to_active_slot(&mut self) {
+        let Some(nes) = self.nes.as_ref() else {
+            eprintln!("vibenes: no ROM loaded - F2 ignored");
+            self.show_error_toast("No ROM loaded");
+            return;
+        };
+        let Some(slot) = vibenes::save_state::Slot::new(self.save_state_slot) else {
+            // Defensive: settings parse already clamps to 0..=9.
+            eprintln!(
+                "vibenes: invalid save slot {} (must be 0..9)",
+                self.save_state_slot
+            );
+            return;
+        };
+        match vibenes::save_state::save_to_slot(nes, &self.config.save, slot) {
+            Ok(path) => {
+                eprintln!(
+                    "vibenes: saved state slot {} → {}",
+                    self.save_state_slot,
+                    path.display()
+                );
+                self.show_info_toast(format!("Saved slot {}", self.save_state_slot));
+            }
+            Err(e) => {
+                eprintln!(
+                    "vibenes: save state slot {} failed: {e}",
+                    self.save_state_slot
+                );
+                self.show_error_toast(format!(
+                    "Save slot {} failed: {e}",
+                    self.save_state_slot
+                ));
+            }
+        }
+    }
+
+    /// Load and apply the active slot's save state. F3 binding.
+    /// Validation (header magic / version / ROM CRC / mapper id)
+    /// runs before any state is touched - on `Err` the live `nes`
+    /// is left exactly as it was before the keypress (also true on
+    /// late apply failures: the in-memory backup-on-load rollback
+    /// inside [`vibenes::save_state::load_and_apply_from_slot`]
+    /// restores the pre-call state byte-for-byte).
+    fn load_state_from_active_slot(&mut self) {
+        let Some(nes) = self.nes.as_mut() else {
+            eprintln!("vibenes: no ROM loaded - F3 ignored");
+            self.show_error_toast("No ROM loaded");
+            return;
+        };
+        let Some(slot) = vibenes::save_state::Slot::new(self.save_state_slot) else {
+            eprintln!(
+                "vibenes: invalid save slot {} (must be 0..9)",
+                self.save_state_slot
+            );
+            return;
+        };
+        match vibenes::save_state::load_and_apply_from_slot(nes, &self.config.save, slot) {
+            Ok(()) => {
+                let pc = nes.cpu.pc;
+                eprintln!(
+                    "vibenes: loaded state slot {} (PC=${:04X})",
+                    self.save_state_slot, pc,
+                );
+                // A loaded state may have been captured at a halted
+                // instruction; reset the throttle so the next
+                // halted-CPU detection re-arms.
+                self.halted_notice_shown = false;
+                self.show_info_toast(format!("Loaded slot {}", self.save_state_slot));
+            }
+            Err(e) => {
+                eprintln!(
+                    "vibenes: load state slot {} failed: {e}",
+                    self.save_state_slot
+                );
+                // Discriminate "no save in this slot" vs other
+                // errors so the toast is actionable.
+                let toast_msg = match &e {
+                    vibenes::save_state::SaveStateError::Io(io_err)
+                        if io_err.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        format!("No state in slot {}", self.save_state_slot)
+                    }
+                    _ => format!("Load slot {} failed: {e}", self.save_state_slot),
+                };
+                self.show_error_toast(toast_msg);
+            }
+        }
+    }
+
+    /// Switch the active save-state slot and persist the choice to
+    /// `settings.kv`. Out-of-range slots are dropped silently - the
+    /// caller (digit-key handler) only ever passes 0..=9 anyway.
+    fn select_save_state_slot(&mut self, slot: u8) {
+        if slot >= vibenes::save_state::SLOT_COUNT {
+            return;
+        }
+        if self.save_state_slot == slot {
+            return;
+        }
+        self.save_state_slot = slot;
+        eprintln!("vibenes: save slot → {slot}");
+        self.show_info_toast(format!("Slot {slot}"));
+        // Persist alongside scale. Failure is logged but doesn't
+        // block - the choice still applies to this session.
+        let cfg = settings::Settings {
+            scale: self.video.scale,
+            save_state_slot: slot,
+        };
+        if let Err(e) = settings::save(&cfg) {
+            eprintln!("vibenes: settings save failed: {e:#}");
+        }
+    }
+
+    /// Push an info toast through the egui overlay if it's been
+    /// constructed. Silently no-op pre-window-open so calls during
+    /// startup (e.g. CLI ROM load races) don't crash.
+    fn show_info_toast(&mut self, msg: impl Into<String>) {
+        if let Some(ui) = self.ui.as_mut() {
+            ui.show_toast_info(msg);
+        }
+    }
+
+    fn show_error_toast(&mut self, msg: impl Into<String>) {
+        if let Some(ui) = self.ui.as_mut() {
+            ui.show_toast_error(msg);
         }
     }
 

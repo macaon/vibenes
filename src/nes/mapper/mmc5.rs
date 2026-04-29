@@ -849,6 +849,86 @@ impl Mapper for Mmc5 {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, Mmc5Snap};
+        Some(crate::save_state::MapperState::Mmc5(Box::new(Mmc5Snap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            prg_mode: self.prg_mode,
+            prg_regs: self.prg_regs,
+            prg_ram_protect1: self.prg_ram_protect1,
+            prg_ram_protect2: self.prg_ram_protect2,
+            chr_mode: self.chr_mode,
+            chr_bg_regs: self.chr_bg_regs,
+            chr_spr_regs: self.chr_spr_regs,
+            chr_upper: self.chr_upper,
+            exram_mode: self.exram_mode,
+            nt_mapping: self.nt_mapping,
+            fill_tile: self.fill_tile,
+            fill_color: self.fill_color,
+            exram: self.exram,
+            irq_target: self.irq_target,
+            irq_enable: self.irq_enable,
+            irq_pending: self.irq_pending,
+            scanline_counter: self.scanline_counter,
+            in_frame: self.in_frame,
+            need_in_frame: self.need_in_frame,
+            last_ppu_addr: self.last_ppu_addr,
+            nt_read_counter: self.nt_read_counter,
+            ppu_idle_counter: self.ppu_idle_counter,
+            mult_a: self.mult_a,
+            mult_b: self.mult_b,
+            save_dirty: self.save_dirty,
+        })))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Mmc5(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.mirroring = snap.mirroring.to_live();
+        self.prg_mode = snap.prg_mode;
+        self.prg_regs = snap.prg_regs;
+        self.prg_ram_protect1 = snap.prg_ram_protect1;
+        self.prg_ram_protect2 = snap.prg_ram_protect2;
+        self.chr_mode = snap.chr_mode;
+        self.chr_bg_regs = snap.chr_bg_regs;
+        self.chr_spr_regs = snap.chr_spr_regs;
+        self.chr_upper = snap.chr_upper;
+        self.exram_mode = snap.exram_mode;
+        self.nt_mapping = snap.nt_mapping;
+        self.fill_tile = snap.fill_tile;
+        self.fill_color = snap.fill_color;
+        self.exram = snap.exram;
+        self.irq_target = snap.irq_target;
+        self.irq_enable = snap.irq_enable;
+        self.irq_pending = snap.irq_pending;
+        self.scanline_counter = snap.scanline_counter;
+        self.in_frame = snap.in_frame;
+        self.need_in_frame = snap.need_in_frame;
+        self.last_ppu_addr = snap.last_ppu_addr;
+        self.nt_read_counter = snap.nt_read_counter;
+        self.ppu_idle_counter = snap.ppu_idle_counter;
+        self.mult_a = snap.mult_a;
+        self.mult_b = snap.mult_b;
+        self.save_dirty = snap.save_dirty;
+        // Reset transient/derived state and recompute window cache
+        // from prg_mode + prg_regs + prg_ram_protect*.
+        self.last_fetch_kind = PpuFetchKind::Idle;
+        self.update_prg_banks();
+        Ok(())
+    }
 }
 
 #[cfg(test)]

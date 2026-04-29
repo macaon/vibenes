@@ -162,6 +162,36 @@ impl Mapper for Uxrom {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, UxromSnap};
+        Some(crate::save_state::MapperState::Uxrom(UxromSnap {
+            prg_ram: self.prg_ram.clone(),
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            bank: self.bank,
+            save_dirty: self.save_dirty,
+        }))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Uxrom(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        self.mirroring = snap.mirroring.to_live();
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.bank = snap.bank;
+        self.save_dirty = snap.save_dirty;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

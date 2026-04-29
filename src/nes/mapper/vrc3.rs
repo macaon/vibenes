@@ -266,6 +266,48 @@ impl Mapper for Vrc3 {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, Vrc3Snap};
+        Some(crate::save_state::MapperState::Vrc3(Vrc3Snap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram_data: self.chr.clone(),
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            prg_bank: self.prg_bank,
+            irq_latch: self.irq_latch,
+            irq_counter: self.irq_counter,
+            irq_enabled: self.irq_enabled,
+            irq_enable_on_ack: self.irq_enable_on_ack,
+            small_counter: self.small_counter,
+            irq_line: self.irq_line,
+            save_dirty: self.save_dirty,
+        }))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Vrc3(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.mirroring = snap.mirroring.to_live();
+        self.prg_bank = snap.prg_bank;
+        self.irq_latch = snap.irq_latch;
+        self.irq_counter = snap.irq_counter;
+        self.irq_enabled = snap.irq_enabled;
+        self.irq_enable_on_ack = snap.irq_enable_on_ack;
+        self.small_counter = snap.small_counter;
+        self.irq_line = snap.irq_line;
+        self.save_dirty = snap.save_dirty;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

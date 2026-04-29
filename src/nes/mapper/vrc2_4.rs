@@ -194,6 +194,28 @@ impl VrcIrq {
         self.enabled = self.enabled_after_ack;
         self.irq_line = false;
     }
+
+    fn save_state_capture(&self) -> crate::save_state::mapper::VrcIrqSnap {
+        crate::save_state::mapper::VrcIrqSnap {
+            reload_value: self.reload_value,
+            counter: self.counter,
+            prescaler: self.prescaler,
+            enabled: self.enabled,
+            enabled_after_ack: self.enabled_after_ack,
+            cycle_mode: self.cycle_mode,
+            irq_line: self.irq_line,
+        }
+    }
+
+    fn save_state_apply(&mut self, snap: crate::save_state::mapper::VrcIrqSnap) {
+        self.reload_value = snap.reload_value;
+        self.counter = snap.counter;
+        self.prescaler = snap.prescaler;
+        self.enabled = snap.enabled;
+        self.enabled_after_ack = snap.enabled_after_ack;
+        self.cycle_mode = snap.cycle_mode;
+        self.irq_line = snap.irq_line;
+    }
 }
 
 // ---- Mapper ----
@@ -567,6 +589,50 @@ impl Mapper for Vrc2_4 {
 
     fn mark_saved(&mut self) {
         self.save_dirty = false;
+    }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, Vrc24Snap};
+        Some(crate::save_state::MapperState::Vrc24(Box::new(Vrc24Snap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            microwire_latch: self.microwire_latch,
+            prg_reg_0: self.prg_reg_0,
+            prg_reg_1: self.prg_reg_1,
+            prg_mode: self.prg_mode,
+            chr_lo: self.chr_lo,
+            chr_hi: self.chr_hi,
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            irq: self.irq.save_state_capture(),
+            save_dirty: self.save_dirty,
+        })))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Vrc24(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.microwire_latch = snap.microwire_latch;
+        self.prg_reg_0 = snap.prg_reg_0;
+        self.prg_reg_1 = snap.prg_reg_1;
+        self.prg_mode = snap.prg_mode;
+        self.chr_lo = snap.chr_lo;
+        self.chr_hi = snap.chr_hi;
+        if !self.hardwired_four_screen {
+            self.mirroring = snap.mirroring.to_live();
+        }
+        self.irq.save_state_apply(snap.irq);
+        self.save_dirty = snap.save_dirty;
+        Ok(())
     }
 }
 

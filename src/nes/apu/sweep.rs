@@ -78,4 +78,28 @@ impl Sweep {
         }
         new_period
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::apu::SweepSnap {
+        crate::save_state::apu::SweepSnap {
+            enabled: self.enabled,
+            period: self.period,
+            divider: self.divider,
+            negate: self.negate,
+            shift: self.shift,
+            reload: self.reload,
+            ones_complement: self.ones_complement,
+            target_period: self.target_period,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::apu::SweepSnap) {
+        self.enabled = snap.enabled;
+        self.period = snap.period;
+        self.divider = snap.divider;
+        self.negate = snap.negate;
+        self.shift = snap.shift;
+        self.reload = snap.reload;
+        self.ones_complement = snap.ones_complement;
+        self.target_period = snap.target_period;
+    }
 }

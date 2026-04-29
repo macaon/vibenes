@@ -111,4 +111,24 @@ impl Noise {
         }
         self.envelope.volume()
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::apu::NoiseSnap {
+        crate::save_state::apu::NoiseSnap {
+            envelope: self.envelope.save_state_capture(),
+            length: self.length.save_state_capture(),
+            lfsr: self.lfsr,
+            mode_short: self.mode_short,
+            timer: self.timer,
+            period: self.period,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::apu::NoiseSnap) {
+        self.envelope.save_state_apply(snap.envelope);
+        self.length.save_state_apply(snap.length);
+        self.lfsr = snap.lfsr;
+        self.mode_short = snap.mode_short;
+        self.timer = snap.timer;
+        self.period = snap.period;
+    }
 }

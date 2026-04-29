@@ -286,6 +286,36 @@ pub trait Mapper: Send {
     /// Called by the save pipeline after a successful IPS write.
     /// Clears the disk-dirty flag. No-op outside FDS.
     fn mark_disk_saved(&mut self) {}
+
+    // ---- Save-state snapshot persistence ----
+    //
+    // Used by [`crate::save_state`] to capture the mapper's full
+    // dynamic state into a serde-friendly enum variant and replay
+    // it on load. Returning `None` from `save_state_capture` (the
+    // default) tells the save-state pipeline that this mapper isn't
+    // covered yet (Phase 3b carts), and the user gets a clean
+    // [`crate::save_state::SaveStateError::UnsupportedMapper`]
+    // instead of a silent partial save.
+
+    /// Capture the mapper's dynamic state. `None` is the
+    /// "Phase 3a hasn't covered me" signal. Implemented mappers
+    /// return `Some(MapperState::<Variant>(...))`.
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        None
+    }
+
+    /// Restore mapper state from a previously-captured variant. The
+    /// caller (see [`crate::save_state::Snapshot::apply`]) has
+    /// already validated the file header against the live cart's
+    /// mapper id, so a variant mismatch here is an internal error.
+    /// Default impl returns `Err(UnsupportedMapper)` so unimplemented
+    /// mappers fail-soft instead of silently no-op'ing.
+    fn save_state_apply(
+        &mut self,
+        _state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        Err(crate::save_state::SaveStateError::UnsupportedMapper(0))
+    }
 }
 
 /// Narrow interface exposed by mapper 20 for the host app: query

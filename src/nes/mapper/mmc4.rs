@@ -252,6 +252,48 @@ impl Mapper for Mmc4 {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, Mmc4Snap};
+        Some(crate::save_state::MapperState::Mmc4(Mmc4Snap {
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            prg_ram: self.prg_ram.clone(),
+            save_dirty: self.save_dirty,
+            prg_bank: self.prg_bank,
+            left_fd: self.left_fd,
+            left_fe: self.left_fe,
+            right_fd: self.right_fd,
+            right_fe: self.right_fe,
+            left_latch: self.left_latch,
+            right_latch: self.right_latch,
+        }))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Mmc4(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.mirroring = snap.mirroring.to_live();
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        self.save_dirty = snap.save_dirty;
+        self.prg_bank = snap.prg_bank;
+        self.left_fd = snap.left_fd;
+        self.left_fe = snap.left_fe;
+        self.right_fd = snap.right_fd;
+        self.right_fe = snap.right_fe;
+        self.left_latch = snap.left_latch;
+        self.right_latch = snap.right_latch;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

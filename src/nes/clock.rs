@@ -190,4 +190,26 @@ impl MasterClock {
         let delta = self.end_clock_count(is_read);
         self.advance_master(delta)
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::bus::MasterClockSnap {
+        crate::save_state::bus::MasterClockSnap {
+            region: crate::save_state::RegionTag::from_region(self.region),
+            master_cycles: self.master_cycles,
+            cpu_cycles: self.cpu_cycles,
+            ppu_cycles: self.ppu_cycles,
+            ppu_offset: self.ppu_offset,
+        }
+    }
+
+    /// Apply a captured master-clock snapshot. The `region` field of
+    /// `snap` is informational only - the live region was set at
+    /// [`MasterClock::new`] time from the cart's TV system and is
+    /// already validated against the file header in
+    /// [`crate::save_state::validate_against_nes`].
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::bus::MasterClockSnap) {
+        self.master_cycles = snap.master_cycles;
+        self.cpu_cycles = snap.cpu_cycles;
+        self.ppu_cycles = snap.ppu_cycles;
+        self.ppu_offset = snap.ppu_offset;
+    }
 }

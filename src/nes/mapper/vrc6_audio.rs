@@ -145,6 +145,30 @@ impl Vrc6Pulse {
             0
         }
     }
+
+    pub(super) fn save_state_capture(&self) -> crate::save_state::mapper::Vrc6PulseSnap {
+        crate::save_state::mapper::Vrc6PulseSnap {
+            volume: self.volume,
+            duty_cycle: self.duty_cycle,
+            ignore_duty: self.ignore_duty,
+            frequency: self.frequency,
+            enabled: self.enabled,
+            timer: self.timer,
+            step: self.step,
+            frequency_shift: self.frequency_shift,
+        }
+    }
+
+    pub(super) fn save_state_apply(&mut self, snap: crate::save_state::mapper::Vrc6PulseSnap) {
+        self.volume = snap.volume;
+        self.duty_cycle = snap.duty_cycle;
+        self.ignore_duty = snap.ignore_duty;
+        self.frequency = snap.frequency;
+        self.enabled = snap.enabled;
+        self.timer = snap.timer;
+        self.step = snap.step;
+        self.frequency_shift = snap.frequency_shift;
+    }
 }
 
 // ---- Sawtooth channel ----
@@ -230,6 +254,28 @@ impl Vrc6Saw {
             self.accumulator >> 3
         }
     }
+
+    pub(super) fn save_state_capture(&self) -> crate::save_state::mapper::Vrc6SawSnap {
+        crate::save_state::mapper::Vrc6SawSnap {
+            accumulator_rate: self.accumulator_rate,
+            accumulator: self.accumulator,
+            frequency: self.frequency,
+            enabled: self.enabled,
+            timer: self.timer,
+            step: self.step,
+            frequency_shift: self.frequency_shift,
+        }
+    }
+
+    pub(super) fn save_state_apply(&mut self, snap: crate::save_state::mapper::Vrc6SawSnap) {
+        self.accumulator_rate = snap.accumulator_rate;
+        self.accumulator = snap.accumulator;
+        self.frequency = snap.frequency;
+        self.enabled = snap.enabled;
+        self.timer = snap.timer;
+        self.step = snap.step;
+        self.frequency_shift = snap.frequency_shift;
+    }
 }
 
 // ---- Combined audio unit ----
@@ -298,6 +344,24 @@ impl Vrc6Audio {
     /// against the APU's 0.0..≈1.0 range matching Mesen2's defaults.
     pub fn mix_sample(&self) -> f32 {
         self.last_output as f32 * VRC6_MIX_SCALE
+    }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::mapper::Vrc6AudioSnap {
+        crate::save_state::mapper::Vrc6AudioSnap {
+            pulse1: self.pulse1.save_state_capture(),
+            pulse2: self.pulse2.save_state_capture(),
+            saw: self.saw.save_state_capture(),
+            halt_audio: self.halt_audio,
+            last_output: self.last_output,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::mapper::Vrc6AudioSnap) {
+        self.pulse1.save_state_apply(snap.pulse1);
+        self.pulse2.save_state_apply(snap.pulse2);
+        self.saw.save_state_apply(snap.saw);
+        self.halt_audio = snap.halt_audio;
+        self.last_output = snap.last_output;
     }
 }
 

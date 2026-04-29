@@ -363,6 +363,70 @@ impl Eeprom24C0X {
         self.output = if self.data & (1 << bit_pos) != 0 { 1 } else { 0 };
         self.counter += 1;
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::mapper::EepromSnap {
+        use crate::save_state::mapper::{EepromChipSnap, EepromModeSnap, EepromSnap};
+        let chip = match self.chip {
+            EepromChip::C24C01 => EepromChipSnap::C24C01,
+            EepromChip::C24C02 => EepromChipSnap::C24C02,
+        };
+        let map_mode = |m: Mode| match m {
+            Mode::Idle => EepromModeSnap::Idle,
+            Mode::ChipAddress => EepromModeSnap::ChipAddress,
+            Mode::Address => EepromModeSnap::Address,
+            Mode::Read => EepromModeSnap::Read,
+            Mode::Write => EepromModeSnap::Write,
+            Mode::SendAck => EepromModeSnap::SendAck,
+            Mode::WaitAck => EepromModeSnap::WaitAck,
+        };
+        EepromSnap {
+            chip,
+            bytes: self.bytes.clone(),
+            mode: map_mode(self.mode),
+            next_mode: map_mode(self.next_mode),
+            chip_address: self.chip_address,
+            address: self.address,
+            data: self.data,
+            counter: self.counter,
+            output: self.output,
+            prev_scl: self.prev_scl,
+            prev_sda: self.prev_sda,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::mapper::EepromSnap) {
+        use crate::save_state::mapper::{EepromChipSnap, EepromModeSnap};
+        // Chip identity is determined at construction; refuse to
+        // change variants on apply.
+        let want_chip = match snap.chip {
+            EepromChipSnap::C24C01 => EepromChip::C24C01,
+            EepromChipSnap::C24C02 => EepromChip::C24C02,
+        };
+        if want_chip != self.chip {
+            return;
+        }
+        if snap.bytes.len() == self.bytes.len() {
+            self.bytes.copy_from_slice(&snap.bytes);
+        }
+        let unmap_mode = |m: EepromModeSnap| match m {
+            EepromModeSnap::Idle => Mode::Idle,
+            EepromModeSnap::ChipAddress => Mode::ChipAddress,
+            EepromModeSnap::Address => Mode::Address,
+            EepromModeSnap::Read => Mode::Read,
+            EepromModeSnap::Write => Mode::Write,
+            EepromModeSnap::SendAck => Mode::SendAck,
+            EepromModeSnap::WaitAck => Mode::WaitAck,
+        };
+        self.mode = unmap_mode(snap.mode);
+        self.next_mode = unmap_mode(snap.next_mode);
+        self.chip_address = snap.chip_address;
+        self.address = snap.address;
+        self.data = snap.data;
+        self.counter = snap.counter;
+        self.output = snap.output;
+        self.prev_scl = snap.prev_scl;
+        self.prev_sda = snap.prev_sda;
+    }
 }
 
 enum FieldKind {

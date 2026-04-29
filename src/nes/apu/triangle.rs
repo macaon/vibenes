@@ -110,4 +110,28 @@ impl Triangle {
         }
         TRIANGLE_SEQUENCE[self.sequencer_pos as usize]
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::apu::TriangleSnap {
+        crate::save_state::apu::TriangleSnap {
+            length: self.length.save_state_capture(),
+            linear_reload_flag: self.linear_reload_flag,
+            linear_reload_value: self.linear_reload_value,
+            linear_counter: self.linear_counter,
+            control_flag: self.control_flag,
+            timer: self.timer,
+            period: self.period,
+            sequencer_pos: self.sequencer_pos,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::apu::TriangleSnap) {
+        self.length.save_state_apply(snap.length);
+        self.linear_reload_flag = snap.linear_reload_flag;
+        self.linear_reload_value = snap.linear_reload_value;
+        self.linear_counter = snap.linear_counter;
+        self.control_flag = snap.control_flag;
+        self.timer = snap.timer;
+        self.period = snap.period;
+        self.sequencer_pos = snap.sequencer_pos;
+    }
 }

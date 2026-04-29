@@ -1371,6 +1371,111 @@ impl Ppu {
         self.oam[self.oam_addr as usize] = data;
         self.oam_addr = self.oam_addr.wrapping_add(1);
     }
+
+    /// Capture the PPU's full live state into a serde-friendly
+    /// shadow struct. Excludes `region` (re-derived from the bus on
+    /// apply) and `frame_buffer` (presentation-only - the next render
+    /// pass repopulates it).
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::PpuSnap {
+        crate::save_state::PpuSnap {
+            scanline: self.scanline,
+            dot: self.dot,
+            frame: self.frame,
+            odd_frame: self.odd_frame,
+            master_ppu_cycle: self.master_ppu_cycle,
+            ctrl: self.ctrl,
+            mask: self.mask,
+            status: self.status,
+            oam_addr: self.oam_addr,
+            w_latch: self.w_latch,
+            t: self.t,
+            v: self.v,
+            fine_x: self.fine_x,
+            data_buffer: self.data_buffer,
+            skip_last_dot_latched: self.skip_last_dot_latched,
+            rendering_enabled: self.rendering_enabled,
+            nmi_flag: self.nmi_flag,
+            prevent_vbl: self.prevent_vbl,
+            oam: self.oam,
+            palette: self.palette,
+            vram: self.vram,
+            bg_next_nt: self.bg_next_nt,
+            bg_next_attr_bits: self.bg_next_attr_bits,
+            bg_next_pat_lo: self.bg_next_pat_lo,
+            bg_next_pat_hi: self.bg_next_pat_hi,
+            bg_pat_lo: self.bg_pat_lo,
+            bg_pat_hi: self.bg_pat_hi,
+            bg_attr_lo: self.bg_attr_lo,
+            bg_attr_hi: self.bg_attr_hi,
+            secondary_oam: self.secondary_oam,
+            sprite_count: self.sprite_count,
+            sprite_pat_lo: self.sprite_pat_lo,
+            sprite_pat_hi: self.sprite_pat_hi,
+            sprite_attr: self.sprite_attr,
+            sprite_x: self.sprite_x,
+            sprite_is_zero: self.sprite_is_zero,
+            oam_copy_buffer: self.oam_copy_buffer,
+            sec_oam_addr: self.sec_oam_addr,
+            sprite_addr_h: self.sprite_addr_h,
+            sprite_addr_l: self.sprite_addr_l,
+            oam_copy_done: self.oam_copy_done,
+            sprite_in_range: self.sprite_in_range,
+            sprite_zero_added: self.sprite_zero_added,
+            overflow_bug_counter: self.overflow_bug_counter,
+            open_bus: self.open_bus,
+            open_bus_refresh: self.open_bus_refresh,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::PpuSnap) {
+        self.scanline = snap.scanline;
+        self.dot = snap.dot;
+        self.frame = snap.frame;
+        self.odd_frame = snap.odd_frame;
+        self.master_ppu_cycle = snap.master_ppu_cycle;
+        self.ctrl = snap.ctrl;
+        self.mask = snap.mask;
+        self.status = snap.status;
+        self.oam_addr = snap.oam_addr;
+        self.w_latch = snap.w_latch;
+        self.t = snap.t;
+        self.v = snap.v;
+        self.fine_x = snap.fine_x;
+        self.data_buffer = snap.data_buffer;
+        self.skip_last_dot_latched = snap.skip_last_dot_latched;
+        self.rendering_enabled = snap.rendering_enabled;
+        self.nmi_flag = snap.nmi_flag;
+        self.prevent_vbl = snap.prevent_vbl;
+        self.oam = snap.oam;
+        self.palette = snap.palette;
+        self.vram = snap.vram;
+        self.bg_next_nt = snap.bg_next_nt;
+        self.bg_next_attr_bits = snap.bg_next_attr_bits;
+        self.bg_next_pat_lo = snap.bg_next_pat_lo;
+        self.bg_next_pat_hi = snap.bg_next_pat_hi;
+        self.bg_pat_lo = snap.bg_pat_lo;
+        self.bg_pat_hi = snap.bg_pat_hi;
+        self.bg_attr_lo = snap.bg_attr_lo;
+        self.bg_attr_hi = snap.bg_attr_hi;
+        self.secondary_oam = snap.secondary_oam;
+        self.sprite_count = snap.sprite_count;
+        self.sprite_pat_lo = snap.sprite_pat_lo;
+        self.sprite_pat_hi = snap.sprite_pat_hi;
+        self.sprite_attr = snap.sprite_attr;
+        self.sprite_x = snap.sprite_x;
+        self.sprite_is_zero = snap.sprite_is_zero;
+        self.oam_copy_buffer = snap.oam_copy_buffer;
+        self.sec_oam_addr = snap.sec_oam_addr;
+        self.sprite_addr_h = snap.sprite_addr_h;
+        self.sprite_addr_l = snap.sprite_addr_l;
+        self.oam_copy_done = snap.oam_copy_done;
+        self.sprite_in_range = snap.sprite_in_range;
+        self.sprite_zero_added = snap.sprite_zero_added;
+        self.overflow_bug_counter = snap.overflow_bug_counter;
+        self.open_bus = snap.open_bus;
+        self.open_bus_refresh = snap.open_bus_refresh;
+        // frame_buffer left untouched - next render pass repopulates.
+    }
 }
 
 fn palette_index(addr: u16) -> usize {

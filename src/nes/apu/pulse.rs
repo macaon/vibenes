@@ -139,4 +139,26 @@ impl Pulse {
             self.envelope.volume()
         }
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::apu::PulseSnap {
+        crate::save_state::apu::PulseSnap {
+            envelope: self.envelope.save_state_capture(),
+            sweep: self.sweep.save_state_capture(),
+            length: self.length.save_state_capture(),
+            duty: self.duty,
+            sequencer_pos: self.sequencer_pos,
+            timer: self.timer,
+            period: self.period,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::apu::PulseSnap) {
+        self.envelope.save_state_apply(snap.envelope);
+        self.sweep.save_state_apply(snap.sweep);
+        self.length.save_state_apply(snap.length);
+        self.duty = snap.duty;
+        self.sequencer_pos = snap.sequencer_pos;
+        self.timer = snap.timer;
+        self.period = snap.period;
+    }
 }

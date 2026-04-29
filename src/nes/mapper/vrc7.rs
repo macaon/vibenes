@@ -174,6 +174,28 @@ impl VrcIrq {
         self.enabled = self.enabled_after_ack;
         self.irq_line = false;
     }
+
+    fn save_state_capture(&self) -> crate::save_state::mapper::VrcIrqSnap {
+        crate::save_state::mapper::VrcIrqSnap {
+            reload_value: self.reload_value,
+            counter: self.counter,
+            prescaler: self.prescaler,
+            enabled: self.enabled,
+            enabled_after_ack: self.enabled_after_ack,
+            cycle_mode: self.cycle_mode,
+            irq_line: self.irq_line,
+        }
+    }
+
+    fn save_state_apply(&mut self, snap: crate::save_state::mapper::VrcIrqSnap) {
+        self.reload_value = snap.reload_value;
+        self.counter = snap.counter;
+        self.prescaler = snap.prescaler;
+        self.enabled = snap.enabled;
+        self.enabled_after_ack = snap.enabled_after_ack;
+        self.cycle_mode = snap.cycle_mode;
+        self.irq_line = snap.irq_line;
+    }
 }
 
 // ---- Mapper ----
@@ -208,6 +230,13 @@ pub struct Vrc7 {
     /// `$9030` reads this back to know which OPLL register to write
     /// the data byte into. Both writes are gated by [`Self::audio_muted`].
     opll_pending_reg: u8,
+    /// Shadow of the 64 OPLL register slots. Updated alongside every
+    /// `$9030` write (the actual data write to emu2413). Consumed by
+    /// [`crate::save_state`] so the OPLL's internal C state can be
+    /// reconstructed on apply via register-replay - emu2413 doesn't
+    /// expose a "dump all regs" API and saving the C struct directly
+    /// would tie our save format to the vendored chip.
+    opll_regs: [u8; 64],
     /// Latest OPLL sample from `OPLL_calc`, refreshed once every
     /// ~36 CPU cycles. Surfaced verbatim through [`Mapper::audio_output`]
     /// (scaled to f32) so the bus mixer can add it linearly.
@@ -255,6 +284,7 @@ impl Vrc7 {
             irq: VrcIrq::new(),
             opll: Opll::new(),
             opll_pending_reg: 0,
+            opll_regs: [0; 64],
             last_sample: 0,
             clock_acc: 0,
             battery: cart.battery_backed,
@@ -373,8 +403,13 @@ impl Mapper for Vrc7 {
                     }
                     0x9030 => {
                         if !self.audio_muted {
-                            self.opll
-                                .write_reg(self.opll_pending_reg, data);
+                            self.opll.write_reg(self.opll_pending_reg, data);
+                            // Mirror the write into the shadow so a
+                            // future save state can replay it. Index
+                            // is masked because emu2413 only honors
+                            // the low 6 bits of the register select.
+                            let idx = (self.opll_pending_reg as usize) & 0x3F;
+                            self.opll_regs[idx] = data;
                         }
                     }
 
@@ -473,6 +508,61 @@ impl Mapper for Vrc7 {
 
     fn mark_saved(&mut self) {
         self.save_dirty = false;
+    }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, Vrc7Snap};
+        Some(crate::save_state::MapperState::Vrc7(Box::new(Vrc7Snap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            prg_banks: self.prg_banks,
+            chr_banks: self.chr_banks,
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            prg_ram_enable: self.prg_ram_enable,
+            audio_muted: self.audio_muted,
+            irq: self.irq.save_state_capture(),
+            opll_pending_reg: self.opll_pending_reg,
+            opll_regs: self.opll_regs,
+            last_sample: self.last_sample,
+            clock_acc: self.clock_acc,
+            save_dirty: self.save_dirty,
+        })))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Vrc7(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.prg_banks = snap.prg_banks;
+        self.chr_banks = snap.chr_banks;
+        self.mirroring = snap.mirroring.to_live();
+        self.prg_ram_enable = snap.prg_ram_enable;
+        self.audio_muted = snap.audio_muted;
+        self.irq.save_state_apply(snap.irq);
+        self.opll_pending_reg = snap.opll_pending_reg;
+        self.opll_regs = snap.opll_regs;
+        self.last_sample = snap.last_sample;
+        self.clock_acc = snap.clock_acc;
+        self.save_dirty = snap.save_dirty;
+        // Reset emu2413 to a clean slate, then replay every shadow
+        // register write to rebuild the chip's internal C state.
+        // emu2413 doesn't expose a register dump, so this replay is
+        // the only sound way to restore phase/patch state without
+        // freezing the format around emu2413's struct layout.
+        self.opll.reset();
+        for (idx, &val) in self.opll_regs.iter().enumerate() {
+            self.opll.write_reg(idx as u8, val);
+        }
+        Ok(())
     }
 }
 

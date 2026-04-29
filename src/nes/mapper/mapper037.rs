@@ -212,6 +212,55 @@ impl Mapper for Mapper037 {
     }
 
     fn mark_saved(&mut self) {}
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        // Capture the inner MMC3 (which produces a MapperState::Mmc3
+        // variant) and unwrap to the Mmc3Snap. Fail-safe: if the
+        // inner returns Unsupported (won't happen post-Phase 3a), we
+        // bubble that up.
+        let inner_state = self.inner.save_state_capture()?;
+        let crate::save_state::MapperState::Mmc3(inner_snap) = inner_state else {
+            return None;
+        };
+        Some(crate::save_state::MapperState::Mapper037(Box::new(
+            crate::save_state::mapper::Mapper037Snap {
+                inner: inner_snap,
+                block: self.block,
+            },
+        )))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Mapper037(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        // Need to repackage the inner Mmc3Snap (which is owned by `snap`)
+        // as a borrowed MapperState::Mmc3 so the inner's apply can
+        // pattern-match on it. Cheapest path: clone the inner snap.
+        let inner_state = crate::save_state::MapperState::Mmc3(crate::save_state::mapper::Mmc3Snap {
+            prg_ram: snap.inner.prg_ram.clone(),
+            chr_ram_data: snap.inner.chr_ram_data.clone(),
+            bank_select: snap.inner.bank_select,
+            bank_regs: snap.inner.bank_regs,
+            mirroring: snap.inner.mirroring,
+            prg_ram_enabled: snap.inner.prg_ram_enabled,
+            prg_ram_write_protected: snap.inner.prg_ram_write_protected,
+            irq_latch: snap.inner.irq_latch,
+            irq_counter: snap.inner.irq_counter,
+            irq_reload: snap.inner.irq_reload,
+            irq_enabled: snap.inner.irq_enabled,
+            irq_line: snap.inner.irq_line,
+            a12_low_since: snap.inner.a12_low_since,
+            reg_a001: snap.inner.reg_a001,
+            save_dirty: snap.inner.save_dirty,
+        });
+        self.inner.save_state_apply(&inner_state)?;
+        self.block = snap.block;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

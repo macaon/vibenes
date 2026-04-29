@@ -285,4 +285,48 @@ impl Mapper for Mmc1 {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{Mmc1Snap, MirroringSnap};
+        Some(crate::save_state::MapperState::Mmc1(Mmc1Snap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            shift: self.shift,
+            shift_count: self.shift_count,
+            control: self.control,
+            chr_bank_0: self.chr_bank_0,
+            chr_bank_1: self.chr_bank_1,
+            prg_bank: self.prg_bank,
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            cycle_counter: self.cycle_counter,
+            last_write_cycle: self.last_write_cycle,
+            save_dirty: self.save_dirty,
+        }))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Mmc1(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.shift = snap.shift;
+        self.shift_count = snap.shift_count;
+        self.control = snap.control;
+        self.chr_bank_0 = snap.chr_bank_0;
+        self.chr_bank_1 = snap.chr_bank_1;
+        self.prg_bank = snap.prg_bank;
+        self.mirroring = snap.mirroring.to_live();
+        self.cycle_counter = snap.cycle_counter;
+        self.last_write_cycle = snap.last_write_cycle;
+        self.save_dirty = snap.save_dirty;
+        Ok(())
+    }
 }

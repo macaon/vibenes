@@ -215,6 +215,42 @@ impl Mapper for TaitoTc0190 {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, TaitoTc0190Snap};
+        Some(crate::save_state::MapperState::TaitoTc0190(TaitoTc0190Snap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            prg_reg0: self.prg_reg0,
+            prg_reg1: self.prg_reg1,
+            chr_2k: self.chr_2k,
+            chr_1k: self.chr_1k,
+            save_dirty: self.save_dirty,
+        }))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::TaitoTc0190(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.mirroring = snap.mirroring.to_live();
+        self.prg_reg0 = snap.prg_reg0;
+        self.prg_reg1 = snap.prg_reg1;
+        self.chr_2k = snap.chr_2k;
+        self.chr_1k = snap.chr_1k;
+        self.save_dirty = snap.save_dirty;
+        Ok(())
+    }
 }
 
 impl TaitoTc0190 {

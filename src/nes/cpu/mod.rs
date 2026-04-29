@@ -89,6 +89,54 @@ impl Cpu {
         self.branch_taken_no_cross = true;
     }
 
+    /// Capture the CPU's full live state into a serde-friendly
+    /// shadow struct. Used by [`crate::save_state`].
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::CpuSnap {
+        use crate::save_state::cpu::InterruptKindSnap;
+        crate::save_state::CpuSnap {
+            a: self.a,
+            x: self.x,
+            y: self.y,
+            sp: self.sp,
+            pc: self.pc,
+            p_bits: self.p.to_u8(),
+            cycles: self.cycles,
+            halted: self.halted,
+            pending_interrupt: match self.pending_interrupt {
+                None => InterruptKindSnap::None,
+                Some(Interrupt::Nmi) => InterruptKindSnap::Nmi,
+                Some(Interrupt::Irq) => InterruptKindSnap::Irq,
+                Some(Interrupt::Reset) => InterruptKindSnap::Reset,
+                Some(Interrupt::Brk) => InterruptKindSnap::Brk,
+            },
+            branch_taken_no_cross: self.branch_taken_no_cross,
+        }
+    }
+
+    /// Replace the CPU's live state with the contents of `snap`.
+    /// `halt_reason` is reset to `None` (debug-only diagnostic, not
+    /// part of the on-disk schema).
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::CpuSnap) {
+        use crate::save_state::cpu::InterruptKindSnap;
+        self.a = snap.a;
+        self.x = snap.x;
+        self.y = snap.y;
+        self.sp = snap.sp;
+        self.pc = snap.pc;
+        self.p = StatusFlags::from_bits(snap.p_bits);
+        self.cycles = snap.cycles;
+        self.halted = snap.halted;
+        self.halt_reason = None;
+        self.pending_interrupt = match snap.pending_interrupt {
+            InterruptKindSnap::None => None,
+            InterruptKindSnap::Nmi => Some(Interrupt::Nmi),
+            InterruptKindSnap::Irq => Some(Interrupt::Irq),
+            InterruptKindSnap::Reset => Some(Interrupt::Reset),
+            InterruptKindSnap::Brk => Some(Interrupt::Brk),
+        };
+        self.branch_taken_no_cross = snap.branch_taken_no_cross;
+    }
+
     pub fn reset(&mut self, bus: &mut Bus) {
         // Real 6502 reset = 7 cycles: 2 dummy opcode/operand fetches,
         // 3 dummy stack "pushes" (reads because write is suppressed on
@@ -318,7 +366,7 @@ mod tests {
 
     fn build_cpu_and_bus(program: &[u8]) -> (Cpu, Bus) {
         let cart = cart_with_program(program);
-        let mut bus = Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc);
+        let mut bus = Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0);
         let mut cpu = Cpu::new();
         cpu.reset(&mut bus);
         (cpu, bus)

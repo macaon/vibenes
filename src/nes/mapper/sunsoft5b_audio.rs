@@ -210,6 +210,32 @@ impl Envelope {
         self.output = lut[(self.count ^ self.attack) as usize];
         self.output
     }
+
+    fn save_state_capture(&self) -> crate::save_state::mapper::Sunsoft5bEnvelopeSnap {
+        crate::save_state::mapper::Sunsoft5bEnvelopeSnap {
+            period: self.period,
+            count: self.count,
+            attack: self.attack,
+            alternate: self.alternate,
+            hold: self.hold,
+            holding: self.holding,
+            sub_cycle: self.sub_cycle,
+            timer: self.timer,
+            output: self.output,
+        }
+    }
+
+    fn save_state_apply(&mut self, snap: crate::save_state::mapper::Sunsoft5bEnvelopeSnap) {
+        self.period = snap.period;
+        self.count = snap.count;
+        self.attack = snap.attack;
+        self.alternate = snap.alternate;
+        self.hold = snap.hold;
+        self.holding = snap.holding;
+        self.sub_cycle = snap.sub_cycle;
+        self.timer = snap.timer;
+        self.output = snap.output;
+    }
 }
 
 /// Shared 17-bit LFSR noise generator. Steps every `period * 32` CPU
@@ -265,6 +291,22 @@ impl Noise {
         let feedback = (self.lfsr ^ (self.lfsr >> 3)) & 1;
         self.lfsr = (self.lfsr >> 1) | (feedback << 16);
         (self.lfsr & 1) != 0
+    }
+
+    fn save_state_capture(&self) -> crate::save_state::mapper::Sunsoft5bNoiseSnap {
+        crate::save_state::mapper::Sunsoft5bNoiseSnap {
+            period: self.period,
+            sub_cycle: self.sub_cycle,
+            timer: self.timer,
+            lfsr: self.lfsr,
+        }
+    }
+
+    fn save_state_apply(&mut self, snap: crate::save_state::mapper::Sunsoft5bNoiseSnap) {
+        self.period = snap.period;
+        self.sub_cycle = snap.sub_cycle;
+        self.timer = snap.timer;
+        self.lfsr = snap.lfsr;
     }
 }
 
@@ -420,6 +462,39 @@ impl Sunsoft5bAudio {
             summed += vol as i16;
         }
         self.last_output = summed;
+    }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::mapper::Sunsoft5bAudioSnap {
+        crate::save_state::mapper::Sunsoft5bAudioSnap {
+            volume_lut: self.volume_lut,
+            envelope_lut: self.envelope_lut,
+            current_register: self.current_register,
+            write_disabled: self.write_disabled,
+            registers: self.registers,
+            timer: self.timer,
+            tone_step: self.tone_step,
+            process_tick: self.process_tick,
+            envelope: self.envelope.save_state_capture(),
+            noise: self.noise.save_state_capture(),
+            last_output: self.last_output,
+        }
+    }
+
+    pub(crate) fn save_state_apply(
+        &mut self,
+        snap: crate::save_state::mapper::Sunsoft5bAudioSnap,
+    ) {
+        self.volume_lut = snap.volume_lut;
+        self.envelope_lut = snap.envelope_lut;
+        self.current_register = snap.current_register;
+        self.write_disabled = snap.write_disabled;
+        self.registers = snap.registers;
+        self.timer = snap.timer;
+        self.tone_step = snap.tone_step;
+        self.process_tick = snap.process_tick;
+        self.envelope.save_state_apply(snap.envelope);
+        self.noise.save_state_apply(snap.noise);
+        self.last_output = snap.last_output;
     }
 }
 

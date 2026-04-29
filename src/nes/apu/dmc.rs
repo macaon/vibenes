@@ -315,6 +315,48 @@ impl Dmc {
             dma_pending: self.dma_pending.is_some(),
         }
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::apu::DmcSnap {
+        crate::save_state::apu::DmcSnap {
+            irq_enabled: self.irq_enabled,
+            loop_flag: self.loop_flag,
+            period: self.period,
+            timer: self.timer,
+            sample_addr_start: self.sample_addr_start,
+            sample_length_cfg: self.sample_length_cfg,
+            current_addr: self.current_addr,
+            bytes_remaining: self.bytes_remaining,
+            shift_reg: self.shift_reg,
+            bits_remaining: self.bits_remaining,
+            silence: self.silence,
+            buffer: self.buffer,
+            dma_pending: self.dma_pending,
+            enable_dma_delay: self.enable_dma_delay,
+            enable_dma_addr: self.enable_dma_addr,
+            output: self.output,
+            enabled: self.enabled,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::apu::DmcSnap) {
+        self.irq_enabled = snap.irq_enabled;
+        self.loop_flag = snap.loop_flag;
+        self.period = snap.period;
+        self.timer = snap.timer;
+        self.sample_addr_start = snap.sample_addr_start;
+        self.sample_length_cfg = snap.sample_length_cfg;
+        self.current_addr = snap.current_addr;
+        self.bytes_remaining = snap.bytes_remaining;
+        self.shift_reg = snap.shift_reg;
+        self.bits_remaining = snap.bits_remaining;
+        self.silence = snap.silence;
+        self.buffer = snap.buffer;
+        self.dma_pending = snap.dma_pending;
+        self.enable_dma_delay = snap.enable_dma_delay;
+        self.enable_dma_addr = snap.enable_dma_addr;
+        self.output = snap.output;
+        self.enabled = snap.enabled;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -449,6 +449,60 @@ impl Mapper for BandaiFcg {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{BandaiFcgSnap, MirroringSnap};
+        Some(crate::save_state::MapperState::BandaiFcg(Box::new(BandaiFcgSnap {
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            prg_bank: self.prg_bank,
+            chr_regs: self.chr_regs,
+            irq_enabled: self.irq_enabled,
+            irq_counter: self.irq_counter,
+            irq_reload: self.irq_reload,
+            irq_line: self.irq_line,
+            eeprom: self.eeprom.as_ref().map(|e| e.save_state_capture()),
+            save_dirty: self.save_dirty,
+        })))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::BandaiFcg(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.mirroring = snap.mirroring.to_live();
+        self.prg_bank = snap.prg_bank;
+        self.chr_regs = snap.chr_regs;
+        self.irq_enabled = snap.irq_enabled;
+        self.irq_counter = snap.irq_counter;
+        self.irq_reload = snap.irq_reload;
+        self.irq_line = snap.irq_line;
+        if let (Some(eeprom_snap), Some(live)) = (snap.eeprom.as_ref(), self.eeprom.as_mut()) {
+            // Need an owned copy because save_state_apply consumes the snap.
+            // Clone via re-encoding is overkill; just take the fields directly.
+            live.save_state_apply(crate::save_state::mapper::EepromSnap {
+                chip: eeprom_snap.chip,
+                bytes: eeprom_snap.bytes.clone(),
+                mode: eeprom_snap.mode,
+                next_mode: eeprom_snap.next_mode,
+                chip_address: eeprom_snap.chip_address,
+                address: eeprom_snap.address,
+                data: eeprom_snap.data,
+                counter: eeprom_snap.counter,
+                output: eeprom_snap.output,
+                prev_scl: eeprom_snap.prev_scl,
+                prev_sda: eeprom_snap.prev_sda,
+            });
+        }
+        self.save_dirty = snap.save_dirty;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

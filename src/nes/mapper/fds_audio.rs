@@ -166,6 +166,31 @@ impl EnvelopeUnit {
             false
         }
     }
+
+    pub(super) fn save_state_capture(&self) -> crate::save_state::mapper::FdsEnvelopeUnitSnap {
+        crate::save_state::mapper::FdsEnvelopeUnitSnap {
+            speed: self.speed,
+            gain: self.gain,
+            envelope_off: self.envelope_off,
+            volume_increase: self.volume_increase,
+            frequency: self.frequency,
+            timer: self.timer,
+            master_speed: self.master_speed,
+        }
+    }
+
+    pub(super) fn save_state_apply(
+        &mut self,
+        snap: crate::save_state::mapper::FdsEnvelopeUnitSnap,
+    ) {
+        self.speed = snap.speed;
+        self.gain = snap.gain;
+        self.envelope_off = snap.envelope_off;
+        self.volume_increase = snap.volume_increase;
+        self.frequency = snap.frequency;
+        self.timer = snap.timer;
+        self.master_speed = snap.master_speed;
+    }
 }
 
 // ---- Modulator channel ----
@@ -315,6 +340,28 @@ impl ModChannel {
 
     fn output(&self) -> i32 {
         self.output
+    }
+
+    fn save_state_capture(&self) -> crate::save_state::mapper::FdsModChannelSnap {
+        crate::save_state::mapper::FdsModChannelSnap {
+            env: self.env.save_state_capture(),
+            counter: self.counter,
+            modulation_disabled: self.modulation_disabled,
+            mod_table: self.mod_table,
+            mod_table_position: self.mod_table_position,
+            overflow_counter: self.overflow_counter,
+            output: self.output,
+        }
+    }
+
+    fn save_state_apply(&mut self, snap: crate::save_state::mapper::FdsModChannelSnap) {
+        self.env.save_state_apply(snap.env);
+        self.counter = snap.counter;
+        self.modulation_disabled = snap.modulation_disabled;
+        self.mod_table = snap.mod_table;
+        self.mod_table_position = snap.mod_table_position;
+        self.overflow_counter = snap.overflow_counter;
+        self.output = snap.output;
     }
 }
 
@@ -509,6 +556,34 @@ impl FdsAudio {
 
     pub fn mod_gain(&self) -> u8 {
         self.modulator.env.gain
+    }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::mapper::FdsAudioSnap {
+        crate::save_state::mapper::FdsAudioSnap {
+            wave_table: self.wave_table,
+            wave_write_enabled: self.wave_write_enabled,
+            volume: self.volume.save_state_capture(),
+            modulator: self.modulator.save_state_capture(),
+            disable_envelopes: self.disable_envelopes,
+            halt_waveform: self.halt_waveform,
+            master_volume: self.master_volume,
+            wave_overflow_counter: self.wave_overflow_counter,
+            wave_position: self.wave_position,
+            last_output: self.last_output,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::mapper::FdsAudioSnap) {
+        self.wave_table = snap.wave_table;
+        self.wave_write_enabled = snap.wave_write_enabled;
+        self.volume.save_state_apply(snap.volume);
+        self.modulator.save_state_apply(snap.modulator);
+        self.disable_envelopes = snap.disable_envelopes;
+        self.halt_waveform = snap.halt_waveform;
+        self.master_volume = snap.master_volume;
+        self.wave_overflow_counter = snap.wave_overflow_counter;
+        self.wave_position = snap.wave_position;
+        self.last_output = snap.last_output;
     }
 }
 

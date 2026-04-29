@@ -661,6 +661,127 @@ impl Mapper for Fds {
     fn mark_disk_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{FdsSnap, MirroringSnap};
+        Some(crate::save_state::MapperState::Fds(Box::new(FdsSnap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram: self.chr_ram.clone(),
+            disk_sides: self.disk_sides.clone(),
+            disk_number: self.disk_number,
+            disk_position: self.disk_position,
+            delay: self.delay,
+            crc_accumulator: self.crc_accumulator,
+            previous_crc_control: self.previous_crc_control,
+            gap_ended: self.gap_ended,
+            scanning_disk: self.scanning_disk,
+            transfer_complete: self.transfer_complete,
+            end_of_head: self.end_of_head,
+            read_data_reg: self.read_data_reg,
+            write_data_reg: self.write_data_reg,
+            bad_crc: self.bad_crc,
+            irq_reload_value: self.irq_reload_value,
+            irq_counter: self.irq_counter,
+            irq_enabled: self.irq_enabled,
+            irq_repeat_enabled: self.irq_repeat_enabled,
+            disk_reg_enabled: self.disk_reg_enabled,
+            sound_reg_enabled: self.sound_reg_enabled,
+            motor_on: self.motor_on,
+            reset_transfer: self.reset_transfer,
+            read_mode: self.read_mode,
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            crc_control: self.crc_control,
+            disk_ready: self.disk_ready,
+            disk_irq_enabled: self.disk_irq_enabled,
+            timer_irq_line: self.timer_irq_line,
+            disk_irq_line: self.disk_irq_line,
+            audio: self.audio.save_state_capture(),
+            ext_con_reg: self.ext_con_reg,
+            pending_insert_side: self.pending_insert_side,
+            pending_insert_cycles: self.pending_insert_cycles,
+            save_dirty: self.save_dirty,
+        })))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Fds(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if snap.chr_ram.len() == self.chr_ram.len() {
+            self.chr_ram.copy_from_slice(&snap.chr_ram);
+        }
+        // Disk-side count must match the live cart's image - if it
+        // doesn't, this is an apply onto the wrong ROM that slipped
+        // past CRC validation.
+        if snap.disk_sides.len() == self.disk_sides.len() {
+            for (live, src) in self.disk_sides.iter_mut().zip(snap.disk_sides.iter()) {
+                if live.len() == src.len() {
+                    live.copy_from_slice(src);
+                }
+            }
+        }
+        self.disk_number = snap.disk_number;
+        self.disk_position = snap.disk_position;
+        self.delay = snap.delay;
+        self.crc_accumulator = snap.crc_accumulator;
+        self.previous_crc_control = snap.previous_crc_control;
+        self.gap_ended = snap.gap_ended;
+        self.scanning_disk = snap.scanning_disk;
+        self.transfer_complete = snap.transfer_complete;
+        self.end_of_head = snap.end_of_head;
+        self.read_data_reg = snap.read_data_reg;
+        self.write_data_reg = snap.write_data_reg;
+        self.bad_crc = snap.bad_crc;
+        self.irq_reload_value = snap.irq_reload_value;
+        self.irq_counter = snap.irq_counter;
+        self.irq_enabled = snap.irq_enabled;
+        self.irq_repeat_enabled = snap.irq_repeat_enabled;
+        self.disk_reg_enabled = snap.disk_reg_enabled;
+        self.sound_reg_enabled = snap.sound_reg_enabled;
+        self.motor_on = snap.motor_on;
+        self.reset_transfer = snap.reset_transfer;
+        self.read_mode = snap.read_mode;
+        self.mirroring = snap.mirroring.to_live();
+        self.crc_control = snap.crc_control;
+        self.disk_ready = snap.disk_ready;
+        self.disk_irq_enabled = snap.disk_irq_enabled;
+        self.timer_irq_line = snap.timer_irq_line;
+        self.disk_irq_line = snap.disk_irq_line;
+        // FdsAudioSnap isn't Copy because of the [u8; 64] fields, so
+        // we deep-copy the relevant fields manually rather than move
+        // out of the borrowed snap.
+        self.audio.save_state_apply(crate::save_state::mapper::FdsAudioSnap {
+            wave_table: snap.audio.wave_table,
+            wave_write_enabled: snap.audio.wave_write_enabled,
+            volume: snap.audio.volume,
+            modulator: crate::save_state::mapper::FdsModChannelSnap {
+                env: snap.audio.modulator.env,
+                counter: snap.audio.modulator.counter,
+                modulation_disabled: snap.audio.modulator.modulation_disabled,
+                mod_table: snap.audio.modulator.mod_table,
+                mod_table_position: snap.audio.modulator.mod_table_position,
+                overflow_counter: snap.audio.modulator.overflow_counter,
+                output: snap.audio.modulator.output,
+            },
+            disable_envelopes: snap.audio.disable_envelopes,
+            halt_waveform: snap.audio.halt_waveform,
+            master_volume: snap.audio.master_volume,
+            wave_overflow_counter: snap.audio.wave_overflow_counter,
+            wave_position: snap.audio.wave_position,
+            last_output: snap.audio.last_output,
+        });
+        self.ext_con_reg = snap.ext_con_reg;
+        self.pending_insert_side = snap.pending_insert_side;
+        self.pending_insert_cycles = snap.pending_insert_cycles;
+        self.save_dirty = snap.save_dirty;
+        Ok(())
+    }
 }
 
 impl Fds {

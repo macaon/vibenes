@@ -621,6 +621,56 @@ impl Mapper for Mmc3 {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, Mmc3Snap};
+        Some(crate::save_state::MapperState::Mmc3(Mmc3Snap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            bank_select: self.bank_select,
+            bank_regs: self.bank_regs,
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            prg_ram_enabled: self.prg_ram_enabled,
+            prg_ram_write_protected: self.prg_ram_write_protected,
+            irq_latch: self.irq_latch,
+            irq_counter: self.irq_counter,
+            irq_reload: self.irq_reload,
+            irq_enabled: self.irq_enabled,
+            irq_line: self.irq_line,
+            a12_low_since: self.a12_low_since,
+            reg_a001: self.reg_a001,
+            save_dirty: self.save_dirty,
+        }))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Mmc3(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.bank_select = snap.bank_select;
+        self.bank_regs = snap.bank_regs;
+        self.mirroring = snap.mirroring.to_live();
+        self.prg_ram_enabled = snap.prg_ram_enabled;
+        self.prg_ram_write_protected = snap.prg_ram_write_protected;
+        self.irq_latch = snap.irq_latch;
+        self.irq_counter = snap.irq_counter;
+        self.irq_reload = snap.irq_reload;
+        self.irq_enabled = snap.irq_enabled;
+        self.irq_line = snap.irq_line;
+        self.a12_low_since = snap.a12_low_since;
+        self.reg_a001 = snap.reg_a001;
+        self.save_dirty = snap.save_dirty;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

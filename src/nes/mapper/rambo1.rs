@@ -501,6 +501,58 @@ impl Mapper for Rambo1 {
     fn mark_saved(&mut self) {
         self.save_dirty = false;
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, Rambo1Snap};
+        Some(crate::save_state::MapperState::Rambo1(Box::new(Rambo1Snap {
+            prg_ram: self.prg_ram.clone(),
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            bank_regs: self.bank_regs,
+            bank_select: self.bank_select,
+            mirroring: MirroringSnap::from_live(self.mirroring),
+            irq_latch: self.irq_latch,
+            irq_counter: self.irq_counter,
+            irq_reload_pending: self.irq_reload_pending,
+            irq_enabled: self.irq_enabled,
+            irq_cycle_mode: self.irq_cycle_mode,
+            irq_pending_delay: self.irq_pending_delay,
+            irq_line: self.irq_line,
+            cpu_prescaler: self.cpu_prescaler,
+            force_clock: self.force_clock,
+            a12_low_since: self.a12_low_since,
+            save_dirty: self.save_dirty,
+        })))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Rambo1(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if snap.prg_ram.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(&snap.prg_ram);
+        }
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.bank_regs = snap.bank_regs;
+        self.bank_select = snap.bank_select;
+        self.mirroring = snap.mirroring.to_live();
+        self.irq_latch = snap.irq_latch;
+        self.irq_counter = snap.irq_counter;
+        self.irq_reload_pending = snap.irq_reload_pending;
+        self.irq_enabled = snap.irq_enabled;
+        self.irq_cycle_mode = snap.irq_cycle_mode;
+        self.irq_pending_delay = snap.irq_pending_delay;
+        self.irq_line = snap.irq_line;
+        self.cpu_prescaler = snap.cpu_prescaler;
+        self.force_clock = snap.force_clock;
+        self.a12_low_since = snap.a12_low_since;
+        self.save_dirty = snap.save_dirty;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

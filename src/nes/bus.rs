@@ -15,6 +15,13 @@ pub struct Bus {
     pub apu: Apu,
     pub mapper: Box<dyn Mapper>,
 
+    /// iNES / NES 2.0 mapper id of the currently-loaded cart. Captured
+    /// at [`Bus::new`] so the save-state header (see
+    /// [`crate::save_state`]) can validate that a loaded state was
+    /// made for the same mapper variant - belt-and-suspenders against
+    /// CRC32 collisions or a user pointing a state at the wrong ROM.
+    mapper_id: u16,
+
     pub controllers: [Controller; 2],
 
     pub nmi_pending: bool,
@@ -89,15 +96,30 @@ impl Controller {
         }
         bit
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::bus::ControllerSnap {
+        crate::save_state::bus::ControllerSnap {
+            buttons: self.buttons,
+            strobe: self.strobe,
+            shifter: self.shifter,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::bus::ControllerSnap) {
+        self.buttons = snap.buttons;
+        self.strobe = snap.strobe;
+        self.shifter = snap.shifter;
+    }
 }
 
 impl Bus {
-    pub fn new(mapper: Box<dyn Mapper>, region: Region) -> Self {
+    pub fn new(mapper: Box<dyn Mapper>, region: Region, mapper_id: u16) -> Self {
         Self {
             clock: MasterClock::new(region),
             ram: [0; 0x800],
             ppu: Ppu::new(region),
             apu: Apu::new(region),
+            mapper_id,
             mapper,
             controllers: [Controller::default(); 2],
             nmi_pending: false,
@@ -119,6 +141,66 @@ impl Bus {
 
     pub fn region(&self) -> Region {
         self.clock.region()
+    }
+
+    /// iNES / NES 2.0 mapper id of the cart loaded into this bus.
+    /// Used by the save-state header to refuse cross-mapper loads.
+    pub fn mapper_id(&self) -> u16 {
+        self.mapper_id
+    }
+
+    /// Capture the bus's state into a serde-friendly shadow struct.
+    /// Excludes `ppu`, `apu`, `mapper`, and `audio_sink` - those are
+    /// siblings in the save-state tree (PPU/APU) or owned outside
+    /// this snapshot (mapper, audio sink).
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::BusSnap {
+        crate::save_state::BusSnap {
+            clock: self.clock.save_state_capture(),
+            ram: self.ram,
+            controllers: [
+                self.controllers[0].save_state_capture(),
+                self.controllers[1].save_state_capture(),
+            ],
+            nmi_pending: self.nmi_pending,
+            irq_line: self.irq_line,
+            prev_irq_line: self.prev_irq_line,
+            prev_nmi_pending: self.prev_nmi_pending,
+            prev_nmi_flag: self.prev_nmi_flag,
+            open_bus: self.open_bus,
+            need_halt: self.need_halt,
+            need_dummy_read: self.need_dummy_read,
+            dmc_dma_running: self.dmc_dma_running,
+            dmc_dma_addr: self.dmc_dma_addr,
+            sprite_dma_running: self.sprite_dma_running,
+            sprite_dma_page: self.sprite_dma_page,
+            in_dma_loop: self.in_dma_loop,
+            mapper_id: self.mapper_id,
+        }
+    }
+
+    /// Restore the bus from a previously-captured snapshot. The
+    /// `mapper_id` field is intentionally NOT applied - the live
+    /// cart's mapper id is authoritative; the snap copy is purely
+    /// diagnostic.
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::BusSnap) {
+        self.clock.save_state_apply(snap.clock);
+        self.ram = snap.ram;
+        self.controllers[0].save_state_apply(snap.controllers[0]);
+        self.controllers[1].save_state_apply(snap.controllers[1]);
+        self.nmi_pending = snap.nmi_pending;
+        self.irq_line = snap.irq_line;
+        self.prev_irq_line = snap.prev_irq_line;
+        self.prev_nmi_pending = snap.prev_nmi_pending;
+        self.prev_nmi_flag = snap.prev_nmi_flag;
+        self.open_bus = snap.open_bus;
+        self.need_halt = snap.need_halt;
+        self.need_dummy_read = snap.need_dummy_read;
+        self.dmc_dma_running = snap.dmc_dma_running;
+        self.dmc_dma_addr = snap.dmc_dma_addr;
+        self.sprite_dma_running = snap.sprite_dma_running;
+        self.sprite_dma_page = snap.sprite_dma_page;
+        self.in_dma_loop = snap.in_dma_loop;
+        // mapper_id intentionally NOT touched.
     }
 
     /// One CPU bus read. Every read costs one CPU cycle.
@@ -540,7 +622,7 @@ mod tests {
             db_matched: false,
             fds_data: None,
         };
-        Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc)
+        Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0)
     }
 
     // The OAM DMA cycle-count convention is tuned by

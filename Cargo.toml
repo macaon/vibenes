@@ -15,6 +15,18 @@ cc = "1"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
+# Phase 11+: save states. `serde` derives the on-disk schema, `bincode 2`
+# encodes it deterministically (varint integers, no schema bytes - the
+# version field in our outer `StateFile` does the schema rev). `bincode`
+# pulls in the `serde` feature to accept derive-based types directly.
+# `serde-big-array` covers fixed arrays > 32 elements (palette 32, OAM
+# 256, VRAM/RAM 0x800, open-bus refresh `[u64; 8]`) which serde derives
+# refuse by default. `thiserror` already ships transitively via wgpu et
+# al; pinning it here keeps the typed-error enum honest.
+serde = { version = "1", features = ["derive"] }
+bincode = { version = "2", features = ["serde"] }
+serde-big-array = "0.5"
+thiserror = "2"
 # Phase 6: windowed emulator. winit 0.30 introduced `ApplicationHandler` -
 # the older closure-based API is gone. wgpu + pollster are for the
 # passthrough render pipeline; we deliberately don't use the `pixels`

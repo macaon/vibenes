@@ -209,6 +209,36 @@ impl Mapper for Vrc1 {
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }
+
+    fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
+        use crate::save_state::mapper::{MirroringSnap, Vrc1Snap};
+        Some(crate::save_state::MapperState::Vrc1(Vrc1Snap {
+            chr_ram_data: if self.chr_ram { self.chr.clone() } else { Vec::new() },
+            prg_banks: self.prg_banks,
+            chr_banks: self.chr_banks,
+            mirroring: MirroringSnap::from_live(self.mirroring),
+        }))
+    }
+
+    fn save_state_apply(
+        &mut self,
+        state: &crate::save_state::MapperState,
+    ) -> Result<(), crate::save_state::SaveStateError> {
+        let crate::save_state::MapperState::Vrc1(snap) = state else {
+            return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
+        };
+        if self.chr_ram && snap.chr_ram_data.len() == self.chr.len() {
+            self.chr.copy_from_slice(&snap.chr_ram_data);
+        }
+        self.prg_banks = snap.prg_banks;
+        self.chr_banks = snap.chr_banks;
+        // Honor four-screen lock: don't let an apply override the
+        // hardwired Vs. System mode.
+        if !self.four_screen_locked {
+            self.mirroring = snap.mirroring.to_live();
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

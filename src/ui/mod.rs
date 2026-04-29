@@ -15,6 +15,8 @@
 //!    render pass with `LoadOp::Load` (preserving the NES blit
 //!    underneath), and frees textures egui has released.
 
+use std::time::{Duration, Instant};
+
 use egui::{Context, ViewportId};
 use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::{EventResponse, State as EguiWinit};
@@ -44,6 +46,33 @@ pub enum NavKey {
     Back,
 }
 
+/// Transient one-line message shown at the top of the screen while
+/// the overlay is closed. Used by save-state save/load to surface
+/// "Saved slot 3" / "Wrong ROM" / "No state in slot 5" without
+/// requiring the user to open the menu.
+///
+/// The `kind` field drives the background tint (info vs error).
+/// We deliberately don't expose `Toast` outside this module - the
+/// host pushes strings via [`UiLayer::show_toast_info`] and
+/// [`UiLayer::show_toast_error`].
+struct Toast {
+    message: String,
+    expires_at: Instant,
+    kind: ToastKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToastKind {
+    Info,
+    Error,
+}
+
+/// How long a toast stays on screen. Picked to cover the time it
+/// takes a user to look up after pressing F2 / F3 - long enough to
+/// read, short enough not to block the screen if multiple actions
+/// fire in quick succession.
+const TOAST_DURATION: Duration = Duration::from_millis(2500);
+
 pub struct UiLayer {
     ctx: Context,
     winit_state: EguiWinit,
@@ -58,6 +87,9 @@ pub struct UiLayer {
     /// `run()` so the existing menu `consume_key` logic picks them
     /// up unchanged - no second code path for gamepad navigation.
     queued_events: Vec<egui::Event>,
+    /// Active transient toast. Cleared inside `run()` once
+    /// [`Instant::now`] passes [`Toast::expires_at`].
+    toast: Option<Toast>,
 }
 
 impl UiLayer {
@@ -84,7 +116,35 @@ impl UiLayer {
             pending: None,
             overlay: OverlayState::default(),
             queued_events: Vec::new(),
+            toast: None,
         }
+    }
+
+    /// Show a brief informational toast at the top of the screen.
+    /// Replaces any currently-displayed toast - intended for
+    /// quick-fire actions (save / load slot) where the user only
+    /// cares about the most recent feedback.
+    pub fn show_toast_info(&mut self, message: impl Into<String>) {
+        self.toast = Some(Toast {
+            message: message.into(),
+            expires_at: Instant::now() + TOAST_DURATION,
+            kind: ToastKind::Info,
+        });
+        // Force a repaint so the toast appears immediately rather
+        // than waiting for the next NES frame tick.
+        self.ctx.request_repaint();
+    }
+
+    /// Same as [`Self::show_toast_info`] but draws on a red tint.
+    /// Used for save-state failures where silence would leave the
+    /// user wondering whether F3 did anything.
+    pub fn show_toast_error(&mut self, message: impl Into<String>) {
+        self.toast = Some(Toast {
+            message: message.into(),
+            expires_at: Instant::now() + TOAST_DURATION,
+            kind: ToastKind::Error,
+        });
+        self.ctx.request_repaint();
     }
 
     /// Queue a synthetic navigation key (press + release) to be fed
@@ -203,6 +263,18 @@ impl UiLayer {
             egui::Pos2::ZERO,
             egui::vec2(logical_w, logical_h),
         ));
+        // Drop the toast if it's expired before this frame paints.
+        // Done outside `run_ui` so the closure stays Fn-friendly
+        // (egui can otherwise panic on borrow conflicts when the
+        // toast field is mutated mid-frame).
+        if let Some(t) = self.toast.as_ref() {
+            if Instant::now() >= t.expires_at {
+                self.toast = None;
+            }
+        }
+        let toast = self.toast.as_ref().map(|t| {
+            (t.message.clone(), t.kind)
+        });
         let full_output = self.ctx.run_ui(raw_input, |_ui| {
             // No persistent chrome: the overlay is the only UI element.
             // It's drawn via `egui::Area`s inside `run_overlay`, which
@@ -219,6 +291,13 @@ impl UiLayer {
                 debug,
                 cmds,
             );
+            // Toast layer sits above the overlay so a save-state
+            // confirmation surfaced via the F1 menu's "Save state"
+            // entry would still be visible. Drawn as a self-contained
+            // Area so it doesn't disturb menu layout.
+            if let Some((msg, kind)) = toast.as_ref() {
+                draw_toast(&self.ctx, msg, *kind);
+            }
         });
         self.pending = Some(full_output);
     }
@@ -281,6 +360,47 @@ impl UiLayer {
             self.renderer.free_texture(id);
         }
     }
+}
+
+/// Render a transient one-line toast at the top-center of the
+/// screen. Background tint = blue for info, red for error - keeps
+/// the visual register consistent across save-state outcomes.
+/// Uses a self-contained `egui::Area` so it doesn't perturb the
+/// overlay menu's layout when both are visible at once.
+fn draw_toast(ctx: &Context, message: &str, kind: ToastKind) {
+    let (bg_fill, text_color) = match kind {
+        ToastKind::Info => (
+            egui::Color32::from_rgba_premultiplied(20, 28, 60, 220),
+            egui::Color32::from_rgb(220, 220, 240),
+        ),
+        ToastKind::Error => (
+            egui::Color32::from_rgba_premultiplied(80, 18, 18, 220),
+            egui::Color32::from_rgb(255, 220, 200),
+        ),
+    };
+    egui::Area::new(egui::Id::new("vibenes.toast"))
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 24.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::default()
+                .fill(bg_fill)
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin {
+                    left: 14,
+                    right: 14,
+                    top: 8,
+                    bottom: 8,
+                })
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(message)
+                            .monospace()
+                            .size(16.0)
+                            .color(text_color),
+                    );
+                });
+        });
 }
 
 /// Install VT323 (SIL OFL 1.1) as the first family for

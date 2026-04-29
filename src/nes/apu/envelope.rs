@@ -50,4 +50,24 @@ impl Envelope {
             self.decay
         }
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::apu::EnvelopeSnap {
+        crate::save_state::apu::EnvelopeSnap {
+            start: self.start,
+            loop_flag: self.loop_flag,
+            constant: self.constant,
+            divider_period: self.divider_period,
+            divider: self.divider,
+            decay: self.decay,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::apu::EnvelopeSnap) {
+        self.start = snap.start;
+        self.loop_flag = snap.loop_flag;
+        self.constant = snap.constant;
+        self.divider_period = snap.divider_period;
+        self.divider = snap.divider;
+        self.decay = snap.decay;
+    }
 }

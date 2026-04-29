@@ -295,6 +295,32 @@ impl Apu {
         let dmc = self.dmc.output() as usize;
         PULSE_TABLE[p1 + p2] + TND_TABLE[3 * tr + 2 * ns + dmc]
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::ApuSnap {
+        crate::save_state::ApuSnap {
+            cycle: self.cycle,
+            frame_counter: self.frame_counter.save_state_capture(),
+            pulse1: self.pulse1.save_state_capture(),
+            pulse2: self.pulse2.save_state_capture(),
+            triangle: self.triangle.save_state_capture(),
+            noise: self.noise.save_state_capture(),
+            dmc: self.dmc.save_state_capture(),
+            frame_irq: self.frame_irq,
+            dmc_irq: self.dmc_irq,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::ApuSnap) {
+        self.cycle = snap.cycle;
+        self.frame_counter.save_state_apply(snap.frame_counter);
+        self.pulse1.save_state_apply(snap.pulse1);
+        self.pulse2.save_state_apply(snap.pulse2);
+        self.triangle.save_state_apply(snap.triangle);
+        self.noise.save_state_apply(snap.noise);
+        self.dmc.save_state_apply(snap.dmc);
+        self.frame_irq = snap.frame_irq;
+        self.dmc_irq = snap.dmc_irq;
+    }
 }
 
 /// `pulse_table[n] = 95.52 / (8128/n + 100)` for n in 1..=30, with

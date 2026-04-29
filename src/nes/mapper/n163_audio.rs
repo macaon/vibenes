@@ -302,6 +302,30 @@ impl N163Audio {
         // Integer divide matches Mesen2's `summedOutput /= count`.
         self.last_output = (sum / denom) as i16;
     }
+
+    pub(crate) fn save_state_capture(&self) -> crate::save_state::mapper::N163AudioSnap {
+        crate::save_state::mapper::N163AudioSnap {
+            ram: self.ram,
+            channel_output: self.channel_output,
+            update_counter: self.update_counter,
+            current_channel: self.current_channel,
+            last_output: self.last_output,
+            disable_sound: self.disable_sound,
+            address: self.address,
+            auto_inc: self.auto_inc,
+        }
+    }
+
+    pub(crate) fn save_state_apply(&mut self, snap: crate::save_state::mapper::N163AudioSnap) {
+        self.ram = snap.ram;
+        self.channel_output = snap.channel_output;
+        self.update_counter = snap.update_counter;
+        self.current_channel = snap.current_channel;
+        self.last_output = snap.last_output;
+        self.disable_sound = snap.disable_sound;
+        self.address = snap.address;
+        self.auto_inc = snap.auto_inc;
+    }
 }
 
 impl Default for N163Audio {
