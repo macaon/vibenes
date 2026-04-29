@@ -662,6 +662,18 @@ pub struct Tc0690Snap {
     pub prev_inner_irq: bool,
 }
 
+/// Bandai 74*161/161/32 (mappers 70 + 152). Captures the
+/// single 8-bit latch, the auto-promoted mirroring-control flag
+/// (mapper 70 only), the live mirroring, and any CHR-RAM bytes
+/// (mapper 70 carts that ship without CHR-ROM).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Bandai74161Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+    pub mirroring_control: bool,
+    pub mirroring: MirroringSnap,
+}
+
 /// Irem H3001 (mapper 65). Captures PRG-RAM, optional CHR-RAM,
 /// PRG/CHR bank registers, mirroring, and the live IRQ
 /// down-counter state (latch + counter + enable + line).
@@ -972,6 +984,7 @@ pub enum MapperState {
     Jaleco(Box<JalecoSnap>),
     Namco163(Box<Namco163Snap>),
     Rambo1(Box<Rambo1Snap>),
+    Bandai74161(Bandai74161Snap),
     IremG101(IremG101Snap),
     IremH3001(Box<IremH3001Snap>),
     TaitoTc0190(TaitoTc0190Snap),

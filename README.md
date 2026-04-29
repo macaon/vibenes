@@ -101,6 +101,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 65 | Irem H3001 (Spartan X 2, Daiku no Gen-san 2, Kaiketsu Yanchamaru 3; CPU-cycle 16-bit IRQ down-counter) | done |
 | 66 | GxROM / MHROM | done |
 | 67 | Sunsoft-3 (Fantasy Zone II, Mito Koumon) | done |
+| 70 | Bandai 74*161/161/32 (Family Trainer 1-7, Famicom Jump, Hanamaru, Kamen Rider Club; bus-conflict ANDs CPU value with ROM byte) | done |
 | 68 | Sunsoft-4 (After Burner II, Sugoro Quest; incl. CHR-as-nametable replacement and submapper-1 Maeda licensing chip) | done |
 | 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
 | 73 | Konami VRC3 (Salamander) | done |
@@ -112,6 +113,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 95 | Namco 118 / Dragon Buster (per-CHR-slot single-screen mirroring) | done |
 | 118 | Nintendo TxSROM / TLSROM / TKSROM (MMC3 + per-CHR-bank dynamic mirroring; Armadillo, Goal! Two, Ys III) | done |
 | 119 | Nintendo TQROM (MMC3 + 8 KiB CHR-RAM/ROM mix per slot; High Speed, Pin*Bot, Mall Madness) | done |
+| 152 | Bandai 74*161/161/32 (single-screen variant; Saint Seiya: Ougon Densetsu Kanketsu Hen, Pocket Zaurus, Tigers no Kessho-ban, Arkanoid II) | done |
 | 154 | Namco 118 / Devil World JP (dynamic single-screen mirroring + Type C CHR wiring) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 | 206 | Namco 118 / Mimic-1 (DigDug II, Mappy-Land, Galaxian) | done |
@@ -238,8 +240,8 @@ Mapper coverage: NROM, MMC1, UxROM, CNROM, MMC3 (incl. MMC6),
 MMC5, AxROM, MMC2, MMC4, GxROM, the VRC1/2/3/4/6/7 family, FME-7
 (incl. Sunsoft 5B audio), Bandai FCG (incl. EEPROM), Jaleco
 SS88006, Namco 163 (incl. wavetable audio), RAMBO-1, Irem G-101,
-Irem H3001, Taito TC0190, Mapper 037, FDS (incl. RP2C33 audio +
-disk-side state). VRC7 OPLL state is replayed through emu2413 from a
+Irem H3001, Bandai 74*161, Taito TC0190, Mapper 037, FDS (incl.
+RP2C33 audio + disk-side state). VRC7 OPLL state is replayed through emu2413 from a
 register-file shadow so the chip is fully restored without
 freezing the format around the C struct.
 

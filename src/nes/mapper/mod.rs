@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use crate::nes::rom::{Cartridge, Mirroring};
 
 pub mod axrom;
+pub mod bandai_74161;
 pub mod bandai_fcg;
 pub mod cnrom;
 pub mod eeprom_24c0x;
@@ -381,6 +382,8 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         37 => Ok(Box::new(mapper037::Mapper037::new(cart))),
         64 => Ok(Box::new(rambo1::Rambo1::new(cart))),
         65 => Ok(Box::new(irem_h3001::IremH3001::new(cart))),
+        70 => Ok(Box::new(bandai_74161::Bandai74161::new_70(cart))),
+        152 => Ok(Box::new(bandai_74161::Bandai74161::new_152(cart))),
         69 => Ok(Box::new(fme7::Fme7::new(cart))),
         73 => Ok(Box::new(vrc3::Vrc3::new(cart))),
         75 => Ok(Box::new(vrc1::Vrc1::new(cart))),
