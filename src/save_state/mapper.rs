@@ -820,6 +820,17 @@ pub struct Un1romSnap {
     pub reg: u8,
 }
 
+/// Bandai Karaoke Studio (mapper 188). The cart's microphone
+/// input is a host-driven signal that does not belong in a
+/// state snapshot - we capture only the bank-select latch, the
+/// derived mirroring, and the CHR-RAM blob.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct BandaiKaraokeSnap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+    pub mirroring: MirroringSnap,
+}
+
 /// Codemasters / Camerica BF9096 (mapper 232 - Quattro
 /// multicart, plus the Aladdin Deck Enhancer pass-through under
 /// submapper 1). Captures both bank latches and the
@@ -1173,6 +1184,7 @@ pub enum MapperState {
     Namco163(Box<Namco163Snap>),
     Rambo1(Box<Rambo1Snap>),
     Bandai74161(Bandai74161Snap),
+    BandaiKaraoke(BandaiKaraokeSnap),
     Bnrom(BnromSnap),
     CnromProtect(CnromProtectSnap),
     CodemastersBf9096(CodemastersBf9096Snap),

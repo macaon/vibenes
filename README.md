@@ -129,6 +129,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 180 | UNROM-flip / Crazy Climber wiring (Crazy Climber, Hayauchi Super Igo; first bank fixed at $8000, switchable at $C000) | done |
 | 184 | Sunsoft-1 (Atlantis no Nazo, Wing of Madoola, Hi no Tori, Maharaja, Kid Niki JP, Ripple Island; CHR-only banking with hardware-forced bit 7 on the high slot) | done |
 | 185 | CNROM with diode-array security (B-Wings, Mighty Bomb Jack, Spelunker, Seicross, Sansuu series; sub 0 heuristic + deterministic subs 4-7) | done |
+| 188 | Bandai Karaoke Studio (Karaoke Studio + 3 song add-on carts; bank-select / mirror latch + 8K CHR-RAM; microphone silent-stub pending the planned `Bus::mic_active` plumbing - see docs/plans/microphone_input.md) | done (mic stub) |
 | 189 | Taito TC-110 (Thundercade, Master Fighter II/III; MMC3 + 32K PRG-bank override at $4120-$7FFF) | done |
 | 154 | Namco 118 / Devil World JP (dynamic single-screen mirroring + Type C CHR wiring) | done |
 | 159 | Bandai LZ93D50 + 24C01 | done |
