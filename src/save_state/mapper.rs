@@ -1020,6 +1020,7 @@ pub enum Namco118VariantSnap {
     Mapper88 = 1,
     Mapper95 = 2,
     Mapper154 = 3,
+    Mapper76 = 4,
 }
 
 /// Namco 118 family (mappers 88 / 95 / 154 / 206). Captures the

@@ -386,6 +386,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         82 => Ok(Box::new(taito_x1017::TaitoX1017::new(cart))),
         67 => Ok(Box::new(sunsoft3::Sunsoft3::new(cart))),
         68 => Ok(Box::new(sunsoft4::Sunsoft4::new(cart))),
+        76 => Ok(Box::new(namco_118::Namco118::new_76(cart))),
         88 => Ok(Box::new(namco_118::Namco118::new_88(cart))),
         89 => Ok(Box::new(sunsoft2::Sunsoft2::new(cart))),
         95 => Ok(Box::new(namco_118::Namco118::new_95(cart))),

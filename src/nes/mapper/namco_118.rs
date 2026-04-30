@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Namco 118 family - iNES mappers 88, 95, 154, and 206 (a.k.a.
-//! Namcot 108 / Mimic-1). The base chip is an MMC3-shaped banking
-//! ASIC **without** the IRQ counter or the `$A000` mirroring
-//! register, used by *DigDug II*, *Mappy-Land*, *Galaxian*, and
-//! the rest of the Namcot licensed JP set. Three Namco-licensed
-//! variants add quirks for specific carts:
+//! Namco 118 family - iNES mappers 76, 88, 95, 154, and 206 (a.k.a.
+//! Namcot 108 / 3401 / 3406 / 3407 / 3413 / 3414 / 3415 / 3416 /
+//! 3417 / Mimic-1). The base chip is an MMC3-shaped banking ASIC
+//! **without** the IRQ counter or the `$A000` mirroring register,
+//! used by *DigDug II*, *Mappy-Land*, *Galaxian*, and the rest of
+//! the Namcot licensed JP set. Four Namco-licensed variants add
+//! quirks for specific carts:
 //!
+//! - **76** (*Megami Tensei: Digital Devil Story*, NAMCOT-3446):
+//!   the CHR plane is partitioned into **4 × 2 KiB** windows
+//!   instead of the base chip's 2×2 KiB + 4×1 KiB. Bank selects
+//!   2-5 reroute to the 2 KiB windows at `$0000` / `$0800` /
+//!   `$1000` / `$1800`; bank selects 0 and 1 are silently ignored
+//!   (no CHR effect). Hardwired mirroring.
 //! - **88** (*Devil Man*, *Mendel Palace*): an extra CHR address
 //!   line that rigidly partitions the 64 KiB CHR-ROM - the 2 KiB
 //!   `R0`/`R1` banks address the low 32 KiB, the 1 KiB `R2`-`R5`
@@ -39,9 +46,10 @@
 //! 2 KiB R0/R1 banks resolve as `(R & 0xFE)` paired with the next
 //! 1 KiB - a uniform shape borrowed from Mesen2's `BaseMapper`.
 //!
-//! References: NESdev wiki INES_Mapper_206 / 088 / 095 / 154,
+//! References: NESdev wiki INES_Mapper_076 / 088 / 095 / 154 / 206,
 //! Mesen2 `Core/NES/Mappers/Namco/Namco108*.h`, puNES
-//! `src/core/mappers/N118.c` + `mapper_0{88,95,154,206}.c`.
+//! `src/core/mappers/N118.c` + `mapper_0{76,88,95,154,206}.c`,
+//! Nestopia `source/core/board/NstBoardNamcot34xx.cpp` (`N3446`).
 
 use crate::nes::mapper::{Mapper, NametableSource, NametableWriteTarget};
 use crate::nes::rom::{Cartridge, Mirroring};
@@ -66,6 +74,11 @@ pub enum Variant {
     /// mirroring (bit 6 of any `$8000`-`$9FFF` write) + the
     /// mapper-88 CHR partitioning trick.
     Mapper154,
+    /// iNES 76 - Megami Tensei: Digital Devil Story (NAMCOT-3446).
+    /// CHR plane is 4 × 2 KiB instead of 2 × 2 KiB + 4 × 1 KiB.
+    /// R2-R5 hold 2 KiB indices at `$0000` / `$0800` / `$1000` /
+    /// `$1800`; R0 / R1 are unused for CHR.
+    Mapper76,
 }
 
 pub struct Namco118 {
@@ -140,6 +153,9 @@ impl Namco118 {
     pub fn new_154(cart: Cartridge) -> Self {
         Self::new(cart, Variant::Mapper154)
     }
+    pub fn new_76(cart: Cartridge) -> Self {
+        Self::new(cart, Variant::Mapper76)
+    }
 
     /// Effective CHR bank value for register `idx`, factoring in
     /// the mapper-88 / 154 extra-CHR-line wiring. Indices 0-1 are
@@ -176,16 +192,31 @@ impl Namco118 {
         // banks cover slot pairs (0,1) and (2,3) by zeroing the
         // low bit of the bank index then ORing slot-parity.
         let slot = ((addr >> 10) & 0x07) as usize;
-        let bank = match slot {
-            0 => (self.chr_reg(0) as usize) & 0xFE,
-            1 => ((self.chr_reg(0) as usize) & 0xFE) | 0x01,
-            2 => (self.chr_reg(1) as usize) & 0xFE,
-            3 => ((self.chr_reg(1) as usize) & 0xFE) | 0x01,
-            4 => self.chr_reg(2) as usize,
-            5 => self.chr_reg(3) as usize,
-            6 => self.chr_reg(4) as usize,
-            7 => self.chr_reg(5) as usize,
-            _ => unreachable!(),
+        let bank = if matches!(self.variant, Variant::Mapper76) {
+            // Mapper 76: 4 × 2 KiB CHR windows fed from R2..R5.
+            // The register stores a 2 KiB index; convert to 1 KiB
+            // by `<< 1 | parity` so the existing 1 KiB indexing
+            // stays uniform.
+            let reg = match slot >> 1 {
+                0 => self.bank_regs[2] as usize,
+                1 => self.bank_regs[3] as usize,
+                2 => self.bank_regs[4] as usize,
+                3 => self.bank_regs[5] as usize,
+                _ => unreachable!(),
+            };
+            (reg << 1) | (slot & 1)
+        } else {
+            match slot {
+                0 => (self.chr_reg(0) as usize) & 0xFE,
+                1 => ((self.chr_reg(0) as usize) & 0xFE) | 0x01,
+                2 => (self.chr_reg(1) as usize) & 0xFE,
+                3 => ((self.chr_reg(1) as usize) & 0xFE) | 0x01,
+                4 => self.chr_reg(2) as usize,
+                5 => self.chr_reg(3) as usize,
+                6 => self.chr_reg(4) as usize,
+                7 => self.chr_reg(5) as usize,
+                _ => unreachable!(),
+            }
         };
         let bank = bank % self.chr_bank_count_1k;
         bank * CHR_BANK_1K + (addr as usize & (CHR_BANK_1K - 1))
@@ -351,6 +382,7 @@ impl Mapper for Namco118 {
             Variant::Mapper88 => Namco118VariantSnap::Mapper88,
             Variant::Mapper95 => Namco118VariantSnap::Mapper95,
             Variant::Mapper154 => Namco118VariantSnap::Mapper154,
+            Variant::Mapper76 => Namco118VariantSnap::Mapper76,
         };
         Some(crate::save_state::MapperState::Namco118(Namco118Snap {
             variant: v,
@@ -383,6 +415,7 @@ impl Mapper for Namco118 {
             Namco118VariantSnap::Mapper88 => Variant::Mapper88,
             Namco118VariantSnap::Mapper95 => Variant::Mapper95,
             Namco118VariantSnap::Mapper154 => Variant::Mapper154,
+            Namco118VariantSnap::Mapper76 => Variant::Mapper76,
         };
         if want != self.variant {
             return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
@@ -541,6 +574,116 @@ mod tests {
         m.cpu_write(0x8000, 0x05);
         m.cpu_write(0x8001, 0x00);
         assert_eq!(m.chr_reg(5), 0x40);
+    }
+
+    #[test]
+    fn mapper76_chr_uses_four_2kib_windows_from_r2_through_r5() {
+        // 64 KiB CHR-ROM = 32 × 2 KiB banks. Tag each 2 KiB bank's
+        // first byte with the bank index so we can identify which
+        // landed in each window.
+        let mut chr = vec![0u8; 64 * 1024];
+        for b in 0..32 {
+            chr[b * 2048] = 0x80 | b as u8;
+        }
+        let cart = Cartridge {
+            prg_rom: vec![0u8; 64 * 1024],
+            chr_rom: chr,
+            chr_ram: false,
+            mapper_id: 76,
+            submapper: 0,
+            mirroring: Mirroring::Vertical,
+            battery_backed: false,
+            prg_ram_size: 0x2000,
+            prg_nvram_size: 0,
+            tv_system: TvSystem::Ntsc,
+            is_nes2: false,
+            prg_chr_crc32: 0,
+            db_matched: false,
+            fds_data: None,
+        };
+        let mut m = Namco118::new_76(cart);
+
+        // R2 = 3 → 2 KiB bank 3 at $0000-$07FF.
+        // R3 = 5 → 2 KiB bank 5 at $0800-$0FFF.
+        // R4 = 7 → 2 KiB bank 7 at $1000-$17FF.
+        // R5 = 9 → 2 KiB bank 9 at $1800-$1FFF.
+        for (reg, value) in [(2, 3u8), (3, 5), (4, 7), (5, 9)] {
+            m.cpu_write(0x8000, reg);
+            m.cpu_write(0x8001, value);
+        }
+        assert_eq!(m.ppu_read(0x0000), 0x80 | 3);
+        assert_eq!(m.ppu_read(0x07FF), 0); // last byte of bank 3 (no tag)
+        assert_eq!(m.ppu_read(0x0800), 0x80 | 5);
+        assert_eq!(m.ppu_read(0x1000), 0x80 | 7);
+        assert_eq!(m.ppu_read(0x1800), 0x80 | 9);
+    }
+
+    #[test]
+    fn mapper76_r0_r1_writes_do_not_change_chr() {
+        // Writing R0 / R1 on mapper 76 must not affect any CHR
+        // window - those registers are silently ignored.
+        let mut chr = vec![0u8; 64 * 1024];
+        for b in 0..32 {
+            chr[b * 2048] = 0xC0 | b as u8;
+        }
+        let cart = Cartridge {
+            prg_rom: vec![0u8; 64 * 1024],
+            chr_rom: chr,
+            chr_ram: false,
+            mapper_id: 76,
+            submapper: 0,
+            mirroring: Mirroring::Vertical,
+            battery_backed: false,
+            prg_ram_size: 0x2000,
+            prg_nvram_size: 0,
+            tv_system: TvSystem::Ntsc,
+            is_nes2: false,
+            prg_chr_crc32: 0,
+            db_matched: false,
+            fds_data: None,
+        };
+        let mut m = Namco118::new_76(cart);
+        // Set R2..R5 to 0 (default), then poke R0 / R1 with garbage.
+        m.cpu_write(0x8000, 0); m.cpu_write(0x8001, 0xFF);
+        m.cpu_write(0x8000, 1); m.cpu_write(0x8001, 0xFF);
+        // Each window should still show its 2 KiB bank 0 tag.
+        assert_eq!(m.ppu_read(0x0000), 0xC0); // bank 0
+        assert_eq!(m.ppu_read(0x0800), 0xC0); // bank 0
+        assert_eq!(m.ppu_read(0x1000), 0xC0); // bank 0
+        assert_eq!(m.ppu_read(0x1800), 0xC0); // bank 0
+    }
+
+    #[test]
+    fn mapper76_prg_layout_matches_base_namco118() {
+        // 128 KiB PRG. R6 = bank at $8000-$9FFF, R7 = $A000-$BFFF,
+        // last two banks fixed at $C000-$FFFF.
+        let mut prg = vec![0u8; 128 * 1024];
+        for b in 0..16 {
+            prg[b * PRG_BANK_8K] = 0x10 + b as u8;
+        }
+        let cart = Cartridge {
+            prg_rom: prg,
+            chr_rom: vec![0u8; 64 * 1024],
+            chr_ram: false,
+            mapper_id: 76,
+            submapper: 0,
+            mirroring: Mirroring::Vertical,
+            battery_backed: false,
+            prg_ram_size: 0x2000,
+            prg_nvram_size: 0,
+            tv_system: TvSystem::Ntsc,
+            is_nes2: false,
+            prg_chr_crc32: 0,
+            db_matched: false,
+            fds_data: None,
+        };
+        let mut m = Namco118::new_76(cart);
+        m.cpu_write(0x8000, 6); m.cpu_write(0x8001, 5); // R6 = 5
+        m.cpu_write(0x8000, 7); m.cpu_write(0x8001, 9); // R7 = 9
+        assert_eq!(m.cpu_read(0x8000), 0x15);
+        assert_eq!(m.cpu_read(0xA000), 0x19);
+        assert_eq!(m.cpu_read(0xC000), 0x10 + 14); // 2nd-to-last
+        assert_eq!(m.cpu_read(0xE000), 0x10 + 15); // last
     }
 
     #[test]
