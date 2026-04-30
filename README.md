@@ -84,6 +84,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 4 | MMC3 / MMC6 (TxROM / HKROM) | done (Rev A + Rev B) |
 | 5 | MMC5 / ExROM | done |
 | 7 | AxROM | done |
+| 13 | NES-CPROM (Videomation; 16 KiB CHR-RAM with 4 KiB fixed at $0000 and 4-bank-switchable at $1000; vertical mirroring hardwired) | done |
 | 9 | MMC2 / PxROM | done |
 | 10 | MMC4 / FxROM | done |
 | 16 | Bandai FCG-1/2 / LZ93D50 | done |

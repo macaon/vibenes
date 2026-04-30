@@ -782,6 +782,15 @@ pub struct Irem74x161Snap {
     pub holy_diver_mode: bool,
 }
 
+/// NES-CPROM (mapper 13, Videomation). Captures the 16 KiB
+/// CHR-RAM blob and the 2-bit upper-window bank latch. PRG is
+/// fixed-32 KiB so no PRG state to save.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CpromSnap {
+    pub chr_ram_data: Vec<u8>,
+    pub upper_bank: u8,
+}
+
 /// CNROM with diode-array security (mapper 185). Captures the
 /// latch byte and the active submapper so a cross-submapper
 /// apply (e.g. sub 4 -> sub 5) is rejected even though the live
@@ -1168,6 +1177,7 @@ pub enum MapperState {
     CnromProtect(CnromProtectSnap),
     CodemastersBf9096(CodemastersBf9096Snap),
     CodemastersBf909x(CodemastersBf909xSnap),
+    Cprom(CpromSnap),
     Irem74x161(Irem74x161Snap),
     IremG101(IremG101Snap),
     IremH3001(Box<IremH3001Snap>),

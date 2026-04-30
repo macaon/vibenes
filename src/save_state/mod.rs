@@ -812,6 +812,7 @@ mod tests {
             MapperState::CnromProtect(CnromProtectSnap::default()),
             MapperState::CodemastersBf9096(CodemastersBf9096Snap::default()),
             MapperState::CodemastersBf909x(CodemastersBf909xSnap::default()),
+            MapperState::Cprom(CpromSnap::default()),
             MapperState::TaitoTc0190(TaitoTc0190Snap::default()),
             MapperState::Mapper037(Box::new(Mapper037Snap::default())),
             MapperState::Fds(Box::new(FdsSnap::default())),
