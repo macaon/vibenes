@@ -5,6 +5,7 @@ use crate::nes::rom::{Cartridge, Mirroring};
 
 pub mod axrom;
 pub mod bandai_74161;
+pub mod bandai_datach;
 pub mod bandai_fcg;
 pub mod bandai_karaoke;
 pub mod bandai_lz93d50_sram;
@@ -437,6 +438,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         24 => Ok(Box::new(vrc6::Vrc6::new_a(cart))),
         26 => Ok(Box::new(vrc6::Vrc6::new_b(cart))),
         85 => Ok(Box::new(vrc7::Vrc7::new(cart))),
+        157 => Ok(Box::new(bandai_datach::BandaiDatach::new(cart))),
         159 => Ok(Box::new(bandai_fcg::BandaiFcg::new(cart))),
         210 => Ok(Box::new(namco163::Namco163::new(cart))),
         185 => Ok(Box::new(cnrom_protect::CnromProtect::new(cart))),

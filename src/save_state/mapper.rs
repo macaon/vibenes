@@ -449,6 +449,23 @@ pub struct BandaiFcgSnap {
     pub save_dirty: bool,
 }
 
+/// Bandai Datach Joint ROM System (mapper 157). LZ93D50 register
+/// surface + IRQ counter + 8 KiB CHR-RAM + base-unit 24C02 EEPROM
+/// + optional cart-side 24C01 EEPROM.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct BandaiDatachSnap {
+    pub chr_ram: Vec<u8>,
+    pub mirroring: MirroringSnap,
+    pub prg_bank: u8,
+    pub irq_enabled: bool,
+    pub irq_counter: u16,
+    pub irq_reload: u16,
+    pub irq_line: bool,
+    pub standard_eeprom: EepromSnap,
+    pub extra_eeprom: Option<EepromSnap>,
+    pub save_dirty: bool,
+}
+
 /// Bandai Oeka Kids (mapper 96). Captures the full 32 KiB CHR-RAM
 /// blob, the cart's bus-conflict-gated bank/outer-CHR register, and
 /// the inner-CHR latch driven by the PPU's nametable-byte fetches.
@@ -1283,6 +1300,7 @@ pub enum MapperState {
     BandaiKaraoke(BandaiKaraokeSnap),
     BandaiLz93d50Sram(Box<BandaiLz93d50SramSnap>),
     BandaiOekaKids(BandaiOekaKidsSnap),
+    BandaiDatach(Box<BandaiDatachSnap>),
     Bnrom(BnromSnap),
     CnromProtect(CnromProtectSnap),
     CodemastersBf9096(CodemastersBf9096Snap),

@@ -141,6 +141,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 188 | Bandai Karaoke Studio (Karaoke Studio + 3 song add-on carts; bank-select / mirror latch + 8K CHR-RAM; microphone silent-stub pending the planned `Bus::mic_active` plumbing - see docs/plans/microphone_input.md) | done (mic stub) |
 | 189 | Taito TC-110 (Thundercade, Master Fighter II/III; MMC3 + 32K PRG-bank override at $4120-$7FFF) | done |
 | 154 | Namco 118 / Devil World JP (dynamic single-screen mirroring + Type C CHR wiring) | done |
+| 157 | Bandai Datach Joint ROM System (Yu Yu Hakusho, SD Gundam Wars, Crayon Shin-chan, DBZ, J League, Ultraman Club, Battle Rush; LZ93D50 register surface + 8 KiB CHR-RAM + 24C02 base-unit EEPROM + optional 24C01 cart EEPROM, dual-EEPROM SDA wired-AND on $6000 read) | done (barcode stub) |
 | 159 | Bandai LZ93D50 + 24C01 | done |
 | 206 | Namco 118 / Mimic-1 (DigDug II, Mappy-Land, Galaxian) | done |
 | 207 | Taito X1-005 alt-mirroring variant (Fudou Myou-Ou Den) | done |

@@ -152,6 +152,19 @@ impl Eeprom24C0X {
         }
     }
 
+    /// Drive only SCL, holding the prior SDA. Mapper 157 routes the
+    /// extra 24C01's SCL through CHR-bank-register writes while SDA
+    /// stays on `$x00D` - those two pin updates land asynchronously.
+    pub fn write_scl(&mut self, scl: u8) {
+        self.write(scl, self.prev_sda);
+    }
+
+    /// Drive only SDA, holding the prior SCL. Symmetric counterpart
+    /// to [`Self::write_scl`].
+    pub fn write_sda(&mut self, sda: u8) {
+        self.write(self.prev_scl, sda);
+    }
+
     /// Drive both pins simultaneously. Mapper calls this on every
     /// `$x00D` write, even if only one line changed.
     pub fn write(&mut self, scl: u8, sda: u8) {
