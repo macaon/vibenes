@@ -41,6 +41,7 @@ pub mod mmc5;
 pub mod n163_audio;
 pub mod namco163;
 pub mod namco_118;
+pub mod nes_event;
 pub mod nrom;
 pub mod rambo1;
 pub mod sunsoft1;
@@ -410,6 +411,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         34 => Ok(Box::new(bnrom::Bnrom::new(cart))),
         37 => Ok(Box::new(mapper037::Mapper037::new(cart))),
         47 => Ok(Box::new(mapper047::Mapper047::new(cart))),
+        105 => Ok(Box::new(nes_event::Mapper105::new(cart))),
         64 => Ok(Box::new(rambo1::Rambo1::new(cart))),
         65 => Ok(Box::new(irem_h3001::IremH3001::new(cart))),
         70 => Ok(Box::new(bandai_74161::Bandai74161::new_70(cart))),

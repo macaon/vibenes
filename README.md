@@ -80,6 +80,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 0 | NROM | done |
 | 1 | MMC1 / SxROM | done |
 | 155 | MMC1A / NES-SAROM (Tatakae!! Ramen Man, Money Game I/II; PRG-RAM permanently enabled - the WRAM-disable bit is a no-op on this mask) | done |
+| 105 | NES-EVENT (Nintendo World Championships 1990; MMC1 derivative with init-state lock, dip-switch CPU-cycle countdown timer firing /IRQ at `(dip|0x10) << 25` cycles, Block A direct / Block B MMC1 PRG modes) | done |
 | 2 | UxROM | done |
 | 3 | CNROM | done |
 | 4 | MMC3 / MMC6 (TxROM / HKROM) | done (Rev A + Rev B) |

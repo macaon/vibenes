@@ -821,6 +821,7 @@ mod tests {
             MapperState::TaitoTc0190(TaitoTc0190Snap::default()),
             MapperState::Mapper037(Box::new(Mapper037Snap::default())),
             MapperState::Mapper047(Box::new(Mapper047Snap::default())),
+            MapperState::NesEvent(Box::new(NesEventSnap::default())),
             MapperState::Fds(Box::new(FdsSnap::default())),
             MapperState::Sunsoft1(Sunsoft1Snap::default()),
             MapperState::Un1rom(Un1romSnap::default()),

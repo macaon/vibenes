@@ -638,6 +638,31 @@ pub struct Mapper047Snap {
     pub block: u8,
 }
 
+/// NES-EVENT (mapper 105). Captures the full MMC1 register set plus
+/// the cart's init-state machine, CPU-cycle countdown timer, and
+/// dip-switch field. The serial-shifter side state (`shift`,
+/// `shift_count`, `cycle_counter`, `last_write_cycle`) lives here too
+/// so a snap restored mid-shift behaves identically to live state.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct NesEventSnap {
+    pub chr_ram: Vec<u8>,
+    pub prg_ram: Vec<u8>,
+    pub mirroring: MirroringSnap,
+    pub shift: u8,
+    pub shift_count: u8,
+    pub control: u8,
+    pub chr0: u8,
+    pub chr1: u8,
+    pub prg: u8,
+    pub init_state: u8,
+    pub irq_counter: u32,
+    pub irq_enabled: bool,
+    pub irq_line: bool,
+    pub dip: u8,
+    pub cycle_counter: u64,
+    pub last_write_cycle: Option<u64>,
+}
+
 /// TxSROM (mapper 118) wraps an MMC3 with per-NT-slot CIRAM
 /// routing latched at `$8001` write time. The 4-byte `nt_cache`
 /// is the only state TxSROM adds on top of the inner MMC3.
@@ -1271,6 +1296,7 @@ pub enum MapperState {
     TaitoTc0190(TaitoTc0190Snap),
     Mapper037(Box<Mapper037Snap>),
     Mapper047(Box<Mapper047Snap>),
+    NesEvent(Box<NesEventSnap>),
     Fds(Box<FdsSnap>),
     Sunsoft1(Sunsoft1Snap),
     Un1rom(Un1romSnap),
