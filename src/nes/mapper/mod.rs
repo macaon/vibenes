@@ -44,6 +44,7 @@ pub mod sunsoft2;
 pub mod sunsoft3;
 pub mod sunsoft4;
 pub mod sunsoft5b_audio;
+pub mod sunsoft93;
 pub mod taito_tc0190;
 pub mod taito_tc110;
 pub mod taito_x1005;
@@ -407,6 +408,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         71 => Ok(Box::new(codemasters_bf909x::CodemastersBf909x::new(cart))),
         72 => Ok(Box::new(jaleco_jf17::JalecoJf17::new_72(cart))),
         92 => Ok(Box::new(jaleco_jf17::JalecoJf17::new_92(cart))),
+        93 => Ok(Box::new(sunsoft93::Sunsoft93::new(cart))),
         97 => Ok(Box::new(irem_tam_s1::IremTamS1::new(cart))),
         152 => Ok(Box::new(bandai_74161::Bandai74161::new_152(cart))),
         180 => Ok(Box::new(un1rom_180::Un1rom180::new(cart))),

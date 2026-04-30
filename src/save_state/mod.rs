@@ -824,6 +824,7 @@ mod tests {
             MapperState::Sunsoft2(Sunsoft2Snap::default()),
             MapperState::Sunsoft3(Sunsoft3Snap::default()),
             MapperState::Sunsoft4(Sunsoft4Snap::default()),
+            MapperState::Sunsoft93(Sunsoft93Snap::default()),
             MapperState::Namco118(Namco118Snap::default()),
             MapperState::Txsrom(Box::new(TxsromSnap::default())),
             MapperState::Tqrom(Box::new(TqromSnap::default())),

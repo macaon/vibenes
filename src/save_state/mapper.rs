@@ -742,6 +742,15 @@ pub struct Sunsoft2Snap {
     pub mirroring: MirroringSnap,
 }
 
+/// Sunsoft-3R / Sunsoft-2 IC variant (mapper 93). Single
+/// register carrying a 3-bit PRG bank and a CHR-OE gate, with
+/// bus-conflict AND on writes. CHR-ROM is fixed (no banking),
+/// so the snapshot only tracks the latch byte.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Sunsoft93Snap {
+    pub reg: u8,
+}
+
 /// Sunsoft-1 (mapper 184). One CHR-banking register at
 /// `$6000-$7FFF` plus optional CHR-RAM bytes (none of the known
 /// retail carts use CHR-RAM, but we capture if present for
@@ -1213,6 +1222,7 @@ pub enum MapperState {
     Sunsoft2(Sunsoft2Snap),
     Sunsoft3(Sunsoft3Snap),
     Sunsoft4(Sunsoft4Snap),
+    Sunsoft93(Sunsoft93Snap),
     Namco118(Namco118Snap),
     Txsrom(Box<TxsromSnap>),
     Tqrom(Box<TqromSnap>),
