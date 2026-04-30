@@ -117,6 +117,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 88 | Namcot Type C (extra-CHR-line wiring; Devil Man, Mendel Palace) | done |
 | 89 | Sunsoft-2 with single-screen mirror (Tenka no Goikenban: Mito Koumon; bus-conflict ANDs CPU value with ROM byte) | done |
 | 92 | Jaleco JF-19 (Moero!! Pro Yakyuu '88, Moero!! Pro Tennis; same chip as 72 wired with high-slot switch) | done |
+| 94 | HVC-UN1ROM (Senjou no Ookami / Commando JP, Capcom; UNROM with bank select on D2-D4 + bus conflict) | done |
 | 97 | Irem TAM-S1 (Kaiketsu Yanchamaru; inverted PRG with last bank fixed at $8000, switchable at $C000; 2-mode mirroring sub 0, 4-mode sub 1) | done |
 | 95 | Namco 118 / Dragon Buster (per-CHR-slot single-screen mirroring) | done |
 | 118 | Nintendo TxSROM / TLSROM / TKSROM (MMC3 + per-CHR-bank dynamic mirroring; Armadillo, Goal! Two, Ys III) | done |

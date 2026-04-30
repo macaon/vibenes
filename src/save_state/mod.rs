@@ -814,6 +814,7 @@ mod tests {
             MapperState::Mapper037(Box::new(Mapper037Snap::default())),
             MapperState::Fds(Box::new(FdsSnap::default())),
             MapperState::Sunsoft1(Sunsoft1Snap::default()),
+            MapperState::Un1rom(Un1romSnap::default()),
             MapperState::Sunsoft2(Sunsoft2Snap::default()),
             MapperState::Sunsoft3(Sunsoft3Snap::default()),
             MapperState::Sunsoft4(Sunsoft4Snap::default()),

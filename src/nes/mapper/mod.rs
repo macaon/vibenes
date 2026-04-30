@@ -45,6 +45,7 @@ pub mod taito_x1017;
 pub mod tc0690;
 pub mod tqrom;
 pub mod txsrom;
+pub mod un1rom;
 pub mod uxrom;
 pub mod vrc1;
 pub mod vrc2_4;
@@ -406,6 +407,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         75 => Ok(Box::new(vrc1::Vrc1::new(cart))),
         78 => Ok(Box::new(irem_74x161::Irem74x161::new(cart))),
         87 => Ok(Box::new(jaleco_jf05::JalecoJf05::new(cart))),
+        94 => Ok(Box::new(un1rom::Un1rom::new(cart))),
         24 => Ok(Box::new(vrc6::Vrc6::new_a(cart))),
         26 => Ok(Box::new(vrc6::Vrc6::new_b(cart))),
         85 => Ok(Box::new(vrc7::Vrc7::new(cart))),

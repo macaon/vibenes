@@ -772,6 +772,16 @@ pub struct CnromProtectSnap {
     pub submapper: u8,
 }
 
+/// HVC-UN1ROM (mapper 94, Senjou no Ookami / Commando JP).
+/// Plain UNROM-shape with the bank-select bits routed to D2-D4
+/// instead of D0-D2; we just store the raw latch and re-shift
+/// at PRG-read time.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Un1romSnap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+}
+
 /// Codemasters / Camerica BF9096 (mapper 232 - Quattro
 /// multicart, plus the Aladdin Deck Enhancer pass-through under
 /// submapper 1). Captures both bank latches and the
@@ -1126,6 +1136,7 @@ pub enum MapperState {
     Mapper037(Box<Mapper037Snap>),
     Fds(Box<FdsSnap>),
     Sunsoft1(Sunsoft1Snap),
+    Un1rom(Un1romSnap),
     Sunsoft2(Sunsoft2Snap),
     Sunsoft3(Sunsoft3Snap),
     Sunsoft4(Sunsoft4Snap),
