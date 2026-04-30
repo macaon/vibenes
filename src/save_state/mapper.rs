@@ -629,6 +629,15 @@ pub struct Mapper037Snap {
     pub block: u8,
 }
 
+/// Mapper 047 (NES-QJ multicart) wraps an MMC3 with a 1-bit outer
+/// block latch at `$6000-$7FFF`. Same shape as [`Mapper037Snap`]
+/// but the block is 1 bit instead of 3.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Mapper047Snap {
+    pub inner: Mmc3Snap,
+    pub block: u8,
+}
+
 /// TxSROM (mapper 118) wraps an MMC3 with per-NT-slot CIRAM
 /// routing latched at `$8001` write time. The 4-byte `nt_cache`
 /// is the only state TxSROM adds on top of the inner MMC3.
@@ -1261,6 +1270,7 @@ pub enum MapperState {
     IremTamS1(IremTamS1Snap),
     TaitoTc0190(TaitoTc0190Snap),
     Mapper037(Box<Mapper037Snap>),
+    Mapper047(Box<Mapper047Snap>),
     Fds(Box<FdsSnap>),
     Sunsoft1(Sunsoft1Snap),
     Un1rom(Un1romSnap),

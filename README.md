@@ -99,6 +99,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 33 | Taito TC0190 / TC0350 (no-IRQ subset) | done |
 | 34 | BNROM (Deadly Towers; bus-conflict 32 KiB PRG bank) + NINA-001 (Impossible Mission II, Wayne's World; $7FFD-$7FFF register set with 32 KiB PRG + two 4 KiB CHR banks); auto-detect by CHR-ROM presence | done |
 | 37 | Nintendo SMB + Tetris + World Cup multicart | done |
+| 47 | Nintendo NES-QJ multicart (Super Spike V'Ball + Nintendo World Cup; MMC3 + 1-bit outer-block latch at $6000-$7FFF, gated by MMC3 PRG-RAM-write enable) | done |
 | 48 | Taito TC0690 (MMC3-style + delayed IRQ; Don Doko Don 2, Power Blazer, Flintstones, Captain Saver, The Jetsons) | done |
 | 64 | Tengen RAMBO-1 (Klax JP, Skull & Crossbones, Rolling Thunder, Hard Drivin') | done |
 | 65 | Irem H3001 (Spartan X 2, Daiku no Gen-san 2, Kaiketsu Yanchamaru 3; CPU-cycle 16-bit IRQ down-counter) | done |

@@ -32,6 +32,7 @@ pub mod jaleco_jf13;
 pub mod jaleco_jf17;
 pub mod jaleco_ss88006;
 pub mod mapper037;
+pub mod mapper047;
 pub mod mmc1;
 pub mod mmc2;
 pub mod mmc3;
@@ -408,6 +409,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         33 => Ok(Box::new(taito_tc0190::TaitoTc0190::new(cart))),
         34 => Ok(Box::new(bnrom::Bnrom::new(cart))),
         37 => Ok(Box::new(mapper037::Mapper037::new(cart))),
+        47 => Ok(Box::new(mapper047::Mapper047::new(cart))),
         64 => Ok(Box::new(rambo1::Rambo1::new(cart))),
         65 => Ok(Box::new(irem_h3001::IremH3001::new(cart))),
         70 => Ok(Box::new(bandai_74161::Bandai74161::new_70(cart))),
