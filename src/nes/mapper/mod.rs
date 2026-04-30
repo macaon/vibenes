@@ -8,6 +8,7 @@ pub mod bandai_74161;
 pub mod bandai_fcg;
 pub mod bnrom;
 pub mod cnrom;
+pub mod codemasters_bf9096;
 pub mod codemasters_bf909x;
 pub mod eeprom_24c0x;
 pub mod fds;
@@ -407,6 +408,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         85 => Ok(Box::new(vrc7::Vrc7::new(cart))),
         159 => Ok(Box::new(bandai_fcg::BandaiFcg::new(cart))),
         210 => Ok(Box::new(namco163::Namco163::new(cart))),
+        232 => Ok(Box::new(codemasters_bf9096::CodemastersBf9096::new(cart))),
         5 => Ok(Box::new(mmc5::Mmc5::new(cart))),
         7 => Ok(Box::new(axrom::Axrom::new(cart))),
         66 => Ok(Box::new(gxrom::Gxrom::new(cart))),

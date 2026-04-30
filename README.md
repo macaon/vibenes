@@ -126,6 +126,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 159 | Bandai LZ93D50 + 24C01 | done |
 | 206 | Namco 118 / Mimic-1 (DigDug II, Mappy-Land, Galaxian) | done |
 | 207 | Taito X1-005 alt-mirroring variant (Fudou Myou-Ou Den) | done |
+| 232 | Codemasters / Camerica BF9096 (Quattro Adventure / Arcade / Sports multicart; sub 1 = Aladdin Deck Enhancer bit-swapped outer block) | done |
 
 ### Test-ROM coverage
 

@@ -753,6 +753,21 @@ pub struct Irem74x161Snap {
     pub holy_diver_mode: bool,
 }
 
+/// Codemasters / Camerica BF9096 (mapper 232 - Quattro
+/// multicart, plus the Aladdin Deck Enhancer pass-through under
+/// submapper 1). Captures both bank latches and the
+/// submapper-derived bit-swap flag so a cross-submapper apply is
+/// rejected.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CodemastersBf9096Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub prg_block: u8,
+    pub prg_page: u8,
+    /// `true` for NES 2.0 submapper 1 (Aladdin Deck Enhancer
+    /// bit-swapped block select); `false` for Quattro carts.
+    pub aladdin_mode: bool,
+}
+
 /// Codemasters / Camerica BF909x (mapper 71). Captures the
 /// 16 KiB PRG-bank latch, the runtime BF9097-mode flag (set
 /// either by NES 2.0 submapper 1 or auto-promoted on a `$9000`
@@ -1080,6 +1095,7 @@ pub enum MapperState {
     Rambo1(Box<Rambo1Snap>),
     Bandai74161(Bandai74161Snap),
     Bnrom(BnromSnap),
+    CodemastersBf9096(CodemastersBf9096Snap),
     CodemastersBf909x(CodemastersBf909xSnap),
     Irem74x161(Irem74x161Snap),
     IremG101(IremG101Snap),
