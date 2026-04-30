@@ -677,6 +677,26 @@ pub struct JalecoJf17Snap {
     pub switchable_high: bool,
 }
 
+/// Jaleco JF-13 (mapper 86). PRG bank in the latch's bits 5-4,
+/// CHR bank from `(bit6<<2) | bits 1-0`. The uPD7756C speech
+/// channel at `$7000` is not modeled, so its register state
+/// isn't part of the snapshot.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct JalecoJf13Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+}
+
+/// Jaleco JF-11 / JF-14 (mapper 140). One latch in
+/// `$6000-$7FFF`: high nibble bits 5-4 = PRG bank, low nibble =
+/// CHR bank. No audio.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[allow(non_camel_case_types)]
+pub struct JalecoJf11_14Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+}
+
 /// Jaleco JF-05/06/07/08/09/10/11 family (mapper 87). The whole
 /// chip is a single CHR-bank latch in `$6000-$7FFF`; the bank
 /// index is recomputed as a low-2-bit swap of the latch on every
@@ -1129,6 +1149,8 @@ pub enum MapperState {
     BandaiFcg(Box<BandaiFcgSnap>),
     Jaleco(Box<JalecoSnap>),
     JalecoJf05(JalecoJf05Snap),
+    JalecoJf11_14(JalecoJf11_14Snap),
+    JalecoJf13(JalecoJf13Snap),
     JalecoJf17(JalecoJf17Snap),
     Namco163(Box<Namco163Snap>),
     Rambo1(Box<Rambo1Snap>),
