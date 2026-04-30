@@ -46,6 +46,7 @@ pub mod tc0690;
 pub mod tqrom;
 pub mod txsrom;
 pub mod un1rom;
+pub mod un1rom_180;
 pub mod uxrom;
 pub mod vrc1;
 pub mod vrc2_4;
@@ -401,6 +402,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         92 => Ok(Box::new(jaleco_jf17::JalecoJf17::new_92(cart))),
         97 => Ok(Box::new(irem_tam_s1::IremTamS1::new(cart))),
         152 => Ok(Box::new(bandai_74161::Bandai74161::new_152(cart))),
+        180 => Ok(Box::new(un1rom_180::Un1rom180::new(cart))),
         184 => Ok(Box::new(sunsoft1::Sunsoft1::new(cart))),
         69 => Ok(Box::new(fme7::Fme7::new(cart))),
         73 => Ok(Box::new(vrc3::Vrc3::new(cart))),

@@ -772,6 +772,15 @@ pub struct CnromProtectSnap {
     pub submapper: u8,
 }
 
+/// UNROM-flip / mapper 180 (Crazy Climber, Hayauchi Super Igo).
+/// First bank fixed at `$8000-$BFFF`, switchable bank at
+/// `$C000-$FFFF`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Un1rom180Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub bank: u8,
+}
+
 /// HVC-UN1ROM (mapper 94, Senjou no Ookami / Commando JP).
 /// Plain UNROM-shape with the bank-select bits routed to D2-D4
 /// instead of D0-D2; we just store the raw latch and re-shift
@@ -1137,6 +1146,7 @@ pub enum MapperState {
     Fds(Box<FdsSnap>),
     Sunsoft1(Sunsoft1Snap),
     Un1rom(Un1romSnap),
+    Un1rom180(Un1rom180Snap),
     Sunsoft2(Sunsoft2Snap),
     Sunsoft3(Sunsoft3Snap),
     Sunsoft4(Sunsoft4Snap),

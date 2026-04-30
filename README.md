@@ -123,6 +123,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 118 | Nintendo TxSROM / TLSROM / TKSROM (MMC3 + per-CHR-bank dynamic mirroring; Armadillo, Goal! Two, Ys III) | done |
 | 119 | Nintendo TQROM (MMC3 + 8 KiB CHR-RAM/ROM mix per slot; High Speed, Pin*Bot, Mall Madness) | done |
 | 152 | Bandai 74*161/161/32 (single-screen variant; Saint Seiya: Ougon Densetsu Kanketsu Hen, Pocket Zaurus, Tigers no Kessho-ban, Arkanoid II) | done |
+| 180 | UNROM-flip / Crazy Climber wiring (Crazy Climber, Hayauchi Super Igo; first bank fixed at $8000, switchable at $C000) | done |
 | 184 | Sunsoft-1 (Atlantis no Nazo, Wing of Madoola, Hi no Tori, Maharaja, Kid Niki JP, Ripple Island; CHR-only banking with hardware-forced bit 7 on the high slot) | done |
 | 185 | CNROM with diode-array security (B-Wings, Mighty Bomb Jack, Spelunker, Seicross, Sansuu series; sub 0 heuristic + deterministic subs 4-7) | done |
 | 154 | Namco 118 / Devil World JP (dynamic single-screen mirroring + Type C CHR wiring) | done |
