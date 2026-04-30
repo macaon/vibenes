@@ -807,6 +807,7 @@ mod tests {
             MapperState::Irem74x161(Irem74x161Snap::default()),
             MapperState::IremG101(IremG101Snap::default()),
             MapperState::IremH3001(Box::new(IremH3001Snap::default())),
+            MapperState::IremLrog017(IremLrog017Snap::default()),
             MapperState::IremTamS1(IremTamS1Snap::default()),
             MapperState::Bandai74161(Bandai74161Snap::default()),
             MapperState::BandaiKaraoke(BandaiKaraokeSnap::default()),

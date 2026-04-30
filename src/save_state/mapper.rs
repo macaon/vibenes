@@ -878,6 +878,15 @@ pub struct CodemastersBf909xSnap {
     pub mirroring: MirroringSnap,
 }
 
+/// Irem-LROG017 (mapper 77, *Napoleon Senki*). Single latch +
+/// 6 KiB cart CHR-RAM (the CHR-ROM half is fixed-image, not in
+/// the snap). PRG/CHR bank indices recompute from the latch.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct IremLrog017Snap {
+    pub chr_ram_data: Vec<u8>,
+    pub reg: u8,
+}
+
 /// Irem H3001 (mapper 65). Captures PRG-RAM, optional CHR-RAM,
 /// PRG/CHR bank registers, mirroring, and the live IRQ
 /// down-counter state (latch + counter + enable + line).
@@ -1212,6 +1221,7 @@ pub enum MapperState {
     Irem74x161(Irem74x161Snap),
     IremG101(IremG101Snap),
     IremH3001(Box<IremH3001Snap>),
+    IremLrog017(IremLrog017Snap),
     IremTamS1(IremTamS1Snap),
     TaitoTc0190(TaitoTc0190Snap),
     Mapper037(Box<Mapper037Snap>),

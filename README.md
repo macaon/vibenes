@@ -110,6 +110,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
 | 73 | Konami VRC3 (Salamander) | done |
 | 75 | Konami VRC1 (Tetsuwan Atom, Ganbare Goemon!) | done |
+| 77 | Irem-LROG017 (Napoleon Senki; one register splits PRG/CHR-ROM, plus 6 KiB CHR-RAM in three fixed 2 KiB windows; 4-screen mirroring) | done |
 | 78 | Irem 74*161 / Jaleco JF-16 (Holy Diver sub 3 - H/V mirror, Cosmo Carrier sub 1 - single-screen; bus-conflict ANDs CPU value with ROM byte) | done |
 | 80 | Taito X1-005 (Wagyan Land 2 + 3, Famista 89-Pro series, Bakushou!! Jinsei Gekijou series, Don Doko Don, Daikoukai Jidai) | done |
 | 82 | Taito X1-017 (SD Keiji: Blader, Kyonshiizu 2; 5 KiB battery WRAM with three independently-gated regions) | done |
