@@ -753,6 +753,20 @@ pub struct Irem74x161Snap {
     pub holy_diver_mode: bool,
 }
 
+/// Codemasters / Camerica BF909x (mapper 71). Captures the
+/// 16 KiB PRG-bank latch, the runtime BF9097-mode flag (set
+/// either by NES 2.0 submapper 1 or auto-promoted on a `$9000`
+/// write per the *Fire Hawk* heuristic), the live mirroring,
+/// and any CHR-RAM bytes (every retail BF909x cart ships
+/// CHR-RAM).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CodemastersBf909xSnap {
+    pub chr_ram_data: Vec<u8>,
+    pub prg_bank: u8,
+    pub bf9097_mode: bool,
+    pub mirroring: MirroringSnap,
+}
+
 /// Irem H3001 (mapper 65). Captures PRG-RAM, optional CHR-RAM,
 /// PRG/CHR bank registers, mirroring, and the live IRQ
 /// down-counter state (latch + counter + enable + line).
@@ -1066,6 +1080,7 @@ pub enum MapperState {
     Rambo1(Box<Rambo1Snap>),
     Bandai74161(Bandai74161Snap),
     Bnrom(BnromSnap),
+    CodemastersBf909x(CodemastersBf909xSnap),
     Irem74x161(Irem74x161Snap),
     IremG101(IremG101Snap),
     IremH3001(Box<IremH3001Snap>),

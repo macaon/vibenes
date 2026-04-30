@@ -103,6 +103,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 66 | GxROM / MHROM | done |
 | 67 | Sunsoft-3 (Fantasy Zone II, Mito Koumon) | done |
 | 70 | Bandai 74*161/161/32 (Family Trainer 1-7, Famicom Jump, Hanamaru, Kamen Rider Club; bus-conflict ANDs CPU value with ROM byte) | done |
+| 71 | Codemasters / Camerica BF909x (Micro Machines, Bee 52, Big Nose, Quattro singles; sub 1 / Fire Hawk auto-promotes to BF9097 with 1-screen mirror control) | done |
 | 72 | Jaleco JF-17 (Pinball Quest, Wing of Madoola, Moero!! Juudou Warriors; rising-edge PRG/CHR gates + bus conflict; uPD7756C ADPCM not modeled) | done |
 | 68 | Sunsoft-4 (After Burner II, Sugoro Quest; incl. CHR-as-nametable replacement and submapper-1 Maeda licensing chip) | done |
 | 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
