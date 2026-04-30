@@ -466,6 +466,16 @@ pub struct BandaiDatachSnap {
     pub save_dirty: bool,
 }
 
+/// Color Dreams (mapper 11). Single-latch board: low nibble = PRG
+/// bank, high nibble = CHR bank, bus-conflict-gated. We carry the
+/// raw post-bus-conflict latch byte plus optional CHR-RAM contents.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ColorDreamsSnap {
+    pub chr_ram_data: Vec<u8>,
+    pub mirroring: MirroringSnap,
+    pub reg: u8,
+}
+
 /// Bandai Oeka Kids (mapper 96). Captures the full 32 KiB CHR-RAM
 /// blob, the cart's bus-conflict-gated bank/outer-CHR register, and
 /// the inner-CHR latch driven by the PPU's nametable-byte fetches.
@@ -1301,6 +1311,7 @@ pub enum MapperState {
     BandaiLz93d50Sram(Box<BandaiLz93d50SramSnap>),
     BandaiOekaKids(BandaiOekaKidsSnap),
     BandaiDatach(Box<BandaiDatachSnap>),
+    ColorDreams(ColorDreamsSnap),
     Bnrom(BnromSnap),
     CnromProtect(CnromProtectSnap),
     CodemastersBf9096(CodemastersBf9096Snap),

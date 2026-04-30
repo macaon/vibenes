@@ -14,8 +14,9 @@ pub mod bnrom;
 pub mod cnrom;
 pub mod cnrom_protect;
 pub mod codemasters_bf9096;
-pub mod cprom;
 pub mod codemasters_bf909x;
+pub mod color_dreams;
+pub mod cprom;
 pub mod eeprom_24c0x;
 pub mod fds;
 pub mod fds_audio;
@@ -384,6 +385,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         2 => Ok(Box::new(uxrom::Uxrom::new(cart))),
         3 => Ok(Box::new(cnrom::Cnrom::new(cart))),
         4 => Ok(Box::new(mmc3::Mmc3::new(cart))),
+        11 => Ok(Box::new(color_dreams::ColorDreams::new(cart))),
         13 => Ok(Box::new(cprom::Cprom::new(cart))),
         48 => Ok(Box::new(tc0690::Tc0690::new(cart))),
         80 => Ok(Box::new(taito_x1005::TaitoX1005::new(cart))),

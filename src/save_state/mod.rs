@@ -814,6 +814,7 @@ mod tests {
             MapperState::BandaiLz93d50Sram(Box::new(BandaiLz93d50SramSnap::default())),
             MapperState::BandaiOekaKids(BandaiOekaKidsSnap::default()),
             MapperState::BandaiDatach(Box::new(BandaiDatachSnap::default())),
+            MapperState::ColorDreams(ColorDreamsSnap::default()),
             MapperState::Bnrom(BnromSnap::default()),
             MapperState::CnromProtect(CnromProtectSnap::default()),
             MapperState::CodemastersBf9096(CodemastersBf9096Snap::default()),
