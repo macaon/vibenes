@@ -23,6 +23,7 @@ pub mod irem_g101;
 pub mod irem_h3001;
 pub mod irem_tam_s1;
 pub mod jaleco_jf05;
+pub mod jaleco_jf10;
 pub mod jaleco_jf11_14;
 pub mod jaleco_jf13;
 pub mod jaleco_jf17;
@@ -417,6 +418,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         86 => Ok(Box::new(jaleco_jf13::JalecoJf13::new(cart))),
         87 => Ok(Box::new(jaleco_jf05::JalecoJf05::new(cart))),
         94 => Ok(Box::new(un1rom::Un1rom::new(cart))),
+        101 => Ok(Box::new(jaleco_jf10::JalecoJf10::new(cart))),
         140 => Ok(Box::new(jaleco_jf11_14::JalecoJf11_14::new(cart))),
         24 => Ok(Box::new(vrc6::Vrc6::new_a(cart))),
         26 => Ok(Box::new(vrc6::Vrc6::new_b(cart))),

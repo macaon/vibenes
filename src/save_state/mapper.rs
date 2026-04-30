@@ -677,6 +677,15 @@ pub struct JalecoJf17Snap {
     pub switchable_high: bool,
 }
 
+/// Jaleco JF-10 (mapper 101, *Urusei Yatsura: Lum no Wedding
+/// Bell*). Same PCB family as mapper 87 but with the CHR-bank
+/// data lines routed straight through, so the bank index is the
+/// raw latch byte (no low-2-bit swap).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct JalecoJf10Snap {
+    pub reg: u8,
+}
+
 /// Jaleco JF-13 (mapper 86). PRG bank in the latch's bits 5-4,
 /// CHR bank from `(bit6<<2) | bits 1-0`. The uPD7756C speech
 /// channel at `$7000` is not modeled, so its register state
@@ -1178,6 +1187,7 @@ pub enum MapperState {
     BandaiFcg(Box<BandaiFcgSnap>),
     Jaleco(Box<JalecoSnap>),
     JalecoJf05(JalecoJf05Snap),
+    JalecoJf10(JalecoJf10Snap),
     JalecoJf11_14(JalecoJf11_14Snap),
     JalecoJf13(JalecoJf13Snap),
     JalecoJf17(JalecoJf17Snap),

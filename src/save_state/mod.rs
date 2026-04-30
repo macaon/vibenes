@@ -798,6 +798,7 @@ mod tests {
             MapperState::BandaiFcg(Box::new(BandaiFcgSnap::default())),
             MapperState::Jaleco(Box::new(JalecoSnap::default())),
             MapperState::JalecoJf05(JalecoJf05Snap::default()),
+            MapperState::JalecoJf10(JalecoJf10Snap::default()),
             MapperState::JalecoJf11_14(JalecoJf11_14Snap::default()),
             MapperState::JalecoJf13(JalecoJf13Snap::default()),
             MapperState::JalecoJf17(JalecoJf17Snap::default()),
