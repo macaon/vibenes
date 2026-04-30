@@ -806,6 +806,7 @@ mod tests {
             MapperState::IremTamS1(IremTamS1Snap::default()),
             MapperState::Bandai74161(Bandai74161Snap::default()),
             MapperState::Bnrom(BnromSnap::default()),
+            MapperState::CnromProtect(CnromProtectSnap::default()),
             MapperState::CodemastersBf9096(CodemastersBf9096Snap::default()),
             MapperState::CodemastersBf909x(CodemastersBf909xSnap::default()),
             MapperState::TaitoTc0190(TaitoTc0190Snap::default()),

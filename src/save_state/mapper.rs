@@ -753,6 +753,16 @@ pub struct Irem74x161Snap {
     pub holy_diver_mode: bool,
 }
 
+/// CNROM with diode-array security (mapper 185). Captures the
+/// latch byte and the active submapper so a cross-submapper
+/// apply (e.g. sub 4 -> sub 5) is rejected even though the live
+/// hardware footprint is otherwise identical.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CnromProtectSnap {
+    pub latch: u8,
+    pub submapper: u8,
+}
+
 /// Codemasters / Camerica BF9096 (mapper 232 - Quattro
 /// multicart, plus the Aladdin Deck Enhancer pass-through under
 /// submapper 1). Captures both bank latches and the
@@ -1095,6 +1105,7 @@ pub enum MapperState {
     Rambo1(Box<Rambo1Snap>),
     Bandai74161(Bandai74161Snap),
     Bnrom(BnromSnap),
+    CnromProtect(CnromProtectSnap),
     CodemastersBf9096(CodemastersBf9096Snap),
     CodemastersBf909x(CodemastersBf909xSnap),
     Irem74x161(Irem74x161Snap),
