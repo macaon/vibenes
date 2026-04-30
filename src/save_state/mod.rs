@@ -811,6 +811,7 @@ mod tests {
             MapperState::IremTamS1(IremTamS1Snap::default()),
             MapperState::Bandai74161(Bandai74161Snap::default()),
             MapperState::BandaiKaraoke(BandaiKaraokeSnap::default()),
+            MapperState::BandaiLz93d50Sram(Box::new(BandaiLz93d50SramSnap::default())),
             MapperState::Bnrom(BnromSnap::default()),
             MapperState::CnromProtect(CnromProtectSnap::default()),
             MapperState::CodemastersBf9096(CodemastersBf9096Snap::default()),

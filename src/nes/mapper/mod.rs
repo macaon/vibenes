@@ -7,6 +7,7 @@ pub mod axrom;
 pub mod bandai_74161;
 pub mod bandai_fcg;
 pub mod bandai_karaoke;
+pub mod bandai_lz93d50_sram;
 pub mod bnrom;
 pub mod cnrom;
 pub mod cnrom_protect;
@@ -412,6 +413,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         93 => Ok(Box::new(sunsoft93::Sunsoft93::new(cart))),
         97 => Ok(Box::new(irem_tam_s1::IremTamS1::new(cart))),
         152 => Ok(Box::new(bandai_74161::Bandai74161::new_152(cart))),
+        153 => Ok(Box::new(bandai_lz93d50_sram::BandaiLz93d50Sram::new(cart))),
         180 => Ok(Box::new(un1rom_180::Un1rom180::new(cart))),
         184 => Ok(Box::new(sunsoft1::Sunsoft1::new(cart))),
         69 => Ok(Box::new(fme7::Fme7::new(cart))),

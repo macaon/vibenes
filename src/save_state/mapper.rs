@@ -838,6 +838,28 @@ pub struct Un1romSnap {
     pub reg: u8,
 }
 
+/// Bandai LZ93D50 + 8 KiB battery SRAM (mapper 153, *Famicom
+/// Jump II*). LZ93D50 register surface plus the cart's outer
+/// PRG-bank bit (computed from CHR-reg bit 0 OR'd across all 8
+/// regs), the SRAM enable gate, and the full IRQ down-counter
+/// state. Boxed because the snapshot carries 8 KiB SRAM + 8 KiB
+/// CHR-RAM and we want to keep `MapperState` small by ref.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct BandaiLz93d50SramSnap {
+    pub prg_ram: Vec<u8>,
+    pub chr_ram_data: Vec<u8>,
+    pub chr_regs: [u8; 8],
+    pub prg_page: u8,
+    pub prg_outer: u8,
+    pub mirroring: MirroringSnap,
+    pub irq_counter: u16,
+    pub irq_reload: u16,
+    pub irq_enabled: bool,
+    pub irq_line: bool,
+    pub prg_ram_enabled: bool,
+    pub save_dirty: bool,
+}
+
 /// Bandai Karaoke Studio (mapper 188). The cart's microphone
 /// input is a host-driven signal that does not belong in a
 /// state snapshot - we capture only the bank-select latch, the
@@ -1213,6 +1235,7 @@ pub enum MapperState {
     Rambo1(Box<Rambo1Snap>),
     Bandai74161(Bandai74161Snap),
     BandaiKaraoke(BandaiKaraokeSnap),
+    BandaiLz93d50Sram(Box<BandaiLz93d50SramSnap>),
     Bnrom(BnromSnap),
     CnromProtect(CnromProtectSnap),
     CodemastersBf9096(CodemastersBf9096Snap),

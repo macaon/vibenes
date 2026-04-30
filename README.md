@@ -129,6 +129,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 119 | Nintendo TQROM (MMC3 + 8 KiB CHR-RAM/ROM mix per slot; High Speed, Pin*Bot, Mall Madness) | done |
 | 140 | Jaleco JF-11 / JF-14 (Bio Senshi Dan, Mindseeker, Doraemon, Penguin Kun Wars 2; PRG in bits 5-4, CHR in low nibble) | done |
 | 152 | Bandai 74*161/161/32 (single-screen variant; Saint Seiya: Ougon Densetsu Kanketsu Hen, Pocket Zaurus, Tigers no Kessho-ban, Arkanoid II) | done |
+| 153 | Bandai LZ93D50 + 8 KiB battery SRAM (Famicom Jump II: Saikyou no Shichinin; outer PRG bit from CHR-reg bit 0 OR'd, SRAM enable gate at $x00D, full LZ93D50 IRQ down-counter) | done |
 | 180 | UNROM-flip / Crazy Climber wiring (Crazy Climber, Hayauchi Super Igo; first bank fixed at $8000, switchable at $C000) | done |
 | 184 | Sunsoft-1 (Atlantis no Nazo, Wing of Madoola, Hi no Tori, Maharaja, Kid Niki JP, Ripple Island; CHR-only banking with hardware-forced bit 7 on the high slot) | done |
 | 185 | CNROM with diode-array security (B-Wings, Mighty Bomb Jack, Spelunker, Seicross, Sansuu series; sub 0 heuristic + deterministic subs 4-7) | done |
