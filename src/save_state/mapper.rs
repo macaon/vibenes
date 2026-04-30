@@ -677,6 +677,15 @@ pub struct JalecoJf17Snap {
     pub switchable_high: bool,
 }
 
+/// Jaleco JF-05/06/07/08/09/10/11 family (mapper 87). The whole
+/// chip is a single CHR-bank latch in `$6000-$7FFF`; the bank
+/// index is recomputed as a low-2-bit swap of the latch on every
+/// PPU read.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct JalecoJf05Snap {
+    pub reg: u8,
+}
+
 /// BNROM / NINA-001 (mapper 34, two distinct chips). Captures
 /// PRG-RAM, CHR-RAM (BNROM only), the PRG bank, the two CHR
 /// bank registers (NINA-001 only), and the variant flag.
@@ -1100,6 +1109,7 @@ pub enum MapperState {
     Fme7(Box<Fme7Snap>),
     BandaiFcg(Box<BandaiFcgSnap>),
     Jaleco(Box<JalecoSnap>),
+    JalecoJf05(JalecoJf05Snap),
     JalecoJf17(JalecoJf17Snap),
     Namco163(Box<Namco163Snap>),
     Rambo1(Box<Rambo1Snap>),

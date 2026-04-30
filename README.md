@@ -113,6 +113,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 80 | Taito X1-005 (Wagyan Land 2 + 3, Famista 89-Pro series, Bakushou!! Jinsei Gekijou series, Don Doko Don, Daikoukai Jidai) | done |
 | 82 | Taito X1-017 (SD Keiji: Blader, Kyonshiizu 2; 5 KiB battery WRAM with three independently-gated regions) | done |
 | 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
+| 87 | Jaleco JF-05/06/07/08/09/10/11 (CHR-only banking with PCB-routed low-2-bit swap; Argus, Argos no Senshi, City Connection, Ninja Jajamaru-kun, Spy vs Spy, Moero! TwinBee) | done |
 | 88 | Namcot Type C (extra-CHR-line wiring; Devil Man, Mendel Palace) | done |
 | 89 | Sunsoft-2 with single-screen mirror (Tenka no Goikenban: Mito Koumon; bus-conflict ANDs CPU value with ROM byte) | done |
 | 92 | Jaleco JF-19 (Moero!! Pro Yakyuu '88, Moero!! Pro Tennis; same chip as 72 wired with high-slot switch) | done |
