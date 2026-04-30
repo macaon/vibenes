@@ -8,6 +8,7 @@ pub mod bandai_74161;
 pub mod bandai_fcg;
 pub mod bandai_karaoke;
 pub mod bandai_lz93d50_sram;
+pub mod bandai_oeka_kids;
 pub mod bnrom;
 pub mod cnrom;
 pub mod cnrom_protect;
@@ -387,6 +388,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         67 => Ok(Box::new(sunsoft3::Sunsoft3::new(cart))),
         68 => Ok(Box::new(sunsoft4::Sunsoft4::new(cart))),
         76 => Ok(Box::new(namco_118::Namco118::new_76(cart))),
+        96 => Ok(Box::new(bandai_oeka_kids::BandaiOekaKids::new(cart))),
         88 => Ok(Box::new(namco_118::Namco118::new_88(cart))),
         89 => Ok(Box::new(sunsoft2::Sunsoft2::new(cart))),
         95 => Ok(Box::new(namco_118::Namco118::new_95(cart))),

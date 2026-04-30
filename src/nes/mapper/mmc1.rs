@@ -60,6 +60,13 @@ pub struct Mmc1 {
     /// MMC1A variant (mapper 155). When true, the WRAM-disable bit
     /// (bit 4 of the `$E000` commit) is ignored - WRAM stays enabled
     /// for the entire run. See module doc-comment.
+    ///
+    /// `dead_code` allow: today the production paths don't branch on
+    /// this flag because our base MMC1 already keeps WRAM permanently
+    /// enabled. The field is the documentary hook for when WRAM
+    /// gating is wired into MMC1B; the test-only `is_mmc1a()` accessor
+    /// reads it.
+    #[allow(dead_code)]
     mmc1a: bool,
 }
 

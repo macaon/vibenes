@@ -449,6 +449,17 @@ pub struct BandaiFcgSnap {
     pub save_dirty: bool,
 }
 
+/// Bandai Oeka Kids (mapper 96). Captures the full 32 KiB CHR-RAM
+/// blob, the cart's bus-conflict-gated bank/outer-CHR register, and
+/// the inner-CHR latch driven by the PPU's nametable-byte fetches.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct BandaiOekaKidsSnap {
+    pub chr_ram: Vec<u8>,
+    pub mirroring: MirroringSnap,
+    pub reg: u8,
+    pub inner_chr: u8,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct JalecoSnap {
     pub prg_ram: Vec<u8>,
@@ -1237,6 +1248,7 @@ pub enum MapperState {
     Bandai74161(Bandai74161Snap),
     BandaiKaraoke(BandaiKaraokeSnap),
     BandaiLz93d50Sram(Box<BandaiLz93d50SramSnap>),
+    BandaiOekaKids(BandaiOekaKidsSnap),
     Bnrom(BnromSnap),
     CnromProtect(CnromProtectSnap),
     CodemastersBf9096(CodemastersBf9096Snap),

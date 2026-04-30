@@ -114,6 +114,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 77 | Irem-LROG017 (Napoleon Senki; one register splits PRG/CHR-ROM, plus 6 KiB CHR-RAM in three fixed 2 KiB windows; 4-screen mirroring) | done |
 | 78 | Irem 74*161 / Jaleco JF-16 (Holy Diver sub 3 - H/V mirror, Cosmo Carrier sub 1 - single-screen; bus-conflict ANDs CPU value with ROM byte) | done |
 | 76 | Namco 109 / NAMCOT-3446 (Megami Tensei: Digital Devil Story; 4 x 2 KiB CHR via R2-R5; R0/R1 silently ignored) | done |
+| 96 | Bandai Oeka Kids (Oeka Kids: Anpanman no Hiragana Daisuki; 32 KiB PRG bank-switch with bus conflicts; 32 KiB CHR-RAM with PPU-driven inner latch tracking the active nametable-tile fetch) | done |
 | 80 | Taito X1-005 (Wagyan Land 2 + 3, Famista 89-Pro series, Bakushou!! Jinsei Gekijou series, Don Doko Don, Daikoukai Jidai) | done |
 | 82 | Taito X1-017 (SD Keiji: Blader, Kyonshiizu 2; 5 KiB battery WRAM with three independently-gated regions) | done |
 | 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
