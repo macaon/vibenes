@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! MMC1 / SxROM (mapper 1).
+//! MMC1 / SxROM (mapper 1) and MMC1A (mapper 155).
 //!
 //! Writes to $8000-$FFFF feed a 5-bit serial shift register. After the
 //! fifth write the shift is committed to one of four internal registers
@@ -11,6 +11,17 @@
 //! (typical for RMW's dummy-write-then-real-write pair), only the first
 //! write is honored. We track the last CPU cycle we accepted a write on
 //! and drop writes that arrive exactly one cycle later.
+//!
+//! ## MMC1A (mapper 155)
+//!
+//! NES-SAROM mask variant. The only known iNES Mapper 155 carts are
+//! Tatakae!! Ramen Man (1988) and Money Game I/II (1988-89). Differs
+//! from MMC1B only in WRAM gating: bit 4 of `$E000-$FFFF`'s commit
+//! value (the "WRAM disable" bit on MMC1B) is ignored - PRG-RAM is
+//! permanently enabled. Our base MMC1 never honored that disable bit
+//! either, so the runtime difference today is zero; the variant flag
+//! documents the chip and reserves the hook for when MMC1B gains
+//! proper WRAM gating.
 
 use crate::nes::mapper::Mapper;
 use crate::nes::rom::{Cartridge, Mirroring};
@@ -45,10 +56,26 @@ pub struct Mmc1 {
 
     battery: bool,
     save_dirty: bool,
+
+    /// MMC1A variant (mapper 155). When true, the WRAM-disable bit
+    /// (bit 4 of the `$E000` commit) is ignored - WRAM stays enabled
+    /// for the entire run. See module doc-comment.
+    mmc1a: bool,
 }
 
 impl Mmc1 {
     pub fn new(cart: Cartridge) -> Self {
+        Self::build(cart, false)
+    }
+
+    /// MMC1A wiring - mapper 155. Identical to [`Self::new`] except
+    /// the variant flag is set so any future WRAM-gating logic can
+    /// branch on it.
+    pub fn new_mmc1a(cart: Cartridge) -> Self {
+        Self::build(cart, true)
+    }
+
+    fn build(cart: Cartridge, mmc1a: bool) -> Self {
         let prg_bank_count_16k = (cart.prg_rom.len() / PRG_BANK_16K).max(1);
         let prg_ram = vec![0; (cart.prg_ram_size + cart.prg_nvram_size).max(0x2000)];
         let chr = if cart.chr_ram {
@@ -73,9 +100,18 @@ impl Mmc1 {
             prg_bank_count_16k,
             battery: cart.battery_backed,
             save_dirty: false,
+            mmc1a,
         };
         m.refresh_mirroring();
         m
+    }
+
+    /// True if this instance is configured as MMC1A (mapper 155).
+    /// Exposed for tests; the production code paths branch internally
+    /// on `self.mmc1a`.
+    #[cfg(test)]
+    pub(crate) fn is_mmc1a(&self) -> bool {
+        self.mmc1a
     }
 
     fn refresh_mirroring(&mut self) {
@@ -330,3 +366,95 @@ impl Mapper for Mmc1 {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nes::rom::{Cartridge, TvSystem};
+
+    /// 64 KiB PRG (4 banks * 16 KiB), 8 KiB CHR-RAM, 8 KiB battery PRG-RAM.
+    /// PRG bank N tagged `0x10 + N`.
+    fn cart(mapper_id: u16) -> Cartridge {
+        let mut prg = vec![0u8; 4 * PRG_BANK_16K];
+        for b in 0..4 {
+            prg[b * PRG_BANK_16K..(b + 1) * PRG_BANK_16K].fill(0x10 + b as u8);
+        }
+        Cartridge {
+            prg_rom: prg,
+            chr_rom: vec![],
+            chr_ram: true,
+            mapper_id,
+            submapper: 0,
+            mirroring: Mirroring::Horizontal,
+            battery_backed: true,
+            prg_ram_size: 0x2000,
+            prg_nvram_size: 0,
+            tv_system: TvSystem::Ntsc,
+            is_nes2: false,
+            prg_chr_crc32: 0,
+            db_matched: false,
+            fds_data: None,
+        }
+    }
+
+    /// Walk a 5-bit value through the serial shifter without
+    /// triggering the consecutive-write filter (cycles tick between
+    /// writes). Mode-3 default at power-up means writes to `$E000`
+    /// land in the PRG-bank register.
+    fn shift_in(m: &mut Mmc1, addr: u16, value: u8) {
+        for i in 0..5 {
+            let bit = (value >> i) & 1;
+            m.cpu_write(addr, bit);
+            m.on_cpu_cycle();
+            m.on_cpu_cycle();
+        }
+    }
+
+    #[test]
+    fn mapper_1_defaults_to_mmc1b() {
+        let m = Mmc1::new(cart(1));
+        assert!(!m.is_mmc1a());
+    }
+
+    #[test]
+    fn mapper_155_constructs_as_mmc1a() {
+        let m = Mmc1::new_mmc1a(cart(155));
+        assert!(m.is_mmc1a());
+    }
+
+    #[test]
+    fn mmc1a_serial_bank_select_round_trips() {
+        // Mode-3 power-up: $8000-$BFFF is switchable, $C000-$FFFF fixed
+        // last bank. Selecting bank 2 should land tag 0x12 at $8000.
+        let mut m = Mmc1::new_mmc1a(cart(155));
+        shift_in(&mut m, 0xE000, 2);
+        assert_eq!(m.cpu_peek(0x8000), 0x12);
+        assert_eq!(m.cpu_peek(0xC000), 0x13); // fixed last (bank 3)
+    }
+
+    #[test]
+    fn mmc1a_prg_ram_round_trips() {
+        let mut m = Mmc1::new_mmc1a(cart(155));
+        m.cpu_write(0x6000, 0x42);
+        m.cpu_write(0x7FFF, 0x99);
+        assert_eq!(m.cpu_peek(0x6000), 0x42);
+        assert_eq!(m.cpu_peek(0x7FFF), 0x99);
+        assert!(m.save_dirty());
+    }
+
+    #[test]
+    fn mmc1a_save_state_round_trips_through_mmc1_variant() {
+        let mut a = Mmc1::new_mmc1a(cart(155));
+        shift_in(&mut a, 0xE000, 2);
+        a.cpu_write(0x6000, 0xAB);
+        let state = a.save_state_capture().unwrap();
+
+        // Apply onto a fresh MMC1A instance.
+        let mut b = Mmc1::new_mmc1a(cart(155));
+        b.save_state_apply(&state).unwrap();
+        assert_eq!(b.cpu_peek(0x8000), 0x12);
+        assert_eq!(b.cpu_peek(0x6000), 0xAB);
+        assert!(b.is_mmc1a()); // variant flag survives apply (set by ctor)
+    }
+}
+

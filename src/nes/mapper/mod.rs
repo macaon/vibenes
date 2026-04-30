@@ -376,6 +376,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
     match cart.mapper_id {
         0 => Ok(Box::new(nrom::Nrom::new(cart))),
         1 => Ok(Box::new(mmc1::Mmc1::new(cart))),
+        155 => Ok(Box::new(mmc1::Mmc1::new_mmc1a(cart))),
         2 => Ok(Box::new(uxrom::Uxrom::new(cart))),
         3 => Ok(Box::new(cnrom::Cnrom::new(cart))),
         4 => Ok(Box::new(mmc3::Mmc3::new(cart))),
