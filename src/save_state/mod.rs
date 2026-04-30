@@ -825,6 +825,7 @@ mod tests {
             MapperState::Txsrom(Box::new(TxsromSnap::default())),
             MapperState::Tqrom(Box::new(TqromSnap::default())),
             MapperState::Tc0690(Box::new(Tc0690Snap::default())),
+            MapperState::TaitoTc110(Box::new(TaitoTc110Snap::default())),
             MapperState::TaitoX1005(Box::new(TaitoX1005Snap::default())),
             MapperState::TaitoX1017(Box::new(TaitoX1017Snap::default())),
             MapperState::Unsupported(255),

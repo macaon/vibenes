@@ -857,6 +857,15 @@ pub struct IremH3001Snap {
     pub save_dirty: bool,
 }
 
+/// Taito TC-110 (mapper 189, Thundercade / Master Fighter II).
+/// Wraps an MMC3 with one 32 KiB-PRG override register at
+/// `$4120-$7FFF`. Inner MMC3 state plus the latch byte.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct TaitoTc110Snap {
+    pub inner: Mmc3Snap,
+    pub prg_reg: u8,
+}
+
 /// Taito X1-005 (mappers 80 + 207). Captures the chip's
 /// 128-byte on-cart WRAM (battery-backed on save-bearing
 /// carts), the bank-register file at `$7EF0-$7EFF`, the
@@ -1176,6 +1185,7 @@ pub enum MapperState {
     Txsrom(Box<TxsromSnap>),
     Tqrom(Box<TqromSnap>),
     Tc0690(Box<Tc0690Snap>),
+    TaitoTc110(Box<TaitoTc110Snap>),
     TaitoX1005(Box<TaitoX1005Snap>),
     TaitoX1017(Box<TaitoX1017Snap>),
     /// Mapper variant not covered by any phase yet. Carries the
