@@ -402,6 +402,15 @@ impl App {
                 Ok(false) => {}
                 Err(e) => eprintln!("vibenes: load disk save failed: {e:#}"),
             }
+            match nes.load_flash(&config.save) {
+                Ok(true) => {
+                    if let Some(p) = nes.flash_save_path(&config.save) {
+                        eprintln!("vibenes: loaded PRG-flash save from {}", p.display());
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => eprintln!("vibenes: load flash save failed: {e:#}"),
+            }
             if nes.bus.mapper.save_data().is_some() {
                 if let Some(p) = nes.save_path(&config.save) {
                     eprintln!("vibenes: battery save file → {}", p.display());
@@ -410,6 +419,11 @@ impl App {
             if nes.bus.mapper.disk_save_data().is_some() {
                 if let Some(p) = nes.disk_save_path(&config.save) {
                     eprintln!("vibenes: FDS disk save file → {}", p.display());
+                }
+            }
+            if nes.bus.mapper.flash_save_data().is_some() {
+                if let Some(p) = nes.flash_save_path(&config.save) {
+                    eprintln!("vibenes: PRG-flash save file → {}", p.display());
                 }
             }
         }
@@ -655,6 +669,18 @@ impl App {
                             }
                             Ok(false) => {}
                             Err(e) => eprintln!("vibenes: disk autosave failed: {e:#}"),
+                        }
+                        match nes.save_flash(&self.config.save) {
+                            Ok(true) => {
+                                if let Some(p) = nes.flash_save_path(&self.config.save) {
+                                    eprintln!(
+                                        "vibenes: periodic PRG-flash save → {}",
+                                        p.display()
+                                    );
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => eprintln!("vibenes: flash autosave failed: {e:#}"),
                         }
                     }
                 }
@@ -1199,11 +1225,14 @@ impl App {
         }
     }
 
-    /// Flush dirty battery RAM to disk before an exit event. `kind`
-    /// gets dropped into the log line so we can tell X / F1 / Esc
-    /// apart. Silent no-op when no cart is loaded or nothing is
-    /// dirty; logs the save path on success; logs and swallows on
-    /// failure so the event-loop tear-down always proceeds.
+    /// Flush dirty battery RAM, FDS disk diff, and PRG-flash diff
+    /// to disk before an exit event. `kind` gets dropped into the
+    /// log line so we can tell X / F1 / Esc apart. Silent no-op
+    /// when no cart is loaded or nothing is dirty; logs the save
+    /// path on success; logs and swallows on failure so the
+    /// event-loop tear-down always proceeds. The function keeps
+    /// its `flush_battery_save` name for grep continuity even
+    /// though it now drains all three persistence channels.
     fn flush_battery_save(&mut self, kind: &str) {
         let Some(nes) = self.nes.as_mut() else { return };
         match nes.save_battery(&self.config.save) {
@@ -1231,6 +1260,19 @@ impl App {
                 }
             }
             Err(e) => eprintln!("vibenes: shutdown disk save failed: {e:#}"),
+        }
+        match nes.save_flash(&self.config.save) {
+            Ok(true) => {
+                if let Some(p) = nes.flash_save_path(&self.config.save) {
+                    eprintln!("vibenes: saved PRG-flash {} on {kind}", p.display());
+                }
+            }
+            Ok(false) => {
+                if nes.bus.mapper.flash_save_data().is_some() {
+                    eprintln!("vibenes: {kind} - no PRG-flash changes to save");
+                }
+            }
+            Err(e) => eprintln!("vibenes: shutdown flash save failed: {e:#}"),
         }
     }
 
@@ -1303,12 +1345,22 @@ impl App {
                                     .and_then(vibenes::snes::Snes::detach_audio)
                             })
                             .or_else(|| self.pending_audio_sink.take());
-                        // Drop any active NES (saving its battery
-                        // first) so the SNES has the framebuffer
-                        // pipeline to itself.
+                        // Drop any active NES (flushing all three
+                        // persistence channels first) so the SNES has
+                        // the framebuffer pipeline to itself.
                         if let Some(mut nes) = self.nes.take() {
                             if let Err(e) = nes.save_battery(&self.config.save) {
                                 eprintln!("vibenes: save before SNES swap failed: {e:#}");
+                            }
+                            if let Err(e) = nes.save_disk(&self.config.save) {
+                                eprintln!(
+                                    "vibenes: disk save before SNES swap failed: {e:#}"
+                                );
+                            }
+                            if let Err(e) = nes.save_flash(&self.config.save) {
+                                eprintln!(
+                                    "vibenes: flash save before SNES swap failed: {e:#}"
+                                );
                             }
                         }
                         let mut snes = vibenes::snes::Snes::from_cartridge(cart);
@@ -1358,15 +1410,18 @@ impl App {
         let incoming_crc = cart.prg_chr_crc32;
         let region = match self.nes.as_mut() {
             Some(nes) => {
-                // Flush the outgoing cart's battery RAM and FDS disk
-                // save before we drop its mapper. After this we can't
-                // recover the bytes - swap_cartridge consumes the
-                // mapper.
+                // Flush the outgoing cart's battery RAM, FDS disk
+                // save, and PRG-flash save before we drop its mapper.
+                // After this we can't recover the bytes -
+                // swap_cartridge consumes the mapper.
                 if let Err(e) = nes.save_battery(&self.config.save) {
                     eprintln!("vibenes: save before swap failed: {e:#}");
                 }
                 if let Err(e) = nes.save_disk(&self.config.save) {
                     eprintln!("vibenes: disk save before swap failed: {e:#}");
+                }
+                if let Err(e) = nes.save_flash(&self.config.save) {
+                    eprintln!("vibenes: flash save before swap failed: {e:#}");
                 }
                 if let Err(e) = nes.swap_cartridge(cart) {
                     eprintln!("vibenes: swap failed: {e:#}");
@@ -1390,6 +1445,18 @@ impl App {
                     }
                     Ok(false) => {}
                     Err(e) => eprintln!("vibenes: load disk save failed: {e:#}"),
+                }
+                match nes.load_flash(&self.config.save) {
+                    Ok(true) => {
+                        if let Some(p) = nes.flash_save_path(&self.config.save) {
+                            eprintln!(
+                                "vibenes: loaded PRG-flash save from {}",
+                                p.display()
+                            );
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => eprintln!("vibenes: load flash save failed: {e:#}"),
                 }
                 nes.region()
             }
@@ -1427,6 +1494,18 @@ impl App {
                     }
                     Ok(false) => {}
                     Err(e) => eprintln!("vibenes: load disk save failed: {e:#}"),
+                }
+                match nes.load_flash(&self.config.save) {
+                    Ok(true) => {
+                        if let Some(p) = nes.flash_save_path(&self.config.save) {
+                            eprintln!(
+                                "vibenes: loaded PRG-flash save from {}",
+                                p.display()
+                            );
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => eprintln!("vibenes: load flash save failed: {e:#}"),
                 }
                 let region = nes.region();
                 self.nes = Some(nes);

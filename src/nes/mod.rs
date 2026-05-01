@@ -212,6 +212,84 @@ impl Nes {
         Ok(true)
     }
 
+    /// Resolve the PRG-flash save (`.fsav`) path for the current
+    /// cart, or `None` when no metadata is attached. Uses the
+    /// keyed naming convention (`<rom-stem>.<crc8>.<region>.fsav`)
+    /// shared with save states - keeps romhacks distinct from the
+    /// originals they're built on. UNROM-512 sub 1 is the only
+    /// active producer today; future flash carts (GTROM / mapper
+    /// 111) will share the channel.
+    pub fn flash_save_path(&self, cfg: &SaveConfig) -> Option<PathBuf> {
+        let meta = self.save_meta.as_ref()?;
+        save::save_path_keyed(
+            &meta.rom_path,
+            meta.prg_chr_crc32,
+            self.region(),
+            cfg,
+            save::FLASH_SAVE_EXT,
+        )
+    }
+
+    /// Load the PRG-flash save sidecar and hand the IPS bytes to
+    /// the mapper. No-op on non-flash carts. Returns `Ok(true)`
+    /// when a patch was applied, `Ok(false)` on "nothing to do,"
+    /// `Err` only for real I/O errors. Mirrors [`Nes::load_disk`].
+    pub fn load_flash(&mut self, cfg: &SaveConfig) -> Result<bool> {
+        let Some(meta) = self.save_meta.as_ref() else {
+            return Ok(false);
+        };
+        // Mapper declines (returns None) on non-flash carts; skip I/O.
+        if self.bus.mapper.flash_save_data().is_none() {
+            return Ok(false);
+        }
+        let Some(path) = save::save_path_keyed(
+            &meta.rom_path,
+            meta.prg_chr_crc32,
+            self.region(),
+            cfg,
+            save::FLASH_SAVE_EXT,
+        ) else {
+            return Ok(false);
+        };
+        match save::load(&path)? {
+            None => Ok(false),
+            Some(bytes) => {
+                self.bus.mapper.load_flash_save(&bytes);
+                self.bus.mapper.mark_flash_saved();
+                Ok(true)
+            }
+        }
+    }
+
+    /// Persist the PRG-flash save sidecar when the mapper's flash
+    /// is dirty. No-op on non-flash carts and when nothing has
+    /// changed. Returns `Ok(true)` on a successful write,
+    /// `Ok(false)` when there was nothing to do, `Err` on I/O
+    /// error. Mirrors [`Nes::save_disk`].
+    pub fn save_flash(&mut self, cfg: &SaveConfig) -> Result<bool> {
+        let Some(meta) = self.save_meta.as_ref() else {
+            return Ok(false);
+        };
+        if !self.bus.mapper.flash_save_dirty() {
+            return Ok(false);
+        }
+        let Some(bytes) = self.bus.mapper.flash_save_data() else {
+            return Ok(false);
+        };
+        let Some(path) = save::save_path_keyed(
+            &meta.rom_path,
+            meta.prg_chr_crc32,
+            self.region(),
+            cfg,
+            save::FLASH_SAVE_EXT,
+        ) else {
+            return Ok(false);
+        };
+        save::write(&path, &bytes)?;
+        self.bus.mapper.mark_flash_saved();
+        Ok(true)
+    }
+
     /// Currently-attached ROM path, for convenience in the app layer
     /// (e.g. to rebuild metadata after a cart swap).
     pub fn current_rom_path(&self) -> Option<&Path> {
