@@ -28,23 +28,23 @@ use crate::config::{SaveConfig, SaveStyle};
 
 /// Extension appended to the ROM stem for battery-RAM save files.
 ///
-/// **Naming-convention note.** Battery saves currently use the
-/// stem-only path `<rom-stem>.sav` (see [`save_path_for_with_ext`]).
-/// That collides on dumps with the same filename across multiple
-/// folders and makes a romhack overwrite the original cart's
-/// save when both share a stem. The save-state path
-/// (`<rom-stem>.<crc8>.<region>.state<N>`) and the new flash-save
-/// path (`<rom-stem>.<crc8>.<region>.fsav`, [`save_path_keyed`])
-/// already key by CRC + region. A future change will migrate
-/// battery + FDS-disk saves to the keyed convention with a
-/// backward-compat fallback (try keyed path, fall back to stem,
-/// rename on next save). Until then, the two channels stay on
-/// the legacy stem-only paths to avoid orphaning existing saves.
+/// **Naming convention.** Battery saves use the stem-only path
+/// `<rom-stem>.sav` (or `<crc8>.sav` under [`SaveStyle::ByCrc`]).
+/// "Which exact ROM" protection is enforced by a self-validating
+/// 48-byte header inside the file itself - see
+/// [`crate::save_header`] - rather than by encoding the CRC in
+/// the filename. That keeps filenames clean and grep-friendly
+/// while still refusing to apply a romhack's save to the
+/// original cart (the embedded `cart_crc32` would mismatch on
+/// load).
 pub const SAVE_EXT: &str = "sav";
 
 /// Extension appended to the ROM stem for FDS disk-save sidecars.
 /// Matches Mesen2's `.ips` naming so users can move saves between
-/// emulators. See [`SAVE_EXT`] for the planned keyed-naming migration.
+/// emulators. The FDS channel is intentionally header-less - the
+/// IPS format itself encodes "what bytes go where," and
+/// cross-emulator interop with Mesen matters more than our extra
+/// safety net for that channel.
 pub const DISK_SAVE_EXT: &str = "ips";
 
 /// Extension for PRG-flash save sidecars (UNROM-512 sub 1, GTROM,
@@ -52,7 +52,8 @@ pub const DISK_SAVE_EXT: &str = "ips";
 /// channels emit IPS bytes, they diff against different bases (the
 /// FDS disk image vs. the cart's pristine PRG-ROM) and a stranger
 /// looking at the saves directory should be able to tell them apart
-/// without opening the file.
+/// without opening the file. Flash saves carry the same
+/// [`crate::save_header`] envelope as battery saves.
 pub const FLASH_SAVE_EXT: &str = "fsav";
 
 /// Resolve the save-file path for a cartridge loaded from `rom_path`,
@@ -96,61 +97,6 @@ pub fn save_path_for_with_ext(
             p.push(format!("{crc:08X}"));
             p.set_extension(ext);
             Some(p)
-        }
-    }
-}
-
-/// Region tokenizer for keyed save paths. Lower-case for
-/// canonicalization (mirrors `RegionTag::ext_token` in
-/// `crate::save_state` so the on-disk format only accepts one
-/// spelling). Pulled into `save.rs` rather than reaching into
-/// `save_state` to avoid a dependency cycle: `save_state` already
-/// depends on `save`.
-fn region_token(region: crate::nes::clock::Region) -> &'static str {
-    match region {
-        crate::nes::clock::Region::Ntsc => "ntsc",
-        crate::nes::clock::Region::Pal => "pal",
-    }
-}
-
-/// Resolve a sidecar path using the **keyed** naming convention
-/// shared with save states:
-///
-/// - `ConfigDir` / `NextToRom`: `<rom-stem>.<crc8>.<region>.<ext>`
-/// - `ByCrc`:                   `<crc8>.<region>.<ext>`
-///
-/// `crc` is the cart's PRG+CHR CRC32 and `region` is the live
-/// console region - together they keep romhacks distinct from the
-/// originals they're built on (different CRC), and multi-region
-/// dumps with the same stem distinct from each other.
-///
-/// Used by the PRG-flash save channel today; battery and FDS
-/// disk saves will migrate to this helper in a follow-up (see
-/// [`SAVE_EXT`] for the rationale).
-pub fn save_path_keyed(
-    rom_path: &Path,
-    crc: u32,
-    region: crate::nes::clock::Region,
-    cfg: &SaveConfig,
-    ext: &str,
-) -> Option<PathBuf> {
-    let region_tok = region_token(region);
-    match cfg.style {
-        SaveStyle::ConfigDir => {
-            let dir = cfg.dir_override.clone().or_else(saves_dir)?;
-            let stem = rom_path.file_stem()?;
-            let stem_str = stem.to_string_lossy();
-            Some(dir.join(format!("{stem_str}.{crc:08X}.{region_tok}.{ext}")))
-        }
-        SaveStyle::NextToRom => {
-            let stem = rom_path.file_stem()?;
-            let stem_str = stem.to_string_lossy();
-            let parent = rom_path.parent().unwrap_or_else(|| Path::new("."));
-            Some(parent.join(format!("{stem_str}.{crc:08X}.{region_tok}.{ext}")))
-        }
-        SaveStyle::ByCrc => {
-            let dir = cfg.dir_override.clone().or_else(saves_dir)?;
-            Some(dir.join(format!("{crc:08X}.{region_tok}.{ext}")))
         }
     }
 }
@@ -240,92 +186,6 @@ mod tests {
         };
         let p = save_path_for(Path::new("/roms/kirby.nes"), 0xDEADBEEF, &cfg).unwrap();
         assert_eq!(p, PathBuf::from("/roms/kirby.sav"));
-    }
-
-    #[test]
-    fn keyed_config_dir_path_embeds_crc_and_region() {
-        use crate::nes::clock::Region;
-        let d = tempdir();
-        let cfg = SaveConfig {
-            style: SaveStyle::ConfigDir,
-            dir_override: Some(d.path().to_path_buf()),
-            ..SaveConfig::default()
-        };
-        let p = save_path_keyed(
-            Path::new("/roms/battle-kid-2.nes"),
-            0xCAFEBABE,
-            Region::Ntsc,
-            &cfg,
-            FLASH_SAVE_EXT,
-        )
-        .unwrap();
-        assert_eq!(p, d.path().join("battle-kid-2.CAFEBABE.ntsc.fsav"));
-    }
-
-    #[test]
-    fn keyed_next_to_rom_keeps_rom_directory() {
-        use crate::nes::clock::Region;
-        let cfg = SaveConfig {
-            style: SaveStyle::NextToRom,
-            ..SaveConfig::default()
-        };
-        let p = save_path_keyed(
-            Path::new("/roms/lizard.nes"),
-            0x12345678,
-            Region::Pal,
-            &cfg,
-            FLASH_SAVE_EXT,
-        )
-        .unwrap();
-        assert_eq!(p, PathBuf::from("/roms/lizard.12345678.pal.fsav"));
-    }
-
-    #[test]
-    fn keyed_by_crc_drops_stem() {
-        use crate::nes::clock::Region;
-        let d = tempdir();
-        let cfg = SaveConfig {
-            style: SaveStyle::ByCrc,
-            dir_override: Some(d.path().to_path_buf()),
-            ..SaveConfig::default()
-        };
-        let p = save_path_keyed(
-            Path::new("/roms/whatever.nes"),
-            0xDEADBEEF,
-            Region::Ntsc,
-            &cfg,
-            FLASH_SAVE_EXT,
-        )
-        .unwrap();
-        assert_eq!(p, d.path().join("DEADBEEF.ntsc.fsav"));
-    }
-
-    #[test]
-    fn keyed_path_separates_romhack_from_original() {
-        use crate::nes::clock::Region;
-        let d = tempdir();
-        let cfg = SaveConfig {
-            style: SaveStyle::ConfigDir,
-            dir_override: Some(d.path().to_path_buf()),
-            ..SaveConfig::default()
-        };
-        let original = save_path_keyed(
-            Path::new("/roms/zelda.nes"),
-            0x4E0F1234,
-            Region::Ntsc,
-            &cfg,
-            FLASH_SAVE_EXT,
-        )
-        .unwrap();
-        let romhack = save_path_keyed(
-            Path::new("/roms/zelda.nes"),
-            0xAA00BB00,
-            Region::Ntsc,
-            &cfg,
-            FLASH_SAVE_EXT,
-        )
-        .unwrap();
-        assert_ne!(original, romhack, "different CRCs must produce different paths");
     }
 
     #[test]

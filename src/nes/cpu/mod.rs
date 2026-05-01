@@ -366,7 +366,7 @@ mod tests {
 
     fn build_cpu_and_bus(program: &[u8]) -> (Cpu, Bus) {
         let cart = cart_with_program(program);
-        let mut bus = Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0);
+        let mut bus = Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0, 0);
         let mut cpu = Cpu::new();
         cpu.reset(&mut bus);
         (cpu, bus)

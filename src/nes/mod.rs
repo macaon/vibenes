@@ -49,8 +49,9 @@ impl Nes {
     pub fn from_cartridge(cart: Cartridge) -> Result<Self> {
         let region = Region::from_tv_system(cart.tv_system);
         let mapper_id = cart.mapper_id;
+        let submapper = cart.submapper;
         let mapper = mapper::build(cart)?;
-        let bus = Bus::new(mapper, region, mapper_id);
+        let bus = Bus::new(mapper, region, mapper_id, submapper);
         let mut nes = Self {
             cpu: Cpu::new(),
             bus,
@@ -85,7 +86,9 @@ impl Nes {
     /// and hand it to the mapper. No-op when no metadata is attached
     /// or the mapper doesn't want save data (`save_data() == None`).
     /// Returns `Ok(true)` if bytes were loaded, `Ok(false)` if there
-    /// was nothing to load, `Err` on I/O error.
+    /// was nothing to load (including header-validation rejects -
+    /// those log a warning and treat the file as absent), `Err`
+    /// only on real I/O errors.
     pub fn load_battery(&mut self, cfg: &SaveConfig) -> Result<bool> {
         let Some(meta) = self.save_meta.as_ref() else {
             return Ok(false);
@@ -96,14 +99,21 @@ impl Nes {
         let Some(path) = save::save_path_for(&meta.rom_path, meta.prg_chr_crc32, cfg) else {
             return Ok(false);
         };
-        match save::load(&path)? {
-            None => Ok(false),
-            Some(bytes) => {
-                self.bus.mapper.load_save_data(&bytes);
-                self.bus.mapper.mark_saved();
-                Ok(true)
-            }
-        }
+        let Some(bytes) = save::load(&path)? else {
+            return Ok(false);
+        };
+        let payload = match self.validate_save_envelope(
+            &bytes,
+            crate::save_header::Channel::Battery,
+            meta.prg_chr_crc32,
+            &path,
+        ) {
+            Some(p) => p,
+            None => return Ok(false),
+        };
+        self.bus.mapper.load_save_data(&payload);
+        self.bus.mapper.mark_saved();
+        Ok(true)
     }
 
     /// Write battery RAM to disk if the mapper has flagged it dirty.
@@ -111,7 +121,9 @@ impl Nes {
     /// when `save_dirty()` is false. Returns `Ok(true)` on a
     /// successful write, `Ok(false)` when there was nothing to do,
     /// `Err` on I/O error - the caller decides whether to surface it
-    /// (usually just log and continue).
+    /// (usually just log and continue). Bytes are wrapped in a
+    /// [`crate::save_header::SaveHeader`] envelope so a future load
+    /// can refuse cross-cart / cross-region misuse.
     pub fn save_battery(&mut self, cfg: &SaveConfig) -> Result<bool> {
         let Some(meta) = self.save_meta.as_ref() else {
             return Ok(false);
@@ -125,9 +137,14 @@ impl Nes {
         let Some(path) = save::save_path_for(&meta.rom_path, meta.prg_chr_crc32, cfg) else {
             return Ok(false);
         };
-        // Copy the slice before touching the mapper mutably.
-        let data = data.to_vec();
-        save::write(&path, &data)?;
+        let payload = data.to_vec();
+        let cart_crc32 = meta.prg_chr_crc32;
+        let bytes = self.encode_save_envelope(
+            crate::save_header::Channel::Battery,
+            cart_crc32,
+            &payload,
+        );
+        save::write(&path, &bytes)?;
         self.bus.mapper.mark_saved();
         Ok(true)
     }
@@ -213,18 +230,17 @@ impl Nes {
     }
 
     /// Resolve the PRG-flash save (`.fsav`) path for the current
-    /// cart, or `None` when no metadata is attached. Uses the
-    /// keyed naming convention (`<rom-stem>.<crc8>.<region>.fsav`)
-    /// shared with save states - keeps romhacks distinct from the
-    /// originals they're built on. UNROM-512 sub 1 is the only
-    /// active producer today; future flash carts (GTROM / mapper
-    /// 111) will share the channel.
+    /// cart, or `None` when no metadata is attached. Same routing
+    /// rules as [`Nes::save_path`], just a different extension.
+    /// "Which exact ROM" protection lives in the file's header
+    /// (see [`crate::save_header`]) rather than the filename, so
+    /// romhacks and originals can share a stem and still get
+    /// rejected on load when their CRCs disagree.
     pub fn flash_save_path(&self, cfg: &SaveConfig) -> Option<PathBuf> {
         let meta = self.save_meta.as_ref()?;
-        save::save_path_keyed(
+        save::save_path_for_with_ext(
             &meta.rom_path,
             meta.prg_chr_crc32,
-            self.region(),
             cfg,
             save::FLASH_SAVE_EXT,
         )
@@ -232,8 +248,9 @@ impl Nes {
 
     /// Load the PRG-flash save sidecar and hand the IPS bytes to
     /// the mapper. No-op on non-flash carts. Returns `Ok(true)`
-    /// when a patch was applied, `Ok(false)` on "nothing to do,"
-    /// `Err` only for real I/O errors. Mirrors [`Nes::load_disk`].
+    /// when a patch was applied, `Ok(false)` on "nothing to do"
+    /// (including header rejection - logged as a warn), `Err`
+    /// only for real I/O errors. Mirrors [`Nes::load_disk`].
     pub fn load_flash(&mut self, cfg: &SaveConfig) -> Result<bool> {
         let Some(meta) = self.save_meta.as_ref() else {
             return Ok(false);
@@ -242,30 +259,38 @@ impl Nes {
         if self.bus.mapper.flash_save_data().is_none() {
             return Ok(false);
         }
-        let Some(path) = save::save_path_keyed(
+        let cart_crc32 = meta.prg_chr_crc32;
+        let Some(path) = save::save_path_for_with_ext(
             &meta.rom_path,
-            meta.prg_chr_crc32,
-            self.region(),
+            cart_crc32,
             cfg,
             save::FLASH_SAVE_EXT,
         ) else {
             return Ok(false);
         };
-        match save::load(&path)? {
-            None => Ok(false),
-            Some(bytes) => {
-                self.bus.mapper.load_flash_save(&bytes);
-                self.bus.mapper.mark_flash_saved();
-                Ok(true)
-            }
-        }
+        let Some(bytes) = save::load(&path)? else {
+            return Ok(false);
+        };
+        let payload = match self.validate_save_envelope(
+            &bytes,
+            crate::save_header::Channel::Flash,
+            cart_crc32,
+            &path,
+        ) {
+            Some(p) => p,
+            None => return Ok(false),
+        };
+        self.bus.mapper.load_flash_save(&payload);
+        self.bus.mapper.mark_flash_saved();
+        Ok(true)
     }
 
     /// Persist the PRG-flash save sidecar when the mapper's flash
     /// is dirty. No-op on non-flash carts and when nothing has
     /// changed. Returns `Ok(true)` on a successful write,
     /// `Ok(false)` when there was nothing to do, `Err` on I/O
-    /// error. Mirrors [`Nes::save_disk`].
+    /// error. Mirrors [`Nes::save_disk`]. Bytes are wrapped in
+    /// the [`crate::save_header::SaveHeader`] envelope.
     pub fn save_flash(&mut self, cfg: &SaveConfig) -> Result<bool> {
         let Some(meta) = self.save_meta.as_ref() else {
             return Ok(false);
@@ -273,21 +298,97 @@ impl Nes {
         if !self.bus.mapper.flash_save_dirty() {
             return Ok(false);
         }
-        let Some(bytes) = self.bus.mapper.flash_save_data() else {
+        let Some(payload) = self.bus.mapper.flash_save_data() else {
             return Ok(false);
         };
-        let Some(path) = save::save_path_keyed(
+        let cart_crc32 = meta.prg_chr_crc32;
+        let Some(path) = save::save_path_for_with_ext(
             &meta.rom_path,
-            meta.prg_chr_crc32,
-            self.region(),
+            cart_crc32,
             cfg,
             save::FLASH_SAVE_EXT,
         ) else {
             return Ok(false);
         };
+        let bytes = self.encode_save_envelope(
+            crate::save_header::Channel::Flash,
+            cart_crc32,
+            &payload,
+        );
         save::write(&path, &bytes)?;
         self.bus.mapper.mark_flash_saved();
         Ok(true)
+    }
+
+    /// Wrap raw mapper bytes in a [`crate::save_header::SaveHeader`]
+    /// envelope, computing the payload CRC and stamping the
+    /// timestamp + emulator version. Used by both
+    /// [`Nes::save_battery`] and [`Nes::save_flash`].
+    fn encode_save_envelope(
+        &self,
+        channel: crate::save_header::Channel,
+        cart_crc32: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        crate::save_header::SaveHeader::with_payload(
+            channel,
+            self.region(),
+            self.bus.mapper_id(),
+            self.bus.submapper(),
+            cart_crc32,
+            payload,
+        )
+        .encode_with_payload(payload)
+    }
+
+    /// Parse + validate a save sidecar's envelope and return the
+    /// inner payload slice if every check passes. On any reject
+    /// reason this logs a warn naming the file + the failure mode
+    /// and returns `None`, which the caller treats as "no save."
+    /// Region mismatch is warn-only - we don't refuse the load,
+    /// since cross-region battery RAM is byte-compatible on every
+    /// cart we know of and some users intentionally play carts
+    /// under the "wrong" region.
+    fn validate_save_envelope<'a>(
+        &self,
+        bytes: &'a [u8],
+        expected_channel: crate::save_header::Channel,
+        expected_cart_crc32: u32,
+        path: &Path,
+    ) -> Option<Vec<u8>> {
+        use crate::save_header::{DecodeOutcome, SaveHeader};
+        match SaveHeader::decode_and_validate(
+            bytes,
+            expected_channel,
+            self.bus.mapper_id(),
+            self.bus.submapper(),
+            expected_cart_crc32,
+        ) {
+            DecodeOutcome::Accepted { header, payload } => {
+                if header.region != self.region() {
+                    log::warn!(
+                        "save {}: region {} does not match live console region {} - loading anyway",
+                        path.display(),
+                        match header.region {
+                            crate::nes::clock::Region::Ntsc => "NTSC",
+                            crate::nes::clock::Region::Pal => "PAL",
+                        },
+                        match self.region() {
+                            crate::nes::clock::Region::Ntsc => "NTSC",
+                            crate::nes::clock::Region::Pal => "PAL",
+                        },
+                    );
+                }
+                Some(payload.to_vec())
+            }
+            DecodeOutcome::Rejected(err) => {
+                log::warn!(
+                    "save {}: rejecting load: {err}",
+                    path.display()
+                );
+                None
+            }
+        }
     }
 
     /// Currently-attached ROM path, for convenience in the app layer
@@ -381,8 +482,9 @@ impl Nes {
             sink.set_cpu_clock(region.cpu_clock_hz());
         }
         let mapper_id = cart.mapper_id;
+        let submapper = cart.submapper;
         let mapper = mapper::build(cart)?;
-        self.bus = Bus::new(mapper, region, mapper_id);
+        self.bus = Bus::new(mapper, region, mapper_id, submapper);
         self.bus.audio_sink = sink;
         self.cpu = Cpu::new();
         self.cpu.reset(&mut self.bus);

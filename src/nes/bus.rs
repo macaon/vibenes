@@ -22,6 +22,13 @@ pub struct Bus {
     /// CRC32 collisions or a user pointing a state at the wrong ROM.
     mapper_id: u16,
 
+    /// NES 2.0 submapper nibble. 0 for plain iNES dumps and for
+    /// NES 2.0 carts whose submapper field is the default. Used by
+    /// the save-sidecar header (see [`crate::save_header`]) to
+    /// refuse cross-submapper loads where chip behavior diverges
+    /// (e.g. UNROM-512 sub 1 / sub 3).
+    submapper: u8,
+
     pub controllers: [Controller; 2],
 
     pub nmi_pending: bool,
@@ -113,13 +120,19 @@ impl Controller {
 }
 
 impl Bus {
-    pub fn new(mapper: Box<dyn Mapper>, region: Region, mapper_id: u16) -> Self {
+    pub fn new(
+        mapper: Box<dyn Mapper>,
+        region: Region,
+        mapper_id: u16,
+        submapper: u8,
+    ) -> Self {
         Self {
             clock: MasterClock::new(region),
             ram: [0; 0x800],
             ppu: Ppu::new(region),
             apu: Apu::new(region),
             mapper_id,
+            submapper,
             mapper,
             controllers: [Controller::default(); 2],
             nmi_pending: false,
@@ -147,6 +160,13 @@ impl Bus {
     /// Used by the save-state header to refuse cross-mapper loads.
     pub fn mapper_id(&self) -> u16 {
         self.mapper_id
+    }
+
+    /// NES 2.0 submapper of the cart loaded into this bus. 0 for
+    /// plain iNES dumps. Used by the save-sidecar header to
+    /// refuse cross-submapper loads.
+    pub fn submapper(&self) -> u8 {
+        self.submapper
     }
 
     /// Capture the bus's state into a serde-friendly shadow struct.
@@ -622,7 +642,7 @@ mod tests {
             db_matched: false,
             fds_data: None,
         };
-        Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0)
+        Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0, 0)
     }
 
     // The OAM DMA cycle-count convention is tuned by
