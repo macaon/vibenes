@@ -21,6 +21,7 @@ pub mod cprom;
 pub mod eeprom_24c0x;
 pub mod fds;
 pub mod fds_audio;
+pub mod flash_sst39sf040;
 pub mod fme7;
 pub mod gxrom;
 pub mod irem_74x161;
@@ -324,6 +325,45 @@ pub trait Mapper: Send {
     /// Called by the save pipeline after a successful IPS write.
     /// Clears the disk-dirty flag. No-op outside FDS.
     fn mark_disk_saved(&mut self) {}
+
+    // ---- PRG-flash save persistence ----
+    //
+    // Parallel to `disk_save_*` above but for cart-flash boards
+    // where the "save" lives in mutated PRG bytes rather than
+    // SRAM. UNROM-512 sub 1 (Sealie's battery PCB, used by
+    // Battle Kid 2 et al.) and Cheapocabra / GTROM (mapper 111)
+    // both ship an SST39SF040 chip that the game programs in-cart;
+    // restoring play state means restoring those byte changes.
+    //
+    // Same wire format as the disk channel: an IPS patch encoding
+    // the delta between current PRG-ROM and the pristine
+    // on-load snapshot. Cross-emulator interop with Mesen2's
+    // `SerializeRomDiff` is the design goal.
+    //
+    // Non-flash mappers keep all four methods as no-op defaults.
+
+    /// PRG-flash state serialized as an IPS patch against the
+    /// pristine ROM. `None` on carts without flash; an empty diff
+    /// (header + `EOF`, 8 bytes) when no programming has happened.
+    fn flash_save_data(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Apply an IPS patch to restore PRG-flash state. Non-flash
+    /// mappers no-op. Flash mappers silently ignore malformed
+    /// patches (same rationale as disk saves: user data should
+    /// never block boot).
+    fn load_flash_save(&mut self, _ips_bytes: &[u8]) {}
+
+    /// True when any flash byte has been modified since the last
+    /// `mark_flash_saved` call. Non-flash mappers always false.
+    fn flash_save_dirty(&self) -> bool {
+        false
+    }
+
+    /// Called by the save pipeline after a successful IPS write.
+    /// Clears the flash-dirty flag. No-op outside flash carts.
+    fn mark_flash_saved(&mut self) {}
 
     // ---- Save-state snapshot persistence ----
     //

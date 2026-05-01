@@ -466,18 +466,41 @@ pub struct BandaiDatachSnap {
     pub save_dirty: bool,
 }
 
+/// SST39SF040 chip-sequencer state. Used by mapper 30 sub 1
+/// and (future) mapper 111 GTROM. The PRG bytes the chip mutates
+/// live in the surrounding mapper's snapshot as an IPS diff.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+pub struct FlashSst39sf040Snap {
+    /// 0 = WaitingForCommand, 1 = Write, 2 = Erase.
+    pub mode: u8,
+    pub cycle: u8,
+    pub software_id: bool,
+}
+
 /// UNROM-512 (mapper 30, Sealie Computing / RetroUSB). Single
 /// latch in `$8000-$FFFF`: bits 0-4 = 16 KiB PRG bank, bits 5-6
 /// = 8 KiB CHR-RAM bank (out of 32 KiB), bit 7 = mirroring
 /// control on sub 3. Carries the full 32 KiB CHR-RAM, the
 /// runtime mirroring, the latch byte, and the submapper for
 /// cross-variant apply rejection.
+///
+/// Sub 1 (battery-backed flash) additionally captures the
+/// SST39SF040 sequencer state and the IPS diff between live PRG
+/// and the pristine on-mount snapshot, so a save state taken
+/// mid-game preserves any in-cart programming.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UnRom512Snap {
     pub chr_ram: Vec<u8>,
     pub mirroring: MirroringSnap,
     pub reg: u8,
     pub submapper: u8,
+    /// Flash chip sequencer; `None` outside sub 1.
+    pub flash_chip: Option<FlashSst39sf040Snap>,
+    /// IPS patch describing the live PRG vs. pristine PRG. `None`
+    /// outside sub 1 or when the encode failed; an empty diff
+    /// (`PATCH` + `EOF`) is the no-writes baseline.
+    pub flash_diff: Option<Vec<u8>>,
+    pub flash_dirty: bool,
 }
 
 /// AVE NINA-03 / NINA-06 (mapper 79). Single-latch board with D3

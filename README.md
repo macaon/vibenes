@@ -97,7 +97,7 @@ out of scope.
 | 21 / 22 / 23 / 25 | Konami VRC2a / VRC2b / VRC2c / VRC4a-f | done |
 | 24 | Konami VRC6a | done |
 | 26 | Konami VRC6b | done |
-| 30 | UNROM-512 (Sealie Computing / RetroUSB; modern homebrew flagship) | done (no flash) |
+| 30 | UNROM-512 (Sealie Computing / RetroUSB; modern homebrew flagship; SST39SF040 flash on sub 1) | done |
 | 32 | Irem G-101 | done |
 | 33 | Taito TC0190 / TC0350 | done |
 | 34 | BNROM + NINA-001 | done |

@@ -28,11 +28,15 @@
 //!   and hardwired by Sealie's PCB).
 //! - Submapper variants:
 //!   - 0: hardwired mirroring per iNES header, with bus conflicts.
-//!   - 1: SST39SF040 flash chip - PRG can be reprogrammed in-cart
-//!     (writes to `$8000-$BFFF` send commands to flash, `$C000-$FFFF`
-//!     still selects PRG bank). No bus conflicts. **Flash chip is
-//!     not modeled here:** bank-switching works, programming writes
-//!     are silently dropped, and battery save-to-flash is a no-op.
+//!   - 1: SST39SF040 flash chip - PRG can be reprogrammed in-cart.
+//!     Writes to `$8000-$BFFF` are forwarded to the flash chip
+//!     (resolved to physical addr `(cpu & 0x3FFF) | (bank << 14)`);
+//!     writes to `$C000-$FFFF` still select the PRG bank. No bus
+//!     conflicts. Reads in `$8000-$FFFF` consult the flash chip
+//!     first (returns chip ID under software-ID mode) and fall
+//!     through to live PRG-ROM otherwise. Programmed bytes
+//!     persist via the [`Mapper::flash_save_data`] IPS-diff
+//!     channel - same format as FDS disk saves.
 //!   - 2: bus conflicts always (no flash).
 //!   - 3: D7 of the latch toggles vertical/horizontal mirroring at
 //!     runtime (Sealie's UNROM-512 V/H board variant).
@@ -51,6 +55,8 @@
 //! - `~/Git/punes/src/core/mappers/mapper_030.c`
 //! - nesdev.org/wiki/INES_Mapper_030
 
+use crate::nes::fds::ips;
+use crate::nes::mapper::flash_sst39sf040::FlashSst39sf040;
 use crate::nes::mapper::Mapper;
 use crate::nes::rom::{Cartridge, Mirroring};
 
@@ -74,6 +80,21 @@ pub struct UnRom512 {
     /// Latch byte. Bits 0-4 = PRG, bits 5-6 = CHR, bit 7 = mirror.
     /// Stored as the post-bus-conflict value when applicable.
     reg: u8,
+
+    /// SST39SF040 chip on submapper-1 carts; `None` everywhere
+    /// else. Holds only the command-sequencer state - the bytes
+    /// the chip mutates live in `prg_rom`.
+    flash: Option<FlashSst39sf040>,
+
+    /// Pristine PRG-ROM clone from cart-mount time. Only populated
+    /// when `flash` is `Some` (sub 1) so we can IPS-diff the live
+    /// PRG against it for the flash-save channel. ~512 KiB peak.
+    orig_prg_rom: Vec<u8>,
+
+    /// True after any flash byte changes; cleared by
+    /// [`Mapper::mark_flash_saved`] once the host has written the
+    /// IPS patch to disk. Always false on non-flash variants.
+    flash_dirty: bool,
 }
 
 impl UnRom512 {
@@ -89,6 +110,12 @@ impl UnRom512 {
             (cart.mirroring, false)
         };
 
+        let (flash, orig_prg_rom) = if submapper == 1 {
+            (Some(FlashSst39sf040::new()), cart.prg_rom.clone())
+        } else {
+            (None, Vec::new())
+        };
+
         Self {
             prg_rom: cart.prg_rom,
             chr_ram,
@@ -97,7 +124,19 @@ impl UnRom512 {
             enable_mirroring_bit,
             prg_bank_count_16k,
             reg: 0,
+            flash,
+            orig_prg_rom,
+            flash_dirty: false,
         }
+    }
+
+    /// Translate a `$8000-$BFFF` CPU bus address through the
+    /// currently-selected 16 KiB bank into the chip's physical
+    /// 512 KiB-window address. Matches Mesen's
+    /// `(addr & 0x3FFF) | (_prgBank << 14)`.
+    fn flash_physical_addr(&self, cpu_addr: u16) -> u32 {
+        let bank = (self.prg_bank() & 0x1F) as u32;
+        ((cpu_addr as u32) & 0x3FFF) | (bank << 14)
     }
 
     fn prg_bank(&self) -> usize {
@@ -134,10 +173,9 @@ impl UnRom512 {
 
     /// True for writes that should land in flash rather than the
     /// bank-select latch: sub 1 with addr in `$8000-$BFFF`. Mesen's
-    /// `WriteRegister` routes those to `_flash->Write`; we drop them
-    /// since the SST39SF040 isn't modeled. Latch writes via
-    /// `$C000-$FFFF` still update bank selection so games that probe
-    /// flash but rely on bank-switching elsewhere keep working.
+    /// `WriteRegister` routes those to `_flash->Write`; we forward
+    /// them with the bank-translated physical address. Latch writes
+    /// via `$C000-$FFFF` still update bank selection.
     fn write_targets_flash(&self, addr: u16) -> bool {
         self.submapper == 1 && addr < 0xC000
     }
@@ -152,6 +190,22 @@ impl UnRom512 {
 
 impl Mapper for UnRom512 {
     fn cpu_read(&mut self, addr: u16) -> u8 {
+        // Sub 1: software-ID mode intercepts $8000-$FFFF reads; the
+        // chip translates the CPU address through the active bank
+        // and returns chip ID for the magic 0x000/0x001 offsets.
+        if self.submapper == 1 && (0x8000..=0xFFFF).contains(&addr) {
+            if let Some(flash) = &self.flash {
+                let phys = if addr < 0xC000 {
+                    self.flash_physical_addr(addr)
+                } else {
+                    let last = self.prg_bank_count_16k.saturating_sub(1) as u32;
+                    ((addr as u32) & 0x3FFF) | (last << 14)
+                };
+                if let Some(byte) = flash.read(phys) {
+                    return byte;
+                }
+            }
+        }
         self.cpu_peek(addr)
     }
 
@@ -169,7 +223,21 @@ impl Mapper for UnRom512 {
         if !(0x8000..=0xFFFF).contains(&addr) {
             return;
         }
-        if self.write_targets_flash(addr) || self.write_targets_led(addr) {
+
+        // Sub 1: $8000-$BFFF writes are flash commands. They
+        // translate to chip-physical addresses via the current
+        // bank and never touch the bank-select latch.
+        if self.write_targets_flash(addr) {
+            let phys = self.flash_physical_addr(addr);
+            if let Some(flash) = &mut self.flash {
+                if flash.write(phys, data, &mut self.prg_rom) {
+                    self.flash_dirty = true;
+                }
+            }
+            return;
+        }
+
+        if self.write_targets_led(addr) {
             return;
         }
 
@@ -214,13 +282,68 @@ impl Mapper for UnRom512 {
         self.mirroring
     }
 
+    fn flash_save_data(&self) -> Option<Vec<u8>> {
+        // Only sub 1 carries pristine PRG; everything else has no
+        // flash to diff against.
+        if self.flash.is_none() {
+            return None;
+        }
+        // Always emit a patch even when nothing has changed yet
+        // (8-byte `PATCH` + `EOF`) so the host pipeline always
+        // has something well-formed to write.
+        ips::encode(&self.orig_prg_rom, &self.prg_rom).ok()
+    }
+
+    fn load_flash_save(&mut self, ips_bytes: &[u8]) {
+        if self.flash.is_none() || ips_bytes.is_empty() {
+            return;
+        }
+        match ips::apply(&self.orig_prg_rom, ips_bytes) {
+            Ok(patched) if patched.len() == self.prg_rom.len() => {
+                self.prg_rom = patched;
+                self.flash_dirty = false;
+            }
+            Ok(_) => {
+                log::warn!(
+                    "UNROM-512: ignoring IPS flash save with wrong PRG length"
+                );
+            }
+            Err(e) => {
+                log::warn!("UNROM-512: ignoring malformed IPS flash save: {e}");
+            }
+        }
+    }
+
+    fn flash_save_dirty(&self) -> bool {
+        self.flash_dirty
+    }
+
+    fn mark_flash_saved(&mut self) {
+        self.flash_dirty = false;
+    }
+
     fn save_state_capture(&self) -> Option<crate::save_state::MapperState> {
-        use crate::save_state::mapper::{MirroringSnap, UnRom512Snap};
+        use crate::save_state::mapper::{
+            FlashSst39sf040Snap, MirroringSnap, UnRom512Snap,
+        };
+        // Snapshot the PRG-flash diff so a save state taken
+        // mid-game preserves any in-cart programming.
+        let flash_diff = self.flash.as_ref().and_then(|_| {
+            ips::encode(&self.orig_prg_rom, &self.prg_rom).ok()
+        });
+        let flash_chip = self.flash.as_ref().map(|f| FlashSst39sf040Snap {
+            mode: f.mode as u8,
+            cycle: f.cycle,
+            software_id: f.software_id,
+        });
         Some(crate::save_state::MapperState::UnRom512(Box::new(UnRom512Snap {
             chr_ram: self.chr_ram.clone(),
             mirroring: MirroringSnap::from_live(self.mirroring),
             reg: self.reg,
             submapper: self.submapper,
+            flash_chip,
+            flash_diff,
+            flash_dirty: self.flash_dirty,
         })))
     }
 
@@ -228,6 +351,7 @@ impl Mapper for UnRom512 {
         &mut self,
         state: &crate::save_state::MapperState,
     ) -> Result<(), crate::save_state::SaveStateError> {
+        use crate::nes::mapper::flash_sst39sf040::ChipMode;
         let crate::save_state::MapperState::UnRom512(snap) = state else {
             return Err(crate::save_state::SaveStateError::UnsupportedMapper(0));
         };
@@ -241,6 +365,31 @@ impl Mapper for UnRom512 {
         }
         self.mirroring = snap.mirroring.to_live();
         self.reg = snap.reg;
+
+        // Restore PRG-flash bytes via the IPS diff against pristine
+        // ROM. Same fail-soft semantics as `load_flash_save`.
+        if let (Some(flash), Some(diff)) = (self.flash.as_mut(), &snap.flash_diff) {
+            match ips::apply(&self.orig_prg_rom, diff) {
+                Ok(patched) if patched.len() == self.prg_rom.len() => {
+                    self.prg_rom = patched;
+                }
+                _ => {
+                    log::warn!(
+                        "UNROM-512: ignoring malformed flash diff in save state"
+                    );
+                }
+            }
+            if let Some(chip_snap) = &snap.flash_chip {
+                flash.mode = match chip_snap.mode {
+                    1 => ChipMode::Write,
+                    2 => ChipMode::Erase,
+                    _ => ChipMode::WaitingForCommand,
+                };
+                flash.cycle = chip_snap.cycle;
+                flash.software_id = chip_snap.software_id;
+            }
+        }
+        self.flash_dirty = snap.flash_dirty;
         Ok(())
     }
 }
@@ -350,12 +499,102 @@ mod tests {
     }
 
     #[test]
-    fn sub_one_writes_to_low_window_drop_silently() {
+    fn sub_one_low_window_writes_route_to_flash_not_latch() {
         let mut m = m(1);
-        // $8000-$BFFF on sub 1 → flash command. We drop them, so
-        // the bank-select latch is unchanged.
+        // $8000-$BFFF on sub 1 -> flash command sequencer. The
+        // bank-select latch must stay at zero (no PRG-bank change)
+        // even though the chip absorbs the write.
         m.cpu_write(0x8001, 0x05);
         assert_eq!(m.cpu_peek(0x8000), 0x80);
+        assert!(!m.flash_save_dirty(), "incomplete unlock must not mutate flash");
+    }
+
+    /// Walk a sub-1 cart through the SST39SF040 unlock + program
+    /// sequence. Programs `value` at chip-physical address `phys`,
+    /// which means the game must first bank-select to a bank
+    /// covering `phys` before issuing the data write.
+    fn flash_program(m: &mut UnRom512, phys: u32, value: u8) {
+        // Cycle 0: bank that contains physical $5555 is bank 1
+        // (covers $4000-$7FFF). Select bank 1 via $C000-$FFFF.
+        m.cpu_write(0xC000, 0x01);
+        // CPU $9555 mirrors physical $5555 with bank 1.
+        m.cpu_write(0x9555, 0xAA);
+        // Cycle 1: bank that contains physical $2AAA is bank 0.
+        m.cpu_write(0xC000, 0x00);
+        // CPU $AAAA mirrors physical $2AAA with bank 0.
+        m.cpu_write(0xAAAA, 0x55);
+        // Cycle 2: program command at physical $5555.
+        m.cpu_write(0xC000, 0x01);
+        m.cpu_write(0x9555, 0xA0);
+        // Data write at the actual target.
+        let bank = (phys >> 14) & 0x1F;
+        let cpu_addr = 0x8000 | (phys as u16 & 0x3FFF);
+        m.cpu_write(0xC000, bank as u8);
+        m.cpu_write(cpu_addr, value);
+    }
+
+    #[test]
+    fn sub_one_program_clears_bits_in_live_prg() {
+        let mut m = m(1);
+        // Pristine PRG byte at physical 0x4001 (bank 1 offset 1)
+        // is 0xFF. Program 0x55 -> AND -> 0x55.
+        flash_program(&mut m, 0x4001, 0x55);
+        // Read back via CPU $8001 with bank 1 selected (last
+        // flash_program call left bank=1).
+        assert_eq!(m.cpu_peek(0x8001), 0x55);
+        assert!(m.flash_save_dirty());
+    }
+
+    #[test]
+    fn sub_one_software_id_returns_chip_identification() {
+        let mut m = m(1);
+        // Unlock + $90 -> software-ID on.
+        m.cpu_write(0xC000, 0x01);
+        m.cpu_write(0x9555, 0xAA);
+        m.cpu_write(0xC000, 0x00);
+        m.cpu_write(0xAAAA, 0x55);
+        m.cpu_write(0xC000, 0x01);
+        m.cpu_write(0x9555, 0x90);
+        // Reads of physical $00 / $01 return manufacturer / device.
+        // With bank 0 selected, CPU $8000 / $8001 map there.
+        m.cpu_write(0xC000, 0x00);
+        assert_eq!(m.cpu_read(0x8000), 0xBF);
+        assert_eq!(m.cpu_read(0x8001), 0xB7);
+    }
+
+    #[test]
+    fn sub_one_flash_save_round_trip_preserves_programming() {
+        let mut a = m(1);
+        flash_program(&mut a, 0x4001, 0x55);
+        flash_program(&mut a, 0x4002, 0xAA);
+        let ips_bytes = a.flash_save_data().expect("flash_save_data on sub 1");
+        assert!(a.flash_save_dirty());
+
+        // Reload into a fresh sub-1 cart and apply the IPS save.
+        let mut b = m(1);
+        b.load_flash_save(&ips_bytes);
+        b.cpu_write(0xC000, 0x01);
+        assert_eq!(b.cpu_peek(0x8001), 0x55);
+        assert_eq!(b.cpu_peek(0x8002), 0xAA);
+        assert!(!b.flash_save_dirty());
+    }
+
+    #[test]
+    fn non_flash_variants_have_no_flash_save_channel() {
+        for sub in [0, 2, 3, 4] {
+            let m = m(sub);
+            assert!(m.flash_save_data().is_none(), "sub {sub} should have no flash");
+            assert!(!m.flash_save_dirty());
+        }
+    }
+
+    #[test]
+    fn mark_flash_saved_clears_dirty() {
+        let mut m = m(1);
+        flash_program(&mut m, 0x4001, 0x55);
+        assert!(m.flash_save_dirty());
+        m.mark_flash_saved();
+        assert!(!m.flash_save_dirty());
     }
 
     #[test]
