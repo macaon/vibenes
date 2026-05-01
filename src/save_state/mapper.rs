@@ -466,6 +466,17 @@ pub struct BandaiDatachSnap {
     pub save_dirty: bool,
 }
 
+/// AVE NINA-03 / NINA-06 (mapper 79). Single-latch board with D3
+/// = PRG bank (1 bit, 32 KiB window) and D0-D2 = CHR bank (3 bits,
+/// 8 KiB window). No PRG-RAM, no IRQs, no bus conflict. Carries the
+/// raw latch plus optional CHR-RAM bytes for homebrew dumps.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct AveNinaSnap {
+    pub chr_ram_data: Vec<u8>,
+    pub mirroring: MirroringSnap,
+    pub reg: u8,
+}
+
 /// Color Dreams (mapper 11). Single-latch board: low nibble = PRG
 /// bank, high nibble = CHR bank, bus-conflict-gated. We carry the
 /// raw post-bus-conflict latch byte plus optional CHR-RAM contents.
@@ -1311,6 +1322,7 @@ pub enum MapperState {
     BandaiLz93d50Sram(Box<BandaiLz93d50SramSnap>),
     BandaiOekaKids(BandaiOekaKidsSnap),
     BandaiDatach(Box<BandaiDatachSnap>),
+    AveNina(AveNinaSnap),
     ColorDreams(ColorDreamsSnap),
     Bnrom(BnromSnap),
     CnromProtect(CnromProtectSnap),

@@ -116,6 +116,7 @@ mappers and unofficial mappers overall is not in scope for now.
 | 75 | Konami VRC1 (Tetsuwan Atom, Ganbare Goemon!) | done |
 | 77 | Irem-LROG017 (Napoleon Senki; one register splits PRG/CHR-ROM, plus 6 KiB CHR-RAM in three fixed 2 KiB windows; 4-screen mirroring) | done |
 | 78 | Irem 74*161 / Jaleco JF-16 (Holy Diver sub 3 - H/V mirror, Cosmo Carrier sub 1 - single-screen; bus-conflict ANDs CPU value with ROM byte) | done |
+| 79 | AVE NINA-03/06 (American Video Entertainment, C&E, Sachen export carts: Deathbots, F-15 City War, Krazy Kreatures, Tiles of Fate, Puzzle, Mermaids of Atlantis, Solitaire, Blackjack, Wally Bear, Trolls on Treasure Island; single latch in $4100-$5FFF with A8-set decode, D3 = 32 KiB PRG bank, D0-D2 = 8 KiB CHR bank) | done |
 | 76 | Namco 109 / NAMCOT-3446 (Megami Tensei: Digital Devil Story; 4 x 2 KiB CHR via R2-R5; R0/R1 silently ignored) | done |
 | 96 | Bandai Oeka Kids (Oeka Kids: Anpanman no Hiragana Daisuki; 32 KiB PRG bank-switch with bus conflicts; 32 KiB CHR-RAM with PPU-driven inner latch tracking the active nametable-tile fetch) | done |
 | 80 | Taito X1-005 (Wagyan Land 2 + 3, Famista 89-Pro series, Bakushou!! Jinsei Gekijou series, Don Doko Don, Daikoukai Jidai) | done |

@@ -3,6 +3,7 @@ use anyhow::{bail, Result};
 
 use crate::nes::rom::{Cartridge, Mirroring};
 
+pub mod ave_nina;
 pub mod axrom;
 pub mod bandai_74161;
 pub mod bandai_datach;
@@ -447,6 +448,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         188 => Ok(Box::new(bandai_karaoke::BandaiKaraoke::new(cart))),
         189 => Ok(Box::new(taito_tc110::TaitoTc110::new(cart))),
         232 => Ok(Box::new(codemasters_bf9096::CodemastersBf9096::new(cart))),
+        79 => Ok(Box::new(ave_nina::AveNina::new(cart))),
         5 => Ok(Box::new(mmc5::Mmc5::new(cart))),
         7 => Ok(Box::new(axrom::Axrom::new(cart))),
         66 => Ok(Box::new(gxrom::Gxrom::new(cart))),
