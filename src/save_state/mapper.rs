@@ -466,6 +466,20 @@ pub struct BandaiDatachSnap {
     pub save_dirty: bool,
 }
 
+/// UNROM-512 (mapper 30, Sealie Computing / RetroUSB). Single
+/// latch in `$8000-$FFFF`: bits 0-4 = 16 KiB PRG bank, bits 5-6
+/// = 8 KiB CHR-RAM bank (out of 32 KiB), bit 7 = mirroring
+/// control on sub 3. Carries the full 32 KiB CHR-RAM, the
+/// runtime mirroring, the latch byte, and the submapper for
+/// cross-variant apply rejection.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct UnRom512Snap {
+    pub chr_ram: Vec<u8>,
+    pub mirroring: MirroringSnap,
+    pub reg: u8,
+    pub submapper: u8,
+}
+
 /// AVE NINA-03 / NINA-06 (mapper 79). Single-latch board with D3
 /// = PRG bank (1 bit, 32 KiB window) and D0-D2 = CHR bank (3 bits,
 /// 8 KiB window). No PRG-RAM, no IRQs, no bus conflict. Carries the
@@ -1323,6 +1337,7 @@ pub enum MapperState {
     BandaiOekaKids(BandaiOekaKidsSnap),
     BandaiDatach(Box<BandaiDatachSnap>),
     AveNina(AveNinaSnap),
+    UnRom512(Box<UnRom512Snap>),
     ColorDreams(ColorDreamsSnap),
     Bnrom(BnromSnap),
     CnromProtect(CnromProtectSnap),

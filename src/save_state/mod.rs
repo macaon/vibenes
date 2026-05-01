@@ -815,6 +815,7 @@ mod tests {
             MapperState::BandaiOekaKids(BandaiOekaKidsSnap::default()),
             MapperState::BandaiDatach(Box::new(BandaiDatachSnap::default())),
             MapperState::AveNina(AveNinaSnap::default()),
+            MapperState::UnRom512(Box::new(UnRom512Snap::default())),
             MapperState::ColorDreams(ColorDreamsSnap::default()),
             MapperState::Bnrom(BnromSnap::default()),
             MapperState::CnromProtect(CnromProtectSnap::default()),

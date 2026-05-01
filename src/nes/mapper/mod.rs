@@ -61,6 +61,7 @@ pub mod tc0690;
 pub mod tqrom;
 pub mod txsrom;
 pub mod un1rom;
+pub mod unrom512;
 pub mod un1rom_180;
 pub mod uxrom;
 pub mod vrc1;
@@ -449,6 +450,7 @@ pub fn build(cart: Cartridge) -> Result<Box<dyn Mapper>> {
         189 => Ok(Box::new(taito_tc110::TaitoTc110::new(cart))),
         232 => Ok(Box::new(codemasters_bf9096::CodemastersBf9096::new(cart))),
         79 => Ok(Box::new(ave_nina::AveNina::new(cart))),
+        30 => Ok(Box::new(unrom512::UnRom512::new(cart))),
         5 => Ok(Box::new(mmc5::Mmc5::new(cart))),
         7 => Ok(Box::new(axrom::Axrom::new(cart))),
         66 => Ok(Box::new(gxrom::Gxrom::new(cart))),
