@@ -72,82 +72,84 @@ developers in any way.
 
 ### Supported mappers
 
-I've opted to supporting licensed mappers only. Running multi-carts with custom
-mappers and unofficial mappers overall is not in scope for now.
+Coverage focuses on licensed carts plus the well-known
+commercial-but-unlicensed boards (Color Dreams / Wisdom Tree,
+Codemasters / Camerica, AVE). Pirate-only multicart hardware is
+out of scope.
 
 | # | Name | Status |
 |---|---|---|
 | 0 | NROM | done |
 | 1 | MMC1 / SxROM | done |
-| 155 | MMC1A / NES-SAROM (Tatakae!! Ramen Man, Money Game I/II; PRG-RAM permanently enabled - the WRAM-disable bit is a no-op on this mask) | done |
-| 105 | NES-EVENT (Nintendo World Championships 1990; MMC1 derivative with init-state lock, dip-switch CPU-cycle countdown timer firing /IRQ at `(dip|0x10) << 25` cycles, Block A direct / Block B MMC1 PRG modes) | done |
 | 2 | UxROM | done |
 | 3 | CNROM | done |
 | 4 | MMC3 / MMC6 (TxROM / HKROM) | done (Rev A + Rev B) |
 | 5 | MMC5 / ExROM | done |
 | 7 | AxROM | done |
-| 13 | NES-CPROM (Videomation; 16 KiB CHR-RAM with 4 KiB fixed at $0000 and 4-bank-switchable at $1000; vertical mirroring hardwired) | done |
 | 9 | MMC2 / PxROM | done |
 | 10 | MMC4 / FxROM | done |
+| 11 | Color Dreams 74'377 (Wisdom Tree, Color Dreams library) | done |
+| 13 | NES-CPROM (Videomation) | done |
 | 16 | Bandai FCG-1/2 / LZ93D50 | done |
 | 18 | Jaleco SS88006 | done |
-| 19 / 210 | Namco 163 / 175 / 340 (incl. N163 8-channel wavetable audio) | done |
+| 19 / 210 | Namco 163 / 175 / 340 (incl. N163 wavetable audio) | done |
 | 20 | Famicom Disk System | done |
 | 21 / 22 / 23 / 25 | Konami VRC2a / VRC2b / VRC2c / VRC4a-f | done |
 | 24 | Konami VRC6a | done |
 | 26 | Konami VRC6b | done |
-| 32 | Irem G-101 (incl. Major League submapper) | done |
-| 33 | Taito TC0190 / TC0350 (no-IRQ subset) | done |
-| 34 | BNROM (Deadly Towers; bus-conflict 32 KiB PRG bank) + NINA-001 (Impossible Mission II, Wayne's World; $7FFD-$7FFF register set with 32 KiB PRG + two 4 KiB CHR banks); auto-detect by CHR-ROM presence | done |
+| 32 | Irem G-101 | done |
+| 33 | Taito TC0190 / TC0350 | done |
+| 34 | BNROM + NINA-001 | done |
 | 37 | Nintendo SMB + Tetris + World Cup multicart | done |
-| 47 | Nintendo NES-QJ multicart (Super Spike V'Ball + Nintendo World Cup; MMC3 + 1-bit outer-block latch at $6000-$7FFF, gated by MMC3 PRG-RAM-write enable) | done |
-| 48 | Taito TC0690 (MMC3-style + delayed IRQ; Don Doko Don 2, Power Blazer, Flintstones, Captain Saver, The Jetsons) | done |
-| 64 | Tengen RAMBO-1 (Klax JP, Skull & Crossbones, Rolling Thunder, Hard Drivin') | done |
-| 65 | Irem H3001 (Spartan X 2, Daiku no Gen-san 2, Kaiketsu Yanchamaru 3; CPU-cycle 16-bit IRQ down-counter) | done |
+| 47 | Nintendo NES-QJ multicart | done |
+| 48 | Taito TC0690 | done |
+| 64 | Tengen RAMBO-1 | done |
+| 65 | Irem H3001 | done |
 | 66 | GxROM / MHROM | done |
-| 67 | Sunsoft-3 (Fantasy Zone II, Mito Koumon) | done |
-| 70 | Bandai 74*161/161/32 (Family Trainer 1-7, Famicom Jump, Hanamaru, Kamen Rider Club; bus-conflict ANDs CPU value with ROM byte) | done |
-| 11 | Color Dreams 74'377 (Wisdom Tree biblical line + Color Dreams' own library: Bible Adventures, Spiritual Warfare, Sunday Funday, Menace Beach, Crystal Mines, Captain Comic, Chiller, Robodemons, etc.; single-latch with low-nibble PRG / high-nibble CHR + bus conflict) | done |
-| 71 | Codemasters / Camerica BF909x (Micro Machines, Bee 52, Big Nose, Quattro singles; sub 1 / Fire Hawk auto-promotes to BF9097 with 1-screen mirror control) | done |
-| 72 | Jaleco JF-17 (Pinball Quest, Wing of Madoola, Moero!! Juudou Warriors; rising-edge PRG/CHR gates + bus conflict; uPD7756C ADPCM not modeled) | done |
-| 68 | Sunsoft-4 (After Burner II, Sugoro Quest; incl. CHR-as-nametable replacement and submapper-1 Maeda licensing chip) | done |
-| 69 | Sunsoft FME-7 / 5A / 5B (incl. full 5B audio: tone + noise + envelope) | done |
-| 73 | Konami VRC3 (Salamander) | done |
-| 75 | Konami VRC1 (Tetsuwan Atom, Ganbare Goemon!) | done |
-| 77 | Irem-LROG017 (Napoleon Senki; one register splits PRG/CHR-ROM, plus 6 KiB CHR-RAM in three fixed 2 KiB windows; 4-screen mirroring) | done |
-| 78 | Irem 74*161 / Jaleco JF-16 (Holy Diver sub 3 - H/V mirror, Cosmo Carrier sub 1 - single-screen; bus-conflict ANDs CPU value with ROM byte) | done |
-| 79 | AVE NINA-03/06 (American Video Entertainment, C&E, Sachen export carts: Deathbots, F-15 City War, Krazy Kreatures, Tiles of Fate, Puzzle, Mermaids of Atlantis, Solitaire, Blackjack, Wally Bear, Trolls on Treasure Island; single latch in $4100-$5FFF with A8-set decode, D3 = 32 KiB PRG bank, D0-D2 = 8 KiB CHR bank) | done |
-| 76 | Namco 109 / NAMCOT-3446 (Megami Tensei: Digital Devil Story; 4 x 2 KiB CHR via R2-R5; R0/R1 silently ignored) | done |
-| 96 | Bandai Oeka Kids (Oeka Kids: Anpanman no Hiragana Daisuki; 32 KiB PRG bank-switch with bus conflicts; 32 KiB CHR-RAM with PPU-driven inner latch tracking the active nametable-tile fetch) | done |
-| 80 | Taito X1-005 (Wagyan Land 2 + 3, Famista 89-Pro series, Bakushou!! Jinsei Gekijou series, Don Doko Don, Daikoukai Jidai) | done |
-| 82 | Taito X1-017 (SD Keiji: Blader, Kyonshiizu 2; 5 KiB battery WRAM with three independently-gated regions) | done |
-| 85 | Konami VRC7 (incl. OPLL FM audio via vendored emu2413) | done |
-| 86 | Jaleco JF-13 (Moero!! Pro Yakyuu, Choujin Sentai Jetman; CHR/PRG in one latch; uPD7756C speech channel not modeled) | done |
-| 87 | Jaleco JF-05/06/07/08/09/10/11 (CHR-only banking with PCB-routed low-2-bit swap; Argus, Argos no Senshi, City Connection, Ninja Jajamaru-kun, Spy vs Spy, Moero! TwinBee) | done |
-| 88 | Namcot Type C (extra-CHR-line wiring; Devil Man, Mendel Palace) | done |
-| 89 | Sunsoft-2 with single-screen mirror (Tenka no Goikenban: Mito Koumon; bus-conflict ANDs CPU value with ROM byte) | done |
-| 92 | Jaleco JF-19 (Moero!! Pro Yakyuu '88, Moero!! Pro Tennis; same chip as 72 wired with high-slot switch) | done |
-| 93 | Sunsoft-3R / Sunsoft-2 IC variant (Fantasy Zone JP, Shanghai JP; 3-bit PRG bank + CHR-OE gate with bus conflict) | done |
-| 101 | Jaleco JF-10 (Urusei Yatsura: Lum no Wedding Bell; same PCB family as mapper 87 but with CHR-bank data lines routed straight through, so raw latch value is the bank index) | done |
-| 94 | HVC-UN1ROM (Senjou no Ookami / Commando JP, Capcom; UNROM with bank select on D2-D4 + bus conflict) | done |
-| 97 | Irem TAM-S1 (Kaiketsu Yanchamaru; inverted PRG with last bank fixed at $8000, switchable at $C000; 2-mode mirroring sub 0, 4-mode sub 1) | done |
-| 95 | Namco 118 / Dragon Buster (per-CHR-slot single-screen mirroring) | done |
-| 118 | Nintendo TxSROM / TLSROM / TKSROM (MMC3 + per-CHR-bank dynamic mirroring; Armadillo, Goal! Two, Ys III) | done |
-| 119 | Nintendo TQROM (MMC3 + 8 KiB CHR-RAM/ROM mix per slot; High Speed, Pin*Bot, Mall Madness) | done |
-| 140 | Jaleco JF-11 / JF-14 (Bio Senshi Dan, Mindseeker, Doraemon, Penguin Kun Wars 2; PRG in bits 5-4, CHR in low nibble) | done |
-| 152 | Bandai 74*161/161/32 (single-screen variant; Saint Seiya: Ougon Densetsu Kanketsu Hen, Pocket Zaurus, Tigers no Kessho-ban, Arkanoid II) | done |
-| 153 | Bandai LZ93D50 + 8 KiB battery SRAM (Famicom Jump II: Saikyou no Shichinin; outer PRG bit from CHR-reg bit 0 OR'd, SRAM enable gate at $x00D, full LZ93D50 IRQ down-counter) | done |
-| 180 | UNROM-flip / Crazy Climber wiring (Crazy Climber, Hayauchi Super Igo; first bank fixed at $8000, switchable at $C000) | done |
-| 184 | Sunsoft-1 (Atlantis no Nazo, Wing of Madoola, Hi no Tori, Maharaja, Kid Niki JP, Ripple Island; CHR-only banking with hardware-forced bit 7 on the high slot) | done |
-| 185 | CNROM with diode-array security (B-Wings, Mighty Bomb Jack, Spelunker, Seicross, Sansuu series; sub 0 heuristic + deterministic subs 4-7) | done |
-| 188 | Bandai Karaoke Studio (Karaoke Studio + 3 song add-on carts; bank-select / mirror latch + 8K CHR-RAM; microphone silent-stub pending the planned `Bus::mic_active` plumbing - see docs/plans/microphone_input.md) | done (mic stub) |
-| 189 | Taito TC-110 (Thundercade, Master Fighter II/III; MMC3 + 32K PRG-bank override at $4120-$7FFF) | done |
-| 154 | Namco 118 / Devil World JP (dynamic single-screen mirroring + Type C CHR wiring) | done |
-| 157 | Bandai Datach Joint ROM System (Yu Yu Hakusho, SD Gundam Wars, Crayon Shin-chan, DBZ, J League, Ultraman Club, Battle Rush; LZ93D50 register surface + 8 KiB CHR-RAM + 24C02 base-unit EEPROM + optional 24C01 cart EEPROM, dual-EEPROM SDA wired-AND on $6000 read) | done (barcode stub) |
+| 67 | Sunsoft-3 | done |
+| 68 | Sunsoft-4 | done |
+| 69 | Sunsoft FME-7 / 5A / 5B (incl. 5B audio) | done |
+| 70 | Bandai 74*161/161/32 | done |
+| 71 | Codemasters / Camerica BF909x (incl. Fire Hawk BF9097) | done |
+| 72 | Jaleco JF-17 | done |
+| 73 | Konami VRC3 | done |
+| 75 | Konami VRC1 | done |
+| 76 | Namco 109 / NAMCOT-3446 | done |
+| 77 | Irem-LROG017 | done |
+| 78 | Irem 74*161 / Jaleco JF-16 | done |
+| 79 | AVE NINA-03/06 | done |
+| 80 | Taito X1-005 | done |
+| 82 | Taito X1-017 | done |
+| 85 | Konami VRC7 (incl. OPLL FM audio) | done |
+| 86 | Jaleco JF-13 | done |
+| 87 | Jaleco JF-05/06/07/08/09/10/11 | done |
+| 88 | Namcot Type C | done |
+| 89 | Sunsoft-2 (single-screen mirror) | done |
+| 92 | Jaleco JF-19 | done |
+| 93 | Sunsoft-3R / Sunsoft-2 IC variant | done |
+| 94 | HVC-UN1ROM | done |
+| 95 | Namco 118 / Dragon Buster | done |
+| 96 | Bandai Oeka Kids | done |
+| 97 | Irem TAM-S1 | done |
+| 101 | Jaleco JF-10 | done |
+| 105 | NES-EVENT (Nintendo World Championships 1990) | done |
+| 118 | Nintendo TxSROM / TLSROM / TKSROM | done |
+| 119 | Nintendo TQROM | done |
+| 140 | Jaleco JF-11 / JF-14 | done |
+| 152 | Bandai 74*161/161/32 (single-screen variant) | done |
+| 153 | Bandai LZ93D50 + 8 KiB battery SRAM | done |
+| 154 | Namco 118 / Devil World JP | done |
+| 155 | MMC1A / NES-SAROM | done |
+| 157 | Bandai Datach Joint ROM System | done (barcode stub) |
 | 159 | Bandai LZ93D50 + 24C01 | done |
-| 206 | Namco 118 / Mimic-1 (DigDug II, Mappy-Land, Galaxian) | done |
-| 207 | Taito X1-005 alt-mirroring variant (Fudou Myou-Ou Den) | done |
-| 232 | Codemasters / Camerica BF9096 (Quattro Adventure / Arcade / Sports multicart; sub 1 = Aladdin Deck Enhancer bit-swapped outer block) | done |
+| 180 | UNROM-flip / Crazy Climber wiring | done |
+| 184 | Sunsoft-1 | done |
+| 185 | CNROM with diode-array security | done |
+| 188 | Bandai Karaoke Studio | done (mic stub) |
+| 189 | Taito TC-110 | done |
+| 206 | Namco 118 / Mimic-1 | done |
+| 207 | Taito X1-005 alt-mirroring variant | done |
+| 232 | Codemasters / Camerica BF9096 (incl. Aladdin Deck Enhancer) | done |
 
 ### Test-ROM coverage
 
