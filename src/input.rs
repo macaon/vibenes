@@ -952,7 +952,12 @@ impl InputRuntime {
     /// happens to enumerate second this session.
     fn resolve_initial_pads(&mut self) {
         let Some(g) = self.gilrs.as_ref() else { return };
-        // First pass: sticky UUIDs.
+        // First pass: sticky UUIDs. Each device is claimed by at
+        // most one slot - the `continue` after a P1 match prevents
+        // duplicate-UUID controllers (two 8BitDos of the same
+        // model both ship UUID X) from collapsing onto a single
+        // slot. The slot-empty guards mirror the runtime
+        // `on_connect` rule 1.
         let connected: Vec<(gilrs::GamepadId, GamepadUuid, String)> = g
             .gamepads()
             .filter_map(|(id, pad)| {
@@ -964,10 +969,11 @@ impl InputRuntime {
             })
             .collect();
         for (id, uuid, _name) in &connected {
-            if Some(*uuid) == self.cfg.p1.gamepad_uuid {
+            if Some(*uuid) == self.cfg.p1.gamepad_uuid && self.p1_pad_id.is_none() {
                 self.p1_pad_id = Some(*id);
+                continue;
             }
-            if Some(*uuid) == self.cfg.p2.gamepad_uuid {
+            if Some(*uuid) == self.cfg.p2.gamepad_uuid && self.p2_pad_id.is_none() {
                 self.p2_pad_id = Some(*id);
             }
         }
@@ -1041,10 +1047,11 @@ impl InputRuntime {
                         }
                     }
                     gilrs::EventType::Disconnected => {
-                        let name = g
-                            .connected_gamepad(ev.id)
-                            .map(|p| p.name().to_string())
-                            .unwrap_or_else(|| "<disconnected>".into());
+                        // `connected_gamepad` returns None
+                        // post-disconnect; `gamepad` keeps the
+                        // cached entry so we can still log the
+                        // friendly name.
+                        let name = g.gamepad(ev.id).name().to_string();
                         let player = if Some(ev.id) == self.p1_pad_id {
                             self.p1_pad_id = None;
                             Some(1)
@@ -1105,10 +1112,9 @@ impl InputRuntime {
                 notice
             }
             gilrs::EventType::Disconnected => {
-                let name = g
-                    .connected_gamepad(id)
-                    .map(|p| p.name().to_string())
-                    .unwrap_or_else(|| "<disconnected>".into());
+                // gilrs caches the gamepad entry past disconnect
+                // so we can still recover the friendly name.
+                let name = g.gamepad(id).name().to_string();
                 let player = if Some(id) == self.p1_pad_id {
                     self.p1_pad_id = None;
                     Some(1)
@@ -1223,14 +1229,21 @@ fn on_connect<Id: Copy>(
     p1_pad_id: &mut Option<Id>,
     p2_pad_id: &mut Option<Id>,
 ) -> Option<HotplugNotice> {
-    // Rule 1: sticky UUID match restores silently. The
-    // auto-assign filter below does NOT apply here - if the user
-    // explicitly bound a Keychron-as-gamepad device, we honor it.
-    if Some(uuid) == cfg.p1.gamepad_uuid {
+    // Rule 1: sticky UUID match restores silently, but only when
+    // the slot is currently *unassigned* (no live pad id). The
+    // empty-slot guard handles the duplicate-UUID case: two
+    // controllers of the same model (e.g. two 8BitDo Ultimate 2Cs)
+    // ship identical HID UUIDs, so without the guard the second
+    // pad would silently overwrite the first slot's live id and
+    // never reach the rule 3 auto-assign-to-P2 path. The
+    // auto-assign filter (`name_blocks_auto_assign`) does NOT
+    // apply here - if the user explicitly bound a Keychron-as-
+    // gamepad device, we honor it.
+    if Some(uuid) == cfg.p1.gamepad_uuid && p1_pad_id.is_none() {
         *p1_pad_id = Some(id);
         return None;
     }
-    if Some(uuid) == cfg.p2.gamepad_uuid {
+    if Some(uuid) == cfg.p2.gamepad_uuid && p2_pad_id.is_none() {
         *p2_pad_id = Some(id);
         return None;
     }
@@ -1573,6 +1586,39 @@ mod tests {
         );
         assert_eq!(p1, Some(fake_id(2)));
         assert!(matches!(n, Some(HotplugNotice::Assigned { player: 1, .. })));
+    }
+
+    #[test]
+    fn two_controllers_with_identical_uuids_split_across_p1_and_p2() {
+        // Two same-model 8BitDos ship the same HID UUID. The
+        // second controller must not silently overwrite P1; it
+        // should fall through to rule 3 and land on P2.
+        let mut cfg = InputConfig::default();
+        let (mut p1, mut p2) = (None, None);
+        let same_uuid = uuid(0xAA);
+
+        let n = on_connect(
+            fake_id(1),
+            same_uuid,
+            "8BitDo Ultimate 2C Wireless Controller",
+            &mut cfg,
+            &mut p1,
+            &mut p2,
+        );
+        assert_eq!(p1, Some(fake_id(1)));
+        assert!(matches!(n, Some(HotplugNotice::Assigned { player: 1, .. })));
+
+        let n = on_connect(
+            fake_id(2),
+            same_uuid,
+            "8BitDo Ultimate 2C Wireless Controller",
+            &mut cfg,
+            &mut p1,
+            &mut p2,
+        );
+        assert_eq!(p1, Some(fake_id(1)), "P1 must not be overwritten");
+        assert_eq!(p2, Some(fake_id(2)), "P2 takes the duplicate-UUID pad");
+        assert!(matches!(n, Some(HotplugNotice::Assigned { player: 2, .. })));
     }
 
     #[test]

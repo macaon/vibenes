@@ -1630,9 +1630,19 @@ impl App {
                         }
                     }
                     HotplugNotice::Ignored { name } => {
-                        if debug {
-                            eprintln!("gamepad ignored (both slots filled): {name}");
-                        }
+                        // Surfaced unconditionally (not gated on
+                        // VIBENES_GAMEPAD_DEBUG) so the user
+                        // understands why a freshly-plugged pad
+                        // isn't moving the player. Two reasons hit
+                        // this path: both slots already
+                        // sticky-claimed by other UUIDs, or the
+                        // device matched our keyboard-as-HID
+                        // filter. Until the settings UI ships,
+                        // hand-editing input.toml is the way out.
+                        eprintln!(
+                            "vibenes: ignoring controller {name:?} \
+                             (P1/P2 already assigned; edit input.toml to reassign)"
+                        );
                     }
                 }
             }
