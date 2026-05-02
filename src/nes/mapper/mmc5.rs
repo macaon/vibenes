@@ -67,19 +67,14 @@ const EXRAM_SIZE: usize = 1024;
 /// rises. Matches Mesen2 `MMC5.h` `_ppuIdleCounter = 3` reset path.
 const PPU_IDLE_THRESHOLD: u8 = 3;
 /// Minimum PRG-RAM we allocate even if the header says 0. Many MMC5
-/// MMC5 carts ship up to 64 KiB of PRG-RAM (8 banks via $5113);
-/// EWROM, ETROM, ELROM, EKROM and the ELROM-derivatives all
-/// allocate the full 64 KiB on real hardware. iNES v1 headers
-/// can't accurately encode these sizes (most ROTK2 / Uncharted
-/// Waters / Just Breed dumps under-report as 8 KiB or 0), so
-/// allocating less than 64 KiB causes $5113 bank-switching to
-/// alias every "different" WRAM bank back onto bank 0 - games
-/// that track per-province / per-merchant state in WRAM then
-/// trip their own bounds checks ("MEMORY OVER" panic in ROTK2).
-/// Defaulting to 64 KiB matches Mesen2 and lets affected games
-/// run without manual header repair. NES 2.0 headers that
-/// declare more than 64 KiB are still honored.
-const MIN_PRG_RAM: usize = 64 * 1024;
+/// Floor for PRG-RAM allocation when neither the iNES header nor
+/// the game DB names a size. 8 KiB matches the smallest real MMC5
+/// configuration (EKROM) and keeps the `$6000` window backed even
+/// for unknown carts. Real allocation comes from
+/// `cart.prg_ram_size + cart.prg_nvram_size`, which the cart
+/// loader populates from the game DB for known boards (EWROM=32K,
+/// ETROM=16K, EKROM=8K, ELROM=0K).
+const MIN_PRG_RAM: usize = 8 * 1024;
 
 /// One of the four CPU PRG slots ($8000, $A000, $C000, $E000). Each
 /// is an 8 KB window and resolves to either a ROM bank or a RAM bank.
@@ -95,6 +90,15 @@ struct PrgSlot {
 enum PrgKind {
     Rom,
     Ram,
+    /// Slot maps to an empty PRG-RAM socket (open bus). Used when
+    /// `$5113` selects a bank index outside the cart's actual
+    /// PRG-RAM allocation - real EWROM has 32 KiB / 4 banks, so
+    /// `$5113 = 4..7` reads return open-bus garbage and writes
+    /// drop. Mesen2 calls this `MemoryAccessType::NoAccess`; if
+    /// we silently modulo the bank index we end up clobbering
+    /// the cart's actual SRAM with writes meant for an
+    /// unimplemented chip.
+    OpenBus,
 }
 
 pub struct Mmc5 {
@@ -241,8 +245,18 @@ pub struct Mmc5 {
     /// "read-only-during-rendering" rule for mode 3.
     exram_mode: u8,
     /// `$5105` raw - 4 × 2-bit nametable slot selector. Decoded per
-    /// [`Mmc5::nt_slot_source`].
+    /// `ppu_nametable_read`. Only consulted once `$5105` has been
+    /// written at least once; until then NT routing falls back to
+    /// the cart's hardware mirroring per the iNES header. Mesen2
+    /// initializes the NT layout from the header in BaseMapper
+    /// before the cart's first $5105 write; doing the same here
+    /// matches games (ROTK2, Just Breed, etc.) that never touch
+    /// $5105 and rely on horizontal/vertical mirroring being in
+    /// effect from boot.
     nt_mapping: u8,
+    /// Set to true on the first write to `$5105`. While false,
+    /// nametable routing falls through to the cart's mirroring.
+    nt_mapping_overridden: bool,
     /// `$5106` - one byte pattern-table tile index used by every
     /// fill-mode nametable cell.
     fill_tile: u8,
@@ -381,6 +395,7 @@ impl Mmc5 {
             // that never bother touching `$5105` from rendering pure
             // garbage.
             nt_mapping: 0,
+            nt_mapping_overridden: false,
             fill_tile: 0,
             fill_color: 0,
             exram: [0; EXRAM_SIZE],
@@ -625,13 +640,46 @@ impl Mmc5 {
         }
 
         // PRG-RAM window at $6000-$7FFF - $5113 low 3 bits select
-        // an 8 KB bank. Larger WRAM configurations can use bit 3
-        // too, but sub-A's max is 64 KB via the header path below.
+        // an 8 KB bank. The mapping rules are board-specific
+        // (cross-checked against Mesen2 GetCpuBankInfo for $5113):
+        //
+        //   PRG-RAM size  | Banks 0-3       | Banks 4-7
+        //   --------------|-----------------|-------------------
+        //   0 (no chip)   | open bus        | open bus
+        //   8 KiB (1x8K)  | mirror chip 0   | open bus
+        //   16 KiB (2x8K) | chip 0          | chip 1
+        //   32 KiB (1x32K)| 4 pages chip 0  | open bus
+        //   64 KiB+       | all 8 banks usable
+        //
+        // Without the open-bus distinction, $5113 = 5 silently
+        // wraps to bank 1 and clobbers actual save data the cart
+        // expects to find at bank 1. ROTK2 / Just Breed both
+        // probe banks 4-7 expecting open bus.
         let r5113 = self.prg_regs[0];
-        let ram_mask = (self.prg_ram_bank_count_8k - 1).min(0x07);
-        self.prg_ram_slot = PrgSlot {
-            kind: PrgKind::Ram,
-            bank_8k: (r5113 as usize) & ram_mask,
+        let total_kib = self.prg_ram_bank_count_8k * 8;
+        let bank_index = (r5113 as usize) & 0x07;
+        self.prg_ram_slot = match (total_kib, bank_index) {
+            (0, _) => PrgSlot { kind: PrgKind::OpenBus, bank_8k: 0 },
+            (8, 0..=3) => PrgSlot { kind: PrgKind::Ram, bank_8k: 0 },
+            (8, _) => PrgSlot { kind: PrgKind::OpenBus, bank_8k: 0 },
+            (16, b) => PrgSlot {
+                // 2x8K: banks 0-3 → chip 0, banks 4-7 → chip 1.
+                kind: PrgKind::Ram,
+                bank_8k: if b < 4 { 0 } else { 1 },
+            },
+            (32, 0..=3) => PrgSlot {
+                kind: PrgKind::Ram,
+                bank_8k: bank_index,
+            },
+            (32, _) => PrgSlot { kind: PrgKind::OpenBus, bank_8k: 0 },
+            // 64 KiB or more: all 8 banks resolve directly.
+            // Sizes above 64 KiB use the low 4 bits per Mesen2
+            // (NES 2.0 only); we cap at 8 banks for now since no
+            // licensed cart uses > 64 KiB.
+            (_, _) => PrgSlot {
+                kind: PrgKind::Ram,
+                bank_8k: bank_index % self.prg_ram_bank_count_8k.max(1),
+            },
         };
     }
 
@@ -661,15 +709,24 @@ impl Mmc5 {
                 (PrgKind::Rom, bank * PRG_BANK_8K + offset_in_bank)
             }
             PrgKind::Ram => {
+                if self.prg_ram_bank_count_8k == 0 {
+                    return (PrgKind::OpenBus, 0);
+                }
                 let bank = slot.bank_8k % self.prg_ram_bank_count_8k;
                 (PrgKind::Ram, bank * PRG_BANK_8K + offset_in_bank)
             }
+            PrgKind::OpenBus => (PrgKind::OpenBus, 0),
         }
     }
 
     fn read_cpu(&self, addr: u16) -> u8 {
         match addr {
             0x6000..=0x7FFF => {
+                if self.prg_ram_slot.kind == PrgKind::OpenBus
+                    || self.prg_ram_bank_count_8k == 0
+                {
+                    return 0xFF;
+                }
                 let offset_in_bank = (addr & 0x1FFF) as usize;
                 let bank = self.prg_ram_slot.bank_8k % self.prg_ram_bank_count_8k;
                 self.prg_ram[bank * PRG_BANK_8K + offset_in_bank]
@@ -679,6 +736,7 @@ impl Mmc5 {
                 match kind {
                     PrgKind::Rom => self.prg_rom[offset],
                     PrgKind::Ram => self.prg_ram[offset],
+                    PrgKind::OpenBus => 0xFF,
                 }
             }
             _ => 0,
@@ -713,10 +771,22 @@ impl Mapper for Mmc5 {
             // reads/writes at $5C00-$5FFF; sub-C already honors the
             // "NT writes while rendering disabled store zero" rule
             // for modes 0/1.
-            0x5104 => self.exram_mode = data & 0x03,
+            0x5104 => {
+                self.exram_mode = data & 0x03;
+                if std::env::var_os("VIBENES_MMC5_DEBUG").is_some() {
+                    eprintln!(
+                        "mmc5: $5104 = ${:02X} (exram_mode={})",
+                        data,
+                        data & 0x03,
+                    );
+                }
+            }
             // $5105: four-slot nametable selector. Decoded per-slot
             // in `nt_slot_source`.
-            0x5105 => self.nt_mapping = data,
+            0x5105 => {
+                self.nt_mapping = data;
+                self.nt_mapping_overridden = true;
+            }
             // $5106: fill-mode tile byte (same tile at every NT cell).
             0x5106 => self.fill_tile = data,
             // $5107: fill-mode attribute - low 2 bits picked and
@@ -783,6 +853,14 @@ impl Mapper for Mmc5 {
             0x5000..=0x5FFF => {}
             // PRG-RAM window.
             0x6000..=0x7FFF => {
+                if self.prg_ram_slot.kind == PrgKind::OpenBus
+                    || self.prg_ram_bank_count_8k == 0
+                {
+                    // No physical chip behind this $5113 selection.
+                    // Real hardware leaves /WE floating; data is
+                    // dropped.
+                    return;
+                }
                 if self.prg_ram_writable() {
                     let offset_in_bank = (addr & 0x1FFF) as usize;
                     let bank = self.prg_ram_slot.bank_8k % self.prg_ram_bank_count_8k;
@@ -800,13 +878,16 @@ impl Mapper for Mmc5 {
             // swallow the write (matches real hardware).
             0x8000..=0xFFFF => {
                 let (kind, offset) = self.resolve_upper(addr);
-                if kind == PrgKind::Ram && self.prg_ram_writable() {
-                    if self.prg_ram[offset] != data {
-                        self.prg_ram[offset] = data;
-                        if self.battery {
-                            self.save_dirty = true;
+                match kind {
+                    PrgKind::Ram if self.prg_ram_writable() => {
+                        if self.prg_ram[offset] != data {
+                            self.prg_ram[offset] = data;
+                            if self.battery {
+                                self.save_dirty = true;
+                            }
                         }
                     }
+                    _ => {}
                 }
             }
             _ => {}
@@ -883,7 +964,16 @@ impl Mapper for Mmc5 {
                 // is decremented in on_ppu_addr; values 0 and 1 mean
                 // "we're inside the pattern-low / pattern-high
                 // fetches that follow the most recent AT fetch".
-                if self.exram_mode == 1 && self.ex_attr_fetch_counter <= 1 {
+                // Gate identical to on_ppu_addr's: only fire while in
+                // the BG-fetch tile range so sprite pattern fetches
+                // (split_tile_number 32-39) keep their own CHR window.
+                let in_bg_fetch_range = self.split_tile_number < 32
+                    || self.split_tile_number >= 40;
+                if self.exram_mode == 1
+                    && self.in_frame
+                    && in_bg_fetch_range
+                    && self.ex_attr_fetch_counter <= 1
+                {
                     let bank = (self.ex_attr_chr_bank as usize) & 0xFF;
                     let bank_size = 4 * 1024;
                     let off_in_bank = (addr as usize) & (bank_size - 1);
@@ -914,16 +1004,23 @@ impl Mapper for Mmc5 {
         // tag is fresh when CHR routing runs.
         self.last_fetch_kind = kind;
 
-        // ExAttribute mode 1 fetch tracking. NT fetch arms the
-        // counter; AT fetch decrements it (and the AT-byte override
-        // is computed in ppu_nametable_read using the latched NT
-        // address); the next two pattern fetches consume the
-        // remaining counter values, returning CHR bytes from the
-        // ExRAM-selected 4 KiB bank.
+        // ExAttribute mode 1 fetch tracking. Mesen2 gates this on
+        // `_splitTileNumber < 32 || >= 40` - i.e. only the BG tile
+        // fetches (1-31) and the dummy NT fetches for the next
+        // scanline (40+), NOT the sprite garbage NT/AT/pattern
+        // fetches that happen at split_tile_number 32-39 (PPU dots
+        // 257-320). Without this gate the sprite pattern fetches
+        // re-trigger the counter from a garbage NT fetch and then
+        // the override fires with a CHR bank computed from the
+        // ExRAM byte at a meaningless address - sprites end up
+        // rendering from the wrong bank, which is what ROTK2's
+        // moving "II" sprites and the cursor sprite hit.
         let is_nt_addr = (0x2000..=0x2FFF).contains(&addr);
         let is_nt_fetch = is_nt_addr && (addr & 0x03FF) < 0x03C0;
         let is_at_fetch = is_nt_addr && (addr & 0x03FF) >= 0x03C0;
-        if self.exram_mode == 1 {
+        let in_bg_fetch_range =
+            self.split_tile_number < 32 || self.split_tile_number >= 40;
+        if self.exram_mode == 1 && self.in_frame && in_bg_fetch_range {
             if is_nt_fetch {
                 self.ex_attr_last_nt_fetch = addr & 0x03FF;
                 self.ex_attr_fetch_counter = 3;
@@ -939,6 +1036,10 @@ impl Mapper for Mmc5 {
                 }
             }
         } else {
+            // Outside the BG-fetch window OR outside ExAttribute
+            // mode: zero the counter so the ppu_read override
+            // doesn't latch into stale state from the previous
+            // scanline.
             self.ex_attr_fetch_counter = 0;
         }
 
@@ -1123,6 +1224,15 @@ impl Mapper for Mmc5 {
                 palette | (palette << 2) | (palette << 4) | (palette << 6),
             );
         }
+        // Until the cart writes $5105 explicitly, route through the
+        // cart's hardware mirroring (NametableSource::Default lets
+        // the PPU's nametable_index decide). Mesen2 BaseMapper does
+        // the equivalent by initializing the NT mapping from the
+        // header at construction; games that never touch $5105
+        // (ROTK2, Just Breed, etc.) rely on this.
+        if !self.nt_mapping_overridden {
+            return NametableSource::Default;
+        }
         let nt_id = (self.nt_mapping >> (slot * 2)) & 0x03;
         match nt_id {
             0 => NametableSource::CiramA,
@@ -1154,6 +1264,13 @@ impl Mapper for Mmc5 {
     }
 
     fn ppu_nametable_write(&mut self, slot: u8, offset: u16, data: u8) -> NametableWriteTarget {
+        // Same fall-through-to-cart-mirroring behavior as
+        // ppu_nametable_read until $5105 is written. Without this
+        // a horizontal-mirroring cart would have its NT writes to
+        // slots 2/3 collapsed onto CIRAM A.
+        if !self.nt_mapping_overridden {
+            return NametableWriteTarget::Default;
+        }
         let nt_id = (self.nt_mapping >> (slot * 2)) & 0x03;
         match nt_id {
             0 => NametableWriteTarget::CiramA,
@@ -1179,10 +1296,10 @@ impl Mapper for Mmc5 {
     }
 
     fn mirroring(&self) -> Mirroring {
-        // $5105 supersedes this via `ppu_nametable_read/write` -
-        // `mirroring()` is only consulted for slots that return
-        // `NametableSource::Default`, which MMC5 never does. Returning
-        // the cart's header value keeps pre-init accesses sensible.
+        // Returns cart hardware mirroring per the iNES header.
+        // ppu_nametable_read/write fall through to this (via
+        // NametableSource::Default) until the cart writes $5105;
+        // after that, $5105's per-slot routing supersedes.
         self.mirroring
     }
 
@@ -1242,6 +1359,7 @@ impl Mapper for Mmc5 {
             vertical_split_scroll: self.vertical_split_scroll,
             vertical_split_bank: self.vertical_split_bank,
             large_sprites: self.large_sprites,
+            nt_mapping_overridden: self.nt_mapping_overridden,
         })))
     }
 
@@ -1291,6 +1409,7 @@ impl Mapper for Mmc5 {
         self.vertical_split_scroll = snap.vertical_split_scroll;
         self.vertical_split_bank = snap.vertical_split_bank;
         self.large_sprites = snap.large_sprites;
+        self.nt_mapping_overridden = snap.nt_mapping_overridden;
         // Reset transient/derived state and recompute window cache
         // from prg_mode + prg_regs + prg_ram_protect*. The
         // ExAttribute fetch counter, split-region flag, and
@@ -1644,6 +1763,9 @@ mod tests {
         let mut m = Mmc5::new(tagged_cart());
         m.cpu_write(0x5104, 0x01); // ExRAM mode 1 (ExAttribute)
         m.cpu_write(0x5105, 0xAA); // every NT slot -> ExRAM-as-NT
+        // Simulate active rendering - the override only fires inside
+        // _ppuInFrame (matches Mesen2's MapperReadVram gate).
+        m.in_frame = true;
         // ExRAM[0x10] = 0xC5 -> palette = 0b11, CHR bank = 0b000101.
         m.exram[0x10] = 0xC5;
         // Walk the PPU through one tile cycle: NT fetch at $2010,
@@ -1665,6 +1787,7 @@ mod tests {
         let mut m = Mmc5::new(tagged_cart());
         m.cpu_write(0x5104, 0x01); // ExRAM mode 1
         m.cpu_write(0x5105, 0xAA);
+        m.in_frame = true; // ExAttribute path requires active rendering.
         // Bank index 5 in the low 6 bits + chr_upper=0 -> 4 KiB bank 5.
         m.exram[0x20] = 0x05;
         // Walk the full per-tile fetch sequence so the counter
@@ -1689,6 +1812,7 @@ mod tests {
         let mut m = Mmc5::new(tagged_cart());
         m.cpu_write(0x5104, 0x01);
         m.cpu_write(0x5105, 0xAA);
+        m.in_frame = true; // ExAttribute path requires active rendering.
         m.exram[0x10] = 0x05; // first tile: bank 5
         m.exram[0x30] = 0x02; // second tile: bank 2
 

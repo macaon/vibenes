@@ -239,6 +239,13 @@ pub struct Mmc5Snap {
     /// re-syncs.
     #[serde(default)]
     pub large_sprites: bool,
+    /// True once the cart has written `$5105` at runtime, false
+    /// when MMC5's NT routing should fall through to the cart's
+    /// hardware mirroring per the iNES header. Defaulting to
+    /// false on older snaps matches the MMC5 power-on state and
+    /// is corrected the moment the cart re-issues a $5105 write.
+    #[serde(default)]
+    pub nt_mapping_overridden: bool,
 }
 
 impl Default for Mmc5Snap {
@@ -279,6 +286,7 @@ impl Default for Mmc5Snap {
             vertical_split_scroll: 0,
             vertical_split_bank: 0,
             large_sprites: false,
+            nt_mapping_overridden: false,
         }
     }
 }

@@ -386,6 +386,23 @@ impl Cartridge {
                 if let Some(sub) = entry.submapper_id {
                     cart.submapper = sub;
                 }
+                // PRG-RAM sizing: iNES 1.0's single byte at offset 8
+                // routinely under-reports MMC5 boards (EWROM=32 KiB
+                // reported as 8; ETROM=16 KiB reported as 8;
+                // ELROM=0 KiB reported as 8). The DB carries the
+                // accurate per-board figures - trust it when the
+                // header is iNES 1.0. Trusting the header on NES 2.0
+                // remains correct because the byte-11 nibble layout
+                // accurately encodes both halves.
+                let db_prg_ram = entry.work_ram_size as usize;
+                let db_prg_nvram = entry.save_ram_size as usize;
+                if db_prg_ram != cart.prg_ram_size {
+                    cart.prg_ram_size = db_prg_ram;
+                }
+                if db_prg_nvram != cart.prg_nvram_size {
+                    cart.prg_nvram_size = db_prg_nvram;
+                    cart.battery_backed = entry.has_battery;
+                }
             }
         }
 
