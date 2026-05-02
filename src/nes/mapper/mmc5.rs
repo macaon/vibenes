@@ -176,6 +176,49 @@ pub struct Mmc5 {
     /// the next two pattern-byte fetches in ExAttribute mode.
     ex_attr_chr_bank: u16,
 
+    // ---- Vertical split mode ($5200 / $5201 / $5202) ----
+    //
+    // A column-band override that lets the cart paint a vertically-
+    // scrolling strip on either the left or right side of the
+    // screen, with its own CHR bank and its own scroll offset, while
+    // the main playfield scrolls normally underneath. Castlevania III
+    // (US/EU) uses this for the HUD strip up top - actually a
+    // *horizontal* effect achieved by leaving the strip's own scroll
+    // at zero while the playfield scrolls. Mesen2 spells out the
+    // algorithm in `MapperReadVram` (split column = (split_tile + 2)
+    // % 42; flip in_split_region at the delimiter column; 32-39 are
+    // the sprite-fetch tiles which are always outside).
+    /// `$5200` bit 7. When false the rest of the split state is
+    /// inert and we fall through to the normal NT/CHR routing.
+    vertical_split_enabled: bool,
+    /// `$5200` bit 6. False = split is on the *left* side of the
+    /// screen (columns 0..delimiter); true = right (delimiter..32).
+    vertical_split_right_side: bool,
+    /// `$5200` bits 0-4. Column index where the split region
+    /// boundary sits, 0..=31.
+    vertical_split_delimiter_tile: u8,
+    /// `$5201` raw - vertical scroll offset within the split
+    /// region, modulo 240.
+    vertical_split_scroll: u8,
+    /// `$5202` raw - 4 KiB CHR bank to use for the split region's
+    /// pattern fetches.
+    vertical_split_bank: u8,
+    /// Per-fetch latch: are we currently inside the split column
+    /// band? Updated in `on_ppu_addr` based on the split-tile
+    /// counter and `vertical_split_delimiter_tile`. Read by
+    /// `ppu_nametable_read` and `ppu_read` to decide whether to
+    /// substitute split-region bytes.
+    split_in_split_region: bool,
+    /// Tile-cell-in-split index, derived from the split's vertical
+    /// scroll and the current column. Used to look up NT/AT bytes
+    /// from ExRAM during the split-region NT/AT fetches.
+    split_tile: u16,
+    /// Per-scanline NT fetch counter. Reset to 0 on scanline
+    /// detection (3-same-NT signature); incremented on every NT
+    /// fetch. Drives the column calculation. Mesen2's
+    /// `_splitTileNumber`.
+    split_tile_number: i32,
+
     /// `$5104` low 2 bits - ExRAM disposition. Sub-E will gate
     /// reads/writes against this; sub-C already respects the
     /// "read-only-during-rendering" rule for mode 3.
@@ -306,6 +349,14 @@ impl Mmc5 {
             ex_attr_last_nt_fetch: 0,
             ex_attr_fetch_counter: 0,
             ex_attr_chr_bank: 0,
+            vertical_split_enabled: false,
+            vertical_split_right_side: false,
+            vertical_split_delimiter_tile: 0,
+            vertical_split_scroll: 0,
+            vertical_split_bank: 0,
+            split_in_split_region: false,
+            split_tile: 0,
+            split_tile_number: 0,
             exram_mode: 0,
             // Power-on: all four NT slots -> CIRAM A. This matches
             // Mesen2's init (`_nametableMapping = 0`) and keeps games
@@ -657,6 +708,17 @@ impl Mapper for Mmc5 {
             }
             // $5130: upper bits for >256 KB CHR.
             0x5130 => self.chr_upper = data & 0x03,
+            // $5200: vertical split control (enable + side +
+            // delimiter column). Mesen2's bit layout.
+            0x5200 => {
+                self.vertical_split_enabled = (data & 0x80) != 0;
+                self.vertical_split_right_side = (data & 0x40) != 0;
+                self.vertical_split_delimiter_tile = data & 0x1F;
+            }
+            // $5201: vertical scroll within the split region.
+            0x5201 => self.vertical_split_scroll = data,
+            // $5202: 4 KiB CHR bank for split-region pattern fetches.
+            0x5202 => self.vertical_split_bank = data,
             // $5203: scanline IRQ counter target.
             0x5203 => self.irq_target = data,
             // $5204: bit 7 = IRQ enable. Other bits ignored on write.
@@ -754,6 +816,33 @@ impl Mapper for Mmc5 {
     fn ppu_read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => {
+                // Vertical split mode: pattern bytes for tiles
+                // inside the split column band come from
+                // `vertical_split_bank` instead of the normal CHR
+                // window. The Y position within the bank is taken
+                // from `vertical_split_scroll + scanline` mod 240
+                // (committed when on_ppu_addr saw the NT fetch).
+                if self.split_in_split_region {
+                    let scanline = if self.split_tile_number >= 41 {
+                        self.scanline_counter.wrapping_add(1)
+                    } else {
+                        self.scanline_counter
+                    } as u32;
+                    let vsplit_scroll =
+                        (scanline + self.vertical_split_scroll as u32) % 240;
+                    let bank_size = 4 * 1024;
+                    let bank = self.vertical_split_bank as usize;
+                    // Mesen2: ((addr & ~0x07) | (vsplit_scroll & 7))
+                    // gives the per-byte Y offset inside the 4 KiB
+                    // bank using the split's vertical scroll.
+                    let lo = ((addr as u32 & !0x07)
+                        | (vsplit_scroll & 0x07))
+                        & 0x0FFF;
+                    let total = bank * bank_size + lo as usize;
+                    let total = total
+                        % (self.chr_bank_count_1k * CHR_BANK_1K).max(1);
+                    return self.chr[total];
+                }
                 // ExAttribute mode 1: pattern bytes for the current
                 // tile come from a 4 KiB CHR bank picked by the AT
                 // fetch (see ppu_nametable_read). The fetch counter
@@ -819,6 +908,56 @@ impl Mapper for Mmc5 {
             self.ex_attr_fetch_counter = 0;
         }
 
+        // Vertical split mode tracking. We bump split_tile_number
+        // on every NT fetch; the column = (split_tile_number + 2)
+        // % 42 picks which screen column we're rendering. On NT
+        // fetches we update `split_in_split_region` based on which
+        // side of the delimiter we're on; the byte/CHR overrides
+        // happen in ppu_nametable_read / ppu_read using the
+        // latched flag and `split_tile`.
+        if is_nt_fetch {
+            self.split_tile_number = self.split_tile_number.wrapping_add(1);
+        }
+        if self.vertical_split_enabled
+            && self.exram_mode <= 1
+            && self.in_frame
+        {
+            let scanline = if self.split_tile_number >= 41 {
+                self.scanline_counter.wrapping_add(1)
+            } else {
+                self.scanline_counter
+            } as u32;
+            let vsplit_scroll =
+                (scanline + self.vertical_split_scroll as u32) % 240;
+            let column = ((self.split_tile_number + 2) % 42) as u32;
+            if is_nt_fetch {
+                if column == 0 {
+                    // Reset to the inverse of right-side: a
+                    // right-side split starts the line OUTSIDE
+                    // the region; left-side starts INSIDE.
+                    self.split_in_split_region = !self.vertical_split_right_side;
+                }
+                if column == self.vertical_split_delimiter_tile as u32
+                    && self.split_tile_number < 42
+                {
+                    self.split_in_split_region = !self.split_in_split_region;
+                } else if column > 32 {
+                    // Sprite-fetch territory; never in split.
+                    self.split_in_split_region = false;
+                }
+                if self.split_in_split_region {
+                    // Compute the ExRAM-as-NT tile cell that
+                    // backs this NT byte. ExRAM[tile] is the
+                    // tile id; ExRAM[at_addr] gives the AT byte
+                    // for it. See `ppu_nametable_read`.
+                    self.split_tile = (((vsplit_scroll & 0xF8) << 2)
+                        | column) as u16;
+                }
+            }
+        } else {
+            self.split_in_split_region = false;
+        }
+
         // Scanline IRQ - follows Mesen2's MapperReadVram +
         // DetectScanlineStart structure in our own words.
         //
@@ -857,6 +996,11 @@ impl Mapper for Mmc5 {
             // Count consecutive identical NT-range reads. Capped at
             // 2 so we don't keep incrementing on a stuck PPU.
             self.nt_read_counter = self.nt_read_counter.saturating_add(1).min(2);
+            if self.nt_read_counter >= 2 {
+                // Scanline detected; reset the per-line tile
+                // counter so split-mode column math starts at 0.
+                self.split_tile_number = 0;
+            }
         }
 
         if self.last_ppu_addr != addr {
@@ -886,6 +1030,35 @@ impl Mapper for Mmc5 {
 
     fn ppu_nametable_read(&mut self, slot: u8, offset: u16) -> NametableSource {
         let off = offset as usize & 0x03FF;
+        // Vertical split mode: when we're inside the split column
+        // band, all NT and AT bytes for that band come from ExRAM.
+        // NT byte = ExRAM[split_tile]; AT byte = ExRAM[at_addr]
+        // shifted to extract the per-quadrant palette.
+        if self.split_in_split_region && self.exram_mode <= 1 {
+            if off < 0x03C0 {
+                // NT byte: tile id from ExRAM at split_tile.
+                return NametableSource::Byte(
+                    self.exram[(self.split_tile as usize) & 0x3FF],
+                );
+            } else {
+                // AT byte: derive the AT-table address from the
+                // split tile and pull the matching ExRAM byte,
+                // then return palette*0x55 like the ExAttribute
+                // path. Math from Mesen2 MapperReadVram:
+                //  shift = ((split_tile >> 4) & 4) | (split_tile & 2)
+                //  at_addr = 0x3C0
+                //          | ((split_tile & 0x380) >> 4)
+                //          | ((split_tile & 0x1F) >> 2)
+                let st = self.split_tile as usize;
+                let shift = ((st >> 4) & 0x04) | (st & 0x02);
+                let at_addr = 0x3C0
+                    | ((st & 0x0380) >> 4)
+                    | ((st & 0x001F) >> 2);
+                let palette =
+                    (self.exram[at_addr & 0x3FF] >> shift) & 0x03;
+                return NametableSource::Byte(palette * 0x55);
+            }
+        }
         // ExAttribute mode 1: AT-fetch override. The byte we return
         // gets shifted by the PPU per-quadrant; replicating the
         // 2-bit palette across all four positions makes the result
@@ -1014,6 +1187,11 @@ impl Mapper for Mmc5 {
             mult_b: self.mult_b,
             save_dirty: self.save_dirty,
             last_chr_reg: self.last_chr_reg,
+            vertical_split_enabled: self.vertical_split_enabled,
+            vertical_split_right_side: self.vertical_split_right_side,
+            vertical_split_delimiter_tile: self.vertical_split_delimiter_tile,
+            vertical_split_scroll: self.vertical_split_scroll,
+            vertical_split_bank: self.vertical_split_bank,
         })))
     }
 
@@ -1057,14 +1235,23 @@ impl Mapper for Mmc5 {
         self.mult_b = snap.mult_b;
         self.save_dirty = snap.save_dirty;
         self.last_chr_reg = snap.last_chr_reg;
+        self.vertical_split_enabled = snap.vertical_split_enabled;
+        self.vertical_split_right_side = snap.vertical_split_right_side;
+        self.vertical_split_delimiter_tile = snap.vertical_split_delimiter_tile;
+        self.vertical_split_scroll = snap.vertical_split_scroll;
+        self.vertical_split_bank = snap.vertical_split_bank;
         // Reset transient/derived state and recompute window cache
         // from prg_mode + prg_regs + prg_ram_protect*. The
-        // ExAttribute fetch counter and bank cache are 1-3 PPU
-        // cycles transient and self-heal on the next NT/AT pair.
+        // ExAttribute fetch counter, split-region flag, and
+        // per-tile counters are 1-3 PPU cycles transient and
+        // self-heal on the next scanline.
         self.last_fetch_kind = PpuFetchKind::Idle;
         self.ex_attr_fetch_counter = 0;
         self.ex_attr_chr_bank = 0;
         self.ex_attr_last_nt_fetch = 0;
+        self.split_in_split_region = false;
+        self.split_tile = 0;
+        self.split_tile_number = 0;
         self.update_prg_banks();
         Ok(())
     }

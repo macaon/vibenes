@@ -220,6 +220,19 @@ pub struct Mmc5Snap {
     /// matches the "8×8 mode" reset, which is the safe fallback.
     #[serde(default)]
     pub last_chr_reg: u16,
+    /// Vertical split mode register state (`$5200-$5202`). All
+    /// default to 0 / disabled on older snaps - the safe fallback
+    /// since cleared bits leave the split inert.
+    #[serde(default)]
+    pub vertical_split_enabled: bool,
+    #[serde(default)]
+    pub vertical_split_right_side: bool,
+    #[serde(default)]
+    pub vertical_split_delimiter_tile: u8,
+    #[serde(default)]
+    pub vertical_split_scroll: u8,
+    #[serde(default)]
+    pub vertical_split_bank: u8,
 }
 
 impl Default for Mmc5Snap {
@@ -254,6 +267,11 @@ impl Default for Mmc5Snap {
             mult_b: 0,
             save_dirty: false,
             last_chr_reg: 0,
+            vertical_split_enabled: false,
+            vertical_split_right_side: false,
+            vertical_split_delimiter_tile: 0,
+            vertical_split_scroll: 0,
+            vertical_split_bank: 0,
         }
     }
 }
