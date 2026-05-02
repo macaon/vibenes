@@ -68,6 +68,10 @@ gilrs = "0.11"
 # human-editable - users can swap a binding by hand without booting
 # the emulator. Pinned to 0.8 (the post-1.0-stabilization line).
 toml = "0.8"
+# PNG encoder for the F5 screenshot capture path. Native NES
+# framebuffer (256x240 RGBA) gets written as-is - no surface
+# readback, no PAR scaling. Pure-Rust; no system dependency.
+png = "0.17"
 
 [profile.dev]
 opt-level = 1

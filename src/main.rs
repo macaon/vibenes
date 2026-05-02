@@ -1116,6 +1116,10 @@ impl ApplicationHandler for App {
                     // before any mutation; on failure the cart is
                     // left untouched.
                     self.load_state_from_active_slot();
+                } else if code == KeyCode::F5 && state == ElementState::Pressed {
+                    // Capture native NES framebuffer (256x240 RGBA)
+                    // to a PNG under ~/.config/vibenes/screenshots/.
+                    self.capture_screenshot();
                 } else if code == KeyCode::Escape && state == ElementState::Pressed {
                     // Esc backs out of the overlay (or closes it from
                     // root); when the overlay is closed it quits the
@@ -1310,6 +1314,40 @@ impl App {
             window.set_fullscreen(mode);
         }
         self.pending_window_resize = !self.fullscreen;
+    }
+
+    /// Snapshot the live PPU framebuffer to a PNG sidecar. F5
+    /// hotkey. No-op (with a stderr notice) when no NES is loaded
+    /// or the screenshots directory cannot be resolved. Errors
+    /// surface as both a stderr line and an error toast.
+    fn capture_screenshot(&mut self) {
+        let Some(nes) = self.nes.as_ref() else {
+            eprintln!("vibenes: no ROM loaded - F5 ignored");
+            return;
+        };
+        let Some(dir) = vibenes::screenshot::screenshots_dir() else {
+            self.show_error_toast("screenshots dir unavailable");
+            return;
+        };
+        let path = vibenes::screenshot::screenshot_path(
+            &dir,
+            nes.current_rom_path(),
+        );
+        let frame = nes.bus.ppu.frame_buffer.clone();
+        match vibenes::screenshot::write_png(&path, &frame) {
+            Ok(()) => {
+                eprintln!("vibenes: screenshot → {}", path.display());
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "screenshot.png".into());
+                self.show_info_toast(format!("Saved {name}"));
+            }
+            Err(e) => {
+                eprintln!("vibenes: screenshot failed: {e:#}");
+                self.show_error_toast(format!("Screenshot failed: {e}"));
+            }
+        }
     }
 
     fn reset_nes(&mut self) {
