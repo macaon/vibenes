@@ -48,6 +48,14 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     framebuffer_texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+    /// Top inset (physical pixels) reserved for window chrome
+    /// (menu strip). The NES blit pass clips to the unreserved
+    /// middle band via `set_viewport`. Updated by
+    /// [`Renderer::set_chrome_insets`].
+    chrome_top: u32,
+    /// Bottom inset (physical pixels) reserved for window chrome
+    /// (status bar, future). See [`Renderer::chrome_top`].
+    chrome_bottom: u32,
 }
 
 impl Renderer {
@@ -240,6 +248,8 @@ impl Renderer {
             pipeline,
             framebuffer_texture,
             bind_group,
+            chrome_top: 0,
+            chrome_bottom: 0,
         })
     }
 
@@ -312,6 +322,20 @@ impl Renderer {
         (self.config.width, self.config.height)
     }
 
+    /// Reserve `top` and `bottom` physical-pixel rows of the
+    /// surface for window chrome (menu strip, status bar, etc.).
+    /// The NES blit passes get clipped to the unreserved middle
+    /// region via `set_viewport`, while overlay layers (egui)
+    /// continue to use the full surface so their chrome paints
+    /// in the reserved rows.
+    ///
+    /// Pass `(0, 0)` (the default) when no chrome is visible -
+    /// the NES image fills the whole window as before.
+    pub fn set_chrome_insets(&mut self, top: u32, bottom: u32) {
+        self.chrome_top = top;
+        self.chrome_bottom = bottom;
+    }
+
     /// Acquire the next swapchain texture, blit the NES framebuffer into
     /// it (clearing the surface first), invoke `on_overlay` with the
     /// same encoder + view so an overlay can paint on top with
@@ -365,6 +389,19 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
+            // Clip the NES blit to the unreserved middle band so
+            // chrome rows stay black for the egui overlay to paint
+            // into. saturating_sub guards a transient frame where
+            // chrome insets sum exceeds surface height.
+            let y = self.chrome_top.min(self.config.height) as f32;
+            let h = self
+                .config
+                .height
+                .saturating_sub(self.chrome_top + self.chrome_bottom)
+                as f32;
+            if h > 0.0 {
+                pass.set_viewport(0.0, y, self.config.width as f32, h, 0.0, 1.0);
+            }
             pass.draw(0..3, 0..1);
         }
         on_overlay(

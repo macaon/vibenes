@@ -27,10 +27,12 @@ use crate::nes::clock::Region;
 use crate::video::VideoSettings;
 
 pub mod commands;
+pub mod menubar;
 mod menus;
 pub mod recent;
 
 pub use commands::UiCommand;
+pub use menubar::{MenuBarParams, MENU_BAR_HEIGHT_LOGICAL};
 pub use menus::{DebugStatus, OverlayState};
 pub use recent::RecentRoms;
 
@@ -231,6 +233,7 @@ impl UiLayer {
         nes_loaded: bool,
         fds: Option<crate::nes::FdsInfo>,
         debug: DebugStatus,
+        menu_bar: MenuBarParams<'_>,
         cmds: &mut Vec<UiCommand>,
     ) {
         // Keep ctx's pixels_per_point in sync with winit's current
@@ -275,11 +278,17 @@ impl UiLayer {
         let toast = self.toast.as_ref().map(|t| {
             (t.message.clone(), t.kind)
         });
-        let full_output = self.ctx.run_ui(raw_input, |_ui| {
-            // No persistent chrome: the overlay is the only UI element.
-            // It's drawn via `egui::Area`s inside `run_overlay`, which
-            // accesses the Context directly rather than nesting under
-            // a top-level `ui`.
+        let full_output = self.ctx.run_ui(raw_input, |ui| {
+            // Menu strip first - it claims the top region of the
+            // screen via `Panel::top` showing inside the
+            // root Ui. The centered modal overlay below uses
+            // `egui::Area`s and renders over (or under,
+            // depending on order) the menu.
+            menubar::run(ui, &menu_bar, cmds);
+            // No persistent chrome past the menu strip: the
+            // overlay is drawn via `egui::Area`s inside
+            // `run_overlay`, which accesses the Context directly
+            // rather than nesting under a top-level `ui`.
             menus::run_overlay(
                 &self.ctx,
                 &mut self.overlay,

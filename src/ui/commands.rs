@@ -46,4 +46,23 @@ pub enum UiCommand {
     /// chasing sprite issues; the burst covers 30 Hz sprite-flicker
     /// rotation so a single probe doesn't miss the "on" frame.
     DumpOamBurst(u8),
+    /// Toggle the top menu bar's visibility. Persists to
+    /// settings.kv. Window resizes to compensate so the NES
+    /// viewport stays exactly `scale * 240` regardless.
+    ToggleMenuBar,
+    /// Toggle the application's fullscreen state. Menu bar is
+    /// suppressed in fullscreen regardless of the user's
+    /// `menu_bar_visible` preference; exiting fullscreen restores
+    /// the prior visibility.
+    ToggleFullscreen,
+    /// Open the (forthcoming) preferences window. Stub for the
+    /// moment - currently surfaces an info toast saying "settings
+    /// UI coming soon" so the menu item is wired end-to-end.
+    OpenPreferences,
+    /// Open the project's GitHub URL in the user's default
+    /// browser via xdg-open / open / start.
+    OpenGithub,
+    /// Show an info modal with the build version and a one-line
+    /// project blurb. Drawn as a transient toast for now.
+    ShowAbout,
 }

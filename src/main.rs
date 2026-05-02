@@ -187,6 +187,52 @@ fn digit_keycode_to_slot(code: KeyCode) -> Option<u8> {
     }
 }
 
+/// Short, menu-strip-friendly mapper label. Used by the `Emulation`
+/// menu's "Mapper:" info entry. Doesn't try to be exhaustive - any
+/// mapper not listed here just shows as the bare number.
+fn describe_mapper(id: u16) -> String {
+    let name = match id {
+        0 => "NROM",
+        1 => "MMC1 / SxROM",
+        2 => "UxROM",
+        3 => "CNROM",
+        4 => "MMC3 / TxROM",
+        5 => "MMC5 / ExROM",
+        7 => "AxROM",
+        9 => "MMC2 / PxROM",
+        10 => "MMC4 / FxROM",
+        11 => "Color Dreams",
+        16 => "Bandai LZ93D50",
+        18 => "Jaleco SS88006",
+        19 => "Namco 163",
+        20 => "FDS",
+        21 | 22 | 23 | 25 => "Konami VRC2/4",
+        24 => "Konami VRC6a",
+        26 => "Konami VRC6b",
+        30 => "UNROM-512",
+        66 => "GxROM / MHROM",
+        69 => "Sunsoft FME-7",
+        71 => "Codemasters BF909x",
+        79 => "AVE NINA-03/06",
+        85 => "Konami VRC7",
+        _ => return format!("{id}"),
+    };
+    format!("{id} ({name})")
+}
+
+/// Best-effort URL launcher. Uses the platform's standard "open"
+/// helper - xdg-open on Linux, open on macOS, start on Windows.
+/// Errors propagate so the caller can surface them in a log line.
+fn open_url(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let cmd = "xdg-open";
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(target_os = "windows")]
+    let cmd = "explorer";
+    std::process::Command::new(cmd).arg(url).spawn().map(|_| ())
+}
+
 /// Parsed command-line arguments. Add fields here when new flags
 /// land - keeping all CLI state in one struct keeps `run()` free of
 /// arg-parsing tangles.
@@ -253,9 +299,20 @@ struct App {
     /// the path passed on the command line (if any).
     recent_roms: RecentRoms,
     /// Integer scale + pixel aspect ratio. Window inner size equals
-    /// `video.content_size(region)` exactly - no chrome to subtract,
-    /// no fractional scales.
+    /// `video.content_size(region)` plus any visible window chrome
+    /// (menu strip, future status bar) - the chrome is treated as
+    /// overhead so the NES viewport stays at exactly `scale * 240`
+    /// regardless of which strips are toggled on.
     video: VideoSettings,
+    /// Whether the top menu strip is shown. Defaults to true; loaded
+    /// from `settings.kv` on startup, persisted on toggle. When
+    /// false the window shrinks back to a chrome-less size.
+    menu_bar_visible: bool,
+    /// Whether the window is currently in fullscreen mode. The
+    /// menu strip is always suppressed in fullscreen regardless of
+    /// `menu_bar_visible`. Toggled via the Window menu or the
+    /// future fullscreen hotkey.
+    fullscreen: bool,
     /// Set when video settings or region change so the post-frame hook
     /// requests a window resize once and clears. Avoids per-frame
     /// `request_inner_size` calls that on some compositors cause a
@@ -461,6 +518,8 @@ impl App {
                 VideoSettings::default().with_scale(s.scale)
             },
             save_state_slot: settings::load().save_state_slot,
+            menu_bar_visible: settings::load().menu_bar_visible,
+            fullscreen: false,
             pending_window_resize: false,
             config,
             frames_since_autosave: 0,
@@ -483,12 +542,34 @@ impl App {
         self.nes.as_ref().map(Nes::region)
     }
 
-    /// Physical inner size of the window - exactly the NES content
-    /// area at the current scale + effective PAR. No menubar reserve;
-    /// the in-game overlay paints on top of the framebuffer.
+    /// Physical inner size of the window: the NES content area at
+    /// the current scale + PAR, plus any visible window chrome
+    /// (top menu strip; future status bar). Chrome is window
+    /// overhead - the NES viewport keeps its exact `scale * 240`
+    /// pixel size regardless of which strips are toggled on.
+    ///
+    /// The chrome heights are logical pixels and we currently treat
+    /// scale factor 1.0 as the common case; HiDPI displays will
+    /// see slightly under-sized chrome until we plumb the live
+    /// `Window::scale_factor()` through this path.
     fn desired_window_size(&self) -> PhysicalSize<u32> {
         let (cw, ch) = self.video.content_size(self.region_opt());
-        PhysicalSize::new(cw, ch)
+        let chrome = self.chrome_height_physical();
+        PhysicalSize::new(cw, ch.saturating_add(chrome))
+    }
+
+    /// Pixel overhead the visible window chrome (menu strip, future
+    /// status bar) takes off the top / bottom of the inner window.
+    /// Returns 0 in fullscreen.
+    fn chrome_height_physical(&self) -> u32 {
+        if self.fullscreen {
+            return 0;
+        }
+        let mut h = 0.0f32;
+        if self.menu_bar_visible {
+            h += vibenes::ui::MENU_BAR_HEIGHT_LOGICAL;
+        }
+        h.ceil() as u32
     }
 
     /// One-shot window resize triggered by the `pending_window_resize`
@@ -543,6 +624,12 @@ impl App {
             self.commit_controllers();
         }
 
+        // Snapshot chrome state before we take the mutable
+        // renderer borrow - chrome_height_physical needs `&self`
+        // and the borrow checker won't let us call it after
+        // borrowing self.renderer mutably.
+        let chrome_top = self.chrome_height_physical();
+
         let renderer = match self.renderer.as_mut() {
             Some(r) => r,
             None => return,
@@ -564,6 +651,10 @@ impl App {
                 renderer.resize(inner);
             }
         }
+        // Push the chrome insets so the NES blit clips to the
+        // unreserved middle band - egui paints over the top
+        // chrome region with the menu strip.
+        renderer.set_chrome_insets(chrome_top, 0);
 
         // Step + audio only when not paused by the overlay. The
         // framebuffer freezes on the last presented frame, which the
@@ -728,6 +819,28 @@ impl App {
             scanline_ruler_on: self.show_scanline_ruler,
         };
         if let (Some(ui), Some(window)) = (self.ui.as_mut(), self.window.as_ref()) {
+            // Build the snapshot the menu strip needs to render
+            // dynamic state (active scale checkmark, mapper label,
+            // FDS gray-state, recent ROMs submenu).
+            let mapper_label = self
+                .nes
+                .as_ref()
+                .map(|n| describe_mapper(n.bus.mapper_id()));
+            let region_label = region.map(|r| match r {
+                Region::Ntsc => "NTSC",
+                Region::Pal => "PAL",
+            });
+            let menu_bar = vibenes::ui::MenuBarParams {
+                visible: self.menu_bar_visible,
+                fullscreen: self.fullscreen,
+                nes_loaded,
+                current_scale: self.video.scale,
+                current_par: self.video.par_mode,
+                region_label,
+                mapper_label,
+                fds_present: fds_info.is_some(),
+                recent: &self.recent_roms,
+            };
             ui.run(
                 window,
                 surface_size,
@@ -737,6 +850,7 @@ impl App {
                 nes_loaded,
                 fds_info,
                 debug_status,
+                menu_bar,
                 &mut cmds,
             );
         }
@@ -1046,13 +1160,7 @@ impl App {
                 self.pending_window_resize = true;
                 // Persist the post-clamp value, not the raw `n` -
                 // `with_scale` already snapped it into MIN..=MAX.
-                let to_save = settings::Settings {
-                    scale: self.video.scale,
-                    save_state_slot: self.save_state_slot,
-                };
-                if let Err(e) = settings::save(&to_save) {
-                    eprintln!("vibenes: save settings failed: {e:#}");
-                }
+                self.persist_settings();
             }
             UiCommand::SetAspectRatio(par_mode) => {
                 self.video = self.video.with_par_mode(par_mode);
@@ -1080,7 +1188,71 @@ impl App {
                 self.oam_dump_frames = frames;
                 eprintln!("vibenes: OAM dump armed ({frames} frames)");
             }
+            UiCommand::ToggleMenuBar => self.toggle_menu_bar(),
+            UiCommand::ToggleFullscreen => self.toggle_fullscreen(),
+            UiCommand::OpenPreferences => {
+                // Stub for the upcoming settings UI. Toast keeps the
+                // menu wired end-to-end so the action surface is
+                // discoverable now.
+                self.show_info_toast("Preferences UI coming soon");
+            }
+            UiCommand::OpenGithub => {
+                if let Err(e) = open_url("https://github.com/macaon/vibenes") {
+                    eprintln!("vibenes: open URL failed: {e:#}");
+                }
+            }
+            UiCommand::ShowAbout => {
+                self.show_info_toast(format!(
+                    "vibenes {} - clean-room NES emulator in Rust",
+                    env!("CARGO_PKG_VERSION"),
+                ));
+            }
         }
+    }
+
+    /// Persist user settings (scale, save-state slot, menu-bar
+    /// visibility) to settings.kv. Called whenever any of those
+    /// change. Failure is logged but doesn't block the running
+    /// session.
+    fn persist_settings(&self) {
+        let cfg = settings::Settings {
+            scale: self.video.scale,
+            save_state_slot: self.save_state_slot,
+            menu_bar_visible: self.menu_bar_visible,
+        };
+        if let Err(e) = settings::save(&cfg) {
+            eprintln!("vibenes: settings save failed: {e:#}");
+        }
+    }
+
+    /// Flip the menu-strip visibility, persist, and request a
+    /// window resize so the NES viewport stays at exactly
+    /// `scale * 240` regardless of chrome state.
+    fn toggle_menu_bar(&mut self) {
+        self.menu_bar_visible = !self.menu_bar_visible;
+        self.pending_window_resize = true;
+        self.persist_settings();
+        eprintln!(
+            "vibenes: menu bar {}",
+            if self.menu_bar_visible { "on" } else { "off" },
+        );
+    }
+
+    /// Flip the window's fullscreen state. The menu strip is
+    /// suppressed while fullscreen regardless of the user's
+    /// `menu_bar_visible` preference; exiting fullscreen restores
+    /// the prior visibility (the field is unchanged here).
+    fn toggle_fullscreen(&mut self) {
+        self.fullscreen = !self.fullscreen;
+        if let Some(window) = self.window.as_ref() {
+            let mode = if self.fullscreen {
+                Some(winit::window::Fullscreen::Borderless(None))
+            } else {
+                None
+            };
+            window.set_fullscreen(mode);
+        }
+        self.pending_window_resize = !self.fullscreen;
     }
 
     fn reset_nes(&mut self) {
@@ -1199,13 +1371,7 @@ impl App {
         self.show_info_toast(format!("Slot {slot}"));
         // Persist alongside scale. Failure is logged but doesn't
         // block - the choice still applies to this session.
-        let cfg = settings::Settings {
-            scale: self.video.scale,
-            save_state_slot: slot,
-        };
-        if let Err(e) = settings::save(&cfg) {
-            eprintln!("vibenes: settings save failed: {e:#}");
-        }
+        self.persist_settings();
     }
 
     /// Push an info toast through the egui overlay if it's been

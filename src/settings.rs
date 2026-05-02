@@ -35,6 +35,12 @@ pub struct Settings {
     /// and read from this slot. Persisted so a session-spanning
     /// "Slot 3" choice survives a restart.
     pub save_state_slot: u8,
+    /// Whether the top menu bar is shown. Default true; toggled via
+    /// `View -> Show Menu Bar` or `Ctrl+M`. Window height includes
+    /// the menu bar's pixel overhead when this is on (so the NES
+    /// viewport stays at exactly `scale * 240` rather than shrinking
+    /// to fit fixed window chrome).
+    pub menu_bar_visible: bool,
 }
 
 impl Default for Settings {
@@ -42,6 +48,7 @@ impl Default for Settings {
         Self {
             scale: VideoSettings::default().scale,
             save_state_slot: 0,
+            menu_bar_visible: true,
         }
     }
 }
@@ -103,6 +110,11 @@ fn parse(text: &str) -> Settings {
                     }
                 }
             }
+            "menu_bar_visible" => match v.trim() {
+                "true" | "1" | "yes" => s.menu_bar_visible = true,
+                "false" | "0" | "no" => s.menu_bar_visible = false,
+                _ => {}
+            },
             // Forward-compat: ignore unknown keys so a newer
             // vibenes' file doesn't trip up an older binary.
             _ => {}
@@ -115,6 +127,7 @@ fn serialize(s: &Settings) -> String {
     let mut out = String::from(HEADER);
     out.push_str(&format!("scale={}\n", s.scale));
     out.push_str(&format!("save_state_slot={}\n", s.save_state_slot));
+    out.push_str(&format!("menu_bar_visible={}\n", s.menu_bar_visible));
     out
 }
 
@@ -155,8 +168,20 @@ mod tests {
         let s = Settings {
             scale: 5,
             save_state_slot: 7,
+            menu_bar_visible: false,
         };
         assert_eq!(parse(&serialize(&s)), s);
+    }
+
+    #[test]
+    fn parse_menu_bar_visible_accepts_true_and_false() {
+        assert!(parse("menu_bar_visible=true\n").menu_bar_visible);
+        assert!(!parse("menu_bar_visible=false\n").menu_bar_visible);
+    }
+
+    #[test]
+    fn parse_menu_bar_visible_default_is_true() {
+        assert!(Settings::default().menu_bar_visible);
     }
 
     #[test]
