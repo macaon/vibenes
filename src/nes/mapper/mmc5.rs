@@ -67,11 +67,19 @@ const EXRAM_SIZE: usize = 1024;
 /// rises. Matches Mesen2 `MMC5.h` `_ppuIdleCounter = 3` reset path.
 const PPU_IDLE_THRESHOLD: u8 = 3;
 /// Minimum PRG-RAM we allocate even if the header says 0. Many MMC5
-/// carts under-declare PRG-RAM in their iNES v1 header; allocating a
-/// single 8 KB chip keeps them from faulting on the first `$6000`
-/// write. Games that genuinely have 32 KB+ (Uncharted Waters, Just
-/// Breed) rely on the header being correct.
-const MIN_PRG_RAM: usize = 8 * 1024;
+/// MMC5 carts ship up to 64 KiB of PRG-RAM (8 banks via $5113);
+/// EWROM, ETROM, ELROM, EKROM and the ELROM-derivatives all
+/// allocate the full 64 KiB on real hardware. iNES v1 headers
+/// can't accurately encode these sizes (most ROTK2 / Uncharted
+/// Waters / Just Breed dumps under-report as 8 KiB or 0), so
+/// allocating less than 64 KiB causes $5113 bank-switching to
+/// alias every "different" WRAM bank back onto bank 0 - games
+/// that track per-province / per-merchant state in WRAM then
+/// trip their own bounds checks ("MEMORY OVER" panic in ROTK2).
+/// Defaulting to 64 KiB matches Mesen2 and lets affected games
+/// run without manual header repair. NES 2.0 headers that
+/// declare more than 64 KiB are still honored.
+const MIN_PRG_RAM: usize = 64 * 1024;
 
 /// One of the four CPU PRG slots ($8000, $A000, $C000, $E000). Each
 /// is an 8 KB window and resolves to either a ROM bank or a RAM bank.
