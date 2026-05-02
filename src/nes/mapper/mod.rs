@@ -199,6 +199,12 @@ pub trait Mapper: Send {
     /// kind of fetch - see [`PpuFetchKind`]. Default no-op; MMC3 /
     /// MMC5 / MMC2 / MMC4 override.
     fn on_ppu_addr(&mut self, _addr: u16, _ppu_cycle: u64, _kind: PpuFetchKind) {}
+
+    /// Called whenever the CPU writes `$2000` (PPUCTRL). Mapper
+    /// implementations that need to know the current sprite size
+    /// (MMC5 in 8×16 mode swaps which CHR register set drives BG
+    /// vs sprite fetches) latch the bit here. Default no-op.
+    fn on_ppu_ctrl(&mut self, _ctrl: u8) {}
     /// True when the cart is pulling /IRQ low. Wire-ORed with the APU
     /// IRQ line inside the bus. Default false; MMC3 / MMC5 / FME-7
     /// / VRC IRQ mappers override.

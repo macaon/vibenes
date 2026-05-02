@@ -1207,6 +1207,12 @@ impl Ppu {
                 } else if (self.status & 0x80) != 0 {
                     self.nmi_flag = true;
                 }
+                // MMC5 needs to know the live sprite-size bit to
+                // pick the correct CHR register set in 8x16 mode
+                // (set A drives sprites, set B drives BG - the
+                // labels are inverted from naive intuition; see
+                // mmc5.rs::chr_a_for). Other mappers no-op.
+                mapper.on_ppu_ctrl(data);
             }
             0x01 => {
                 self.mask = data;

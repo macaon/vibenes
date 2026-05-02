@@ -233,6 +233,12 @@ pub struct Mmc5Snap {
     pub vertical_split_scroll: u8,
     #[serde(default)]
     pub vertical_split_bank: u8,
+    /// Live PPUCTRL bit 5 (8×16 sprites). Drives MMC5's CHR
+    /// bank-set selection; defaulting to false on older snaps
+    /// (8×8 mode) is the safe choice - the very next $2000 write
+    /// re-syncs.
+    #[serde(default)]
+    pub large_sprites: bool,
 }
 
 impl Default for Mmc5Snap {
@@ -272,6 +278,7 @@ impl Default for Mmc5Snap {
             vertical_split_delimiter_tile: 0,
             vertical_split_scroll: 0,
             vertical_split_bank: 0,
+            large_sprites: false,
         }
     }
 }

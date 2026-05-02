@@ -219,6 +219,15 @@ pub struct Mmc5 {
     /// `_splitTileNumber`.
     split_tile_number: i32,
 
+    /// Mirrors PPUCTRL bit 5 (sprite size). True = 8×16. Latched
+    /// by `on_ppu_ctrl` whenever the CPU writes `$2000`. The
+    /// 8×16 case is what makes MMC5 swap which CHR register set
+    /// drives BG vs sprite fetches: per puNES + Nestopia + Mesen2,
+    /// in 8×16 mode set A ($5120-$5127) holds sprite banks and
+    /// set B ($5128-$512B) holds BG banks - the labels invert
+    /// from their 8×8-mode roles.
+    large_sprites: bool,
+
     /// `$5104` low 2 bits - ExRAM disposition. Sub-E will gate
     /// reads/writes against this; sub-C already respects the
     /// "read-only-during-rendering" rule for mode 3.
@@ -357,6 +366,7 @@ impl Mmc5 {
             split_in_split_region: false,
             split_tile: 0,
             split_tile_number: 0,
+            large_sprites: false,
             exram_mode: 0,
             // Power-on: all four NT slots -> CIRAM A. This matches
             // Mesen2's init (`_nametableMapping = 0`) and keeps games
@@ -457,26 +467,42 @@ impl Mmc5 {
         bank_1k * CHR_BANK_1K + offset_in_1k
     }
 
-    /// Mesen2's `chrA` predicate: true when the BG bank set should
-    /// drive this fetch. See [`Mmc5::resolve_chr`] for the rule
-    /// table. Pulled out of the resolver because the
-    /// 8×16-sprite-mode-vs-vblank decision is best read once on
-    /// its own.
+    /// Cross-checked `chrA` predicate per Mesen2 / puNES / Nestopia.
+    /// True when **set A** (`$5120-$5127`, our `chr_bg_regs`) should
+    /// drive this fetch; false picks **set B** (`$5128-$512B`, our
+    /// `chr_spr_regs`).
+    ///
+    /// The roles of the two sets invert with sprite size, which
+    /// is the part that's easy to get backwards:
+    ///
+    /// - **8×8 sprite mode**: set A drives EVERY fetch (BG, sprite,
+    ///   `$2007` reads). Set B is unused.
+    /// - **8×16 sprite mode**: set A drives **sprite** fetches; set
+    ///   B drives **BG** fetches. (Quoting puNES `extcl_rd_r2007_005`:
+    ///   "sprites use the 'set A' banks; BG tiles use the 'set B'
+    ///   banks".)
+    /// - **Outside rendering** (`$2007` reads in vblank): the
+    ///   most-recently-written-register's set wins. `last_chr_reg`
+    ///   inside the BG-register range (`<= 0x5127`) means set A;
+    ///   sprite range means set B.
     fn chr_a_for(&self, kind: PpuFetchKind) -> bool {
+        if !self.large_sprites {
+            // 8×8 mode: everything goes through set A.
+            return true;
+        }
         match kind {
-            // BG fetches always come from the BG set.
+            // BG fetches in 8×16 mode use SET B (chr_spr_regs).
             PpuFetchKind::BgPattern
             | PpuFetchKind::BgNametable
-            | PpuFetchKind::BgAttribute => true,
-            // Sprite fetches in 8×16 mode use the sprite set.
-            PpuFetchKind::SpritePattern => false,
-            // Idle / sprite NT/AT (8×16 garbage) fall back to the
-            // last-written-set rule. `last_chr_reg == 0` (8×8 mode
-            // reset) collapses to BG. Once the cart has written a
-            // sprite register during 8×16 mode, vblank-time
-            // fetches stay in the sprite set until a BG-range
-            // write flips it back.
-            _ => self.last_chr_reg <= 0x5127,
+            | PpuFetchKind::BgAttribute => false,
+            // Sprite fetches in 8×16 mode use SET A (chr_bg_regs).
+            PpuFetchKind::SpritePattern
+            | PpuFetchKind::SpriteNametable
+            | PpuFetchKind::SpriteAttribute => true,
+            // Idle (vblank `$2007` read etc.) - last-written-set
+            // wins. last_chr_reg == 0 means 8×8-reset state; falls
+            // into set A naturally.
+            PpuFetchKind::Idle => self.last_chr_reg <= 0x5127,
         }
     }
 
@@ -1011,6 +1037,21 @@ impl Mapper for Mmc5 {
         self.last_ppu_addr = addr;
     }
 
+    fn on_ppu_ctrl(&mut self, ctrl: u8) {
+        // PPUCTRL bit 5 = sprite size (0 = 8×8, 1 = 8×16). In
+        // 8×16 mode the BG vs sprite CHR set roles swap (see
+        // chr_a_for). Mesen2's UpdateChrBanks also resets
+        // _lastChrReg to 0 when leaving 8×16 mode so vblank reads
+        // fall back to set A; we mirror that here so a quick
+        // toggle into and out of 8×16 mode doesn't leave a stale
+        // sprite-set bias hanging around.
+        let new = (ctrl & 0x20) != 0;
+        if !new && self.large_sprites {
+            self.last_chr_reg = 0;
+        }
+        self.large_sprites = new;
+    }
+
     fn on_cpu_cycle(&mut self) {
         // MMC5 clears its in-frame flag after PPU_IDLE_THRESHOLD CPU
         // cycles with no PPU bus activity - the emulated equivalent
@@ -1192,6 +1233,7 @@ impl Mapper for Mmc5 {
             vertical_split_delimiter_tile: self.vertical_split_delimiter_tile,
             vertical_split_scroll: self.vertical_split_scroll,
             vertical_split_bank: self.vertical_split_bank,
+            large_sprites: self.large_sprites,
         })))
     }
 
@@ -1240,6 +1282,7 @@ impl Mapper for Mmc5 {
         self.vertical_split_delimiter_tile = snap.vertical_split_delimiter_tile;
         self.vertical_split_scroll = snap.vertical_split_scroll;
         self.vertical_split_bank = snap.vertical_split_bank;
+        self.large_sprites = snap.large_sprites;
         // Reset transient/derived state and recompute window cache
         // from prg_mode + prg_regs + prg_ram_protect*. The
         // ExAttribute fetch counter, split-region flag, and
@@ -1521,54 +1564,66 @@ mod tests {
     }
 
     #[test]
-    fn sprite_pattern_fetch_routes_through_sprite_regs_in_1k_mode() {
-        // 1 KB mode, populate BG and sprite sets with distinct banks.
-        // BgPattern fetches read BG-set values; SpritePattern fetches
-        // read sprite-set values.
+    fn chr_routing_in_8x8_mode_uses_set_a_for_everything() {
+        // PPUCTRL bit 5 clear (8×8 sprites): every fetch (BG and
+        // anything else) routes through the set-A registers
+        // ($5120-$5127). Set B is unused.
         let mut m = Mmc5::new(tagged_cart());
-        m.cpu_write(0x5101, 0x03);
-        // BG regs: banks 0..=7
+        m.cpu_write(0x5101, 0x03); // 1 KB CHR mode
         for i in 0..8u8 {
-            m.cpu_write(0x5120 + i as u16, i);
+            m.cpu_write(0x5120 + i as u16, i); // set A: bank N
         }
-        // Sprite regs: banks 16..=19 (replicated across slots 4-7)
         for i in 0..4u8 {
-            m.cpu_write(0x5128 + i as u16, 16 + i);
+            m.cpu_write(0x5128 + i as u16, 32 + i); // set B: bank 32+N
         }
-        // BG fetch at slot 2 -> BG bank 2.
-        assert_eq!(
-            chr_read(&mut m, 0x0800, PpuFetchKind::BgPattern),
-            2,
-        );
-        // Sprite fetch at the same address -> sprite reg 2 (bank 18).
-        assert_eq!(
-            chr_read(&mut m, 0x0800, PpuFetchKind::SpritePattern),
-            18,
-        );
-        // Sprite fetch at slot 6 -> sprite reg 8 + (6 & 3) = reg 10 = bank 18.
-        assert_eq!(
-            chr_read(&mut m, 0x1800, PpuFetchKind::SpritePattern),
-            18,
-        );
+        m.on_ppu_ctrl(0x00); // 8×8 mode
+        // BG fetches route through set A regardless of slot.
+        assert_eq!(chr_read(&mut m, 0x0800, PpuFetchKind::BgPattern), 2);
+        assert_eq!(chr_read(&mut m, 0x1800, PpuFetchKind::BgPattern), 6);
     }
 
     #[test]
-    fn idle_chr_fetch_uses_last_written_set_bg_then_sprite() {
-        // After a BG-range write the vblank ($2007) read path
-        // resolves to the BG set; after a sprite-range write it
-        // flips to the sprite set. Mesen2's `_lastChrReg <= 0x5127`
-        // rule.
+    fn chr_routing_in_8x16_mode_swaps_bg_and_sprite_set_roles() {
+        // PPUCTRL bit 5 set (8×16 sprites): set A drives sprite
+        // fetches and set B drives BG fetches. Convention is
+        // inverted from the naive intuition the register names
+        // suggest - cross-checked against puNES `extcl_rd_r2007_005`
+        // and Nestopia `Mmc5::IsPpuSprite8x16` in NstBoardMmc5.cpp.
         let mut m = Mmc5::new(tagged_cart());
         m.cpu_write(0x5101, 0x03); // 1 KB mode
         for i in 0..8u8 {
-            m.cpu_write(0x5120 + i as u16, i); // BG bank N
+            m.cpu_write(0x5120 + i as u16, i); // set A: bank N
         }
         for i in 0..4u8 {
-            m.cpu_write(0x5128 + i as u16, 32 + i); // sprite bank 32+N
+            m.cpu_write(0x5128 + i as u16, 32 + i); // set B: bank 32+N
         }
-        // Last write was sprite ($512B) -> Idle fetch picks sprite.
+        m.on_ppu_ctrl(0x20); // 8×16 mode
+        // BG fetches in 8×16 use set B. Slot 2 in 1 KB mode
+        // picks chr_spr_regs[8 + (2 & 3) - 8] = chr_spr_regs[2]
+        // = bank 32+2 = 34.
+        assert_eq!(chr_read(&mut m, 0x0800, PpuFetchKind::BgPattern), 34);
+        // Sprite fetches in 8×16 use set A. Slot 2 -> chr_bg_regs[2]
+        // = bank 2.
+        assert_eq!(chr_read(&mut m, 0x0800, PpuFetchKind::SpritePattern), 2);
+    }
+
+    #[test]
+    fn idle_chr_fetch_uses_last_written_set_in_8x16_mode() {
+        // The last-written-set vblank rule only kicks in under
+        // 8×16 sprite mode - in 8×8 mode set A drives every
+        // fetch unconditionally, so last_chr_reg is irrelevant.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5101, 0x03); // 1 KB mode
+        m.on_ppu_ctrl(0x20); // 8×16 sprites
+        for i in 0..8u8 {
+            m.cpu_write(0x5120 + i as u16, i); // set A: bank N
+        }
+        for i in 0..4u8 {
+            m.cpu_write(0x5128 + i as u16, 32 + i); // set B: bank 32+N
+        }
+        // Last write was set B ($512B) -> Idle picks set B (bank 32).
         assert_eq!(chr_read(&mut m, 0x0000, PpuFetchKind::Idle), 32);
-        // Now write a BG reg -> Idle fetch flips back to BG.
+        // Now write a set A reg -> Idle flips back to set A.
         m.cpu_write(0x5120, 5);
         assert_eq!(chr_read(&mut m, 0x0000, PpuFetchKind::Idle), 5);
     }
