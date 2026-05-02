@@ -214,6 +214,12 @@ pub struct Mmc5Snap {
     pub mult_a: u8,
     pub mult_b: u8,
     pub save_dirty: bool,
+    /// Address of the last `$5120-$512B` write (or 0 if 8×8 mode
+    /// reset it). Drives the BG-vs-sprite bank-set decision when
+    /// the PPU isn't rendering. Defaulting to 0 on older snaps
+    /// matches the "8×8 mode" reset, which is the safe fallback.
+    #[serde(default)]
+    pub last_chr_reg: u16,
 }
 
 impl Default for Mmc5Snap {
@@ -247,6 +253,7 @@ impl Default for Mmc5Snap {
             mult_a: 0,
             mult_b: 0,
             save_dirty: false,
+            last_chr_reg: 0,
         }
     }
 }

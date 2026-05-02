@@ -139,6 +139,43 @@ pub struct Mmc5 {
     /// `$2007` reads route through the BG bank set.
     last_fetch_kind: PpuFetchKind,
 
+    /// Address of the last `$5120-$512B` write, or 0 when 8×8 sprite
+    /// mode reset the latch. Used by [`Mmc5::resolve_chr`] when not in
+    /// frame to pick the BG vs sprite bank set per Mesen2's
+    /// `_lastChrReg` semantic. Writing the BG range (`<= 0x5127`)
+    /// during vblank means "BG set wins for the next $2007 reads"
+    /// even when 8×16 sprites are active.
+    last_chr_reg: u16,
+
+    // ---- ExAttribute mode (extended attribute, $5104 = 1) ----
+    //
+    // Per-tile CHR bank + palette override sourced from ExRAM. When
+    // a NT byte is fetched, the ExRAM byte at the same offset is
+    // looked up at the next attribute fetch and supplies:
+    //  - upper 2 bits: palette index, returned as palette*0x55 from
+    //    the AT slot so the PPU's per-quadrant shift gets the right
+    //    value regardless of position.
+    //  - lower 6 bits: 4 KiB CHR bank index, OR'd with $5130's high
+    //    bits to form an 8-bit bank index. The next two pattern-byte
+    //    fetches return CHR from this override bank.
+    //
+    // We track three pieces of state across the four-fetch tile cycle:
+    /// Low 10 bits of the most recent NT fetch, used to look up the
+    /// matching ExRAM byte during the AT fetch that follows. Set on
+    /// every NT fetch when `exram_mode == 1` (regardless of split or
+    /// in-frame state - cheaper than re-deriving each time).
+    ex_attr_last_nt_fetch: u16,
+    /// Countdown of "fetches still belonging to the most recent NT
+    /// tile cycle." Set to 3 by the NT fetch; AT fetch decrements
+    /// to 2 (and computes `ex_attr_chr_bank`); pattern-low decrements
+    /// to 1 (returns CHR from override bank); pattern-high decrements
+    /// to 0 (same). Anything else (idle reads, sprite fetches, etc.)
+    /// just zeroes it out.
+    ex_attr_fetch_counter: u8,
+    /// CHR 4 KiB bank index resolved during the AT fetch. Used by
+    /// the next two pattern-byte fetches in ExAttribute mode.
+    ex_attr_chr_bank: u16,
+
     /// `$5104` low 2 bits - ExRAM disposition. Sub-E will gate
     /// reads/writes against this; sub-C already respects the
     /// "read-only-during-rendering" rule for mode 3.
@@ -265,6 +302,10 @@ impl Mmc5 {
             chr_upper: 0,
             chr_bank_count_1k,
             last_fetch_kind: PpuFetchKind::Idle,
+            last_chr_reg: 0,
+            ex_attr_last_nt_fetch: 0,
+            ex_attr_fetch_counter: 0,
+            ex_attr_chr_bank: 0,
             exram_mode: 0,
             // Power-on: all four NT slots -> CIRAM A. This matches
             // Mesen2's init (`_nametableMapping = 0`) and keeps games
@@ -292,32 +333,42 @@ impl Mmc5 {
         m
     }
 
-    /// Resolve a PPU-side CHR address to an offset into `self.chr`,
-    /// selecting between the BG and sprite bank sets based on the
-    /// fetch kind upstream. The PPU already collapses 8×8-sprite
-    /// fetches to `BgPattern`, so we only see `SpritePattern` when
-    /// 8×16 mode is active.
+    /// Resolve a PPU-side CHR address to an offset into `self.chr`.
+    /// Picks between the BG (`chr_bg_regs`) and sprite
+    /// (`chr_spr_regs`) bank sets via the same logic Mesen2 uses
+    /// in `UpdateChrBanks`:
+    ///
+    /// - 8×8 sprite mode → BG set always (the PPU only emits
+    ///   `SpritePattern` in 8×16 mode, so a non-`SpritePattern`
+    ///   fetch with `last_chr_reg == 0` matches this case).
+    /// - 8×16 sprite mode + currently fetching a sprite tile
+    ///   (`SpritePattern`) → sprite set.
+    /// - 8×16 sprite mode + fetching a BG tile (`BgPattern`) →
+    ///   BG set.
+    /// - 8×16 sprite mode + outside rendering (Idle) → use the
+    ///   set the cart most recently wrote (`last_chr_reg`).
+    ///   Without this rule, a game that wrote sprite-bank
+    ///   selectors and then issues `$2007` reads during vblank
+    ///   gets BG-bank data instead.
     fn resolve_chr(&self, addr: u16, kind: PpuFetchKind) -> usize {
-        let is_sprite = matches!(kind, PpuFetchKind::SpritePattern);
-        // Which 1 KB slot of the $0000-$1FFF window this address hits.
+        let chr_a = self.chr_a_for(kind);
         let slot_1k = ((addr >> 10) & 0x07) as usize;
         let offset_in_1k = (addr & 0x03FF) as usize;
 
         // Per-mode register selection. Each mode's table maps the
         // 1 KB slot to (register index, window size in 1 KB).
-        // Sprite-set slots 4-7 intentionally alias back to regs 8-11
-        // - there are only four sprite registers, so the top half
-        // of the window reuses them. (Matches Mesen2 `UpdateChrBanks`
-        // `chrA ? ... : 0x08 + (slot & 3)` pattern.)
+        // Sprite-set slots 4-7 alias back to regs 8-11 in 1 KB
+        // mode - there are only four sprite registers, so the top
+        // half of the window reuses them.
         let (reg_idx, size_1k) = match self.chr_mode & 0x03 {
             0 => {
                 // One 8 KB window. Reg 7 (BG) or 11 (sprite).
-                let reg = if is_sprite { 11 } else { 7 };
+                let reg = if chr_a { 7 } else { 11 };
                 (reg, 8usize)
             }
             1 => {
                 // Two 4 KB windows: low half via reg 3/11, high via 7/11.
-                let reg = if is_sprite {
+                let reg = if !chr_a {
                     11
                 } else if slot_1k < 4 {
                     3
@@ -329,10 +380,10 @@ impl Mmc5 {
             2 => {
                 // Four 2 KB windows. BG: regs 1/3/5/7. Sprite: 9/11/9/11.
                 let pair = slot_1k / 2;
-                let reg = if is_sprite {
-                    [9, 11, 9, 11][pair]
-                } else {
+                let reg = if chr_a {
                     [1, 3, 5, 7][pair]
+                } else {
+                    [9, 11, 9, 11][pair]
                 };
                 (reg, 2usize)
             }
@@ -340,23 +391,42 @@ impl Mmc5 {
                 // 1 KB mode - eight windows. BG: regs 0..=7 in order.
                 // Sprite: regs 8..=11 replicated across slots 0-3 and
                 // 4-7.
-                let reg = if is_sprite {
-                    8 + (slot_1k & 0x03)
-                } else {
+                let reg = if chr_a {
                     slot_1k
+                } else {
+                    8 + (slot_1k & 0x03)
                 };
                 (reg, 1usize)
             }
         };
 
-        // Compose the final 1 KB bank index. The register stores a
-        // value in `size_1k`-KB units; multiply to convert to 1 KB
-        // units, then pick the sub-slot. `$5130` upper bits widen
-        // the index for CHR > 256 KB (unused by most games).
         let raw = self.chr_reg(reg_idx) as usize;
         let base_1k = (raw | ((self.chr_upper as usize & 0x03) << 8)) * size_1k;
         let bank_1k = (base_1k + (slot_1k & (size_1k - 1))) % self.chr_bank_count_1k;
         bank_1k * CHR_BANK_1K + offset_in_1k
+    }
+
+    /// Mesen2's `chrA` predicate: true when the BG bank set should
+    /// drive this fetch. See [`Mmc5::resolve_chr`] for the rule
+    /// table. Pulled out of the resolver because the
+    /// 8×16-sprite-mode-vs-vblank decision is best read once on
+    /// its own.
+    fn chr_a_for(&self, kind: PpuFetchKind) -> bool {
+        match kind {
+            // BG fetches always come from the BG set.
+            PpuFetchKind::BgPattern
+            | PpuFetchKind::BgNametable
+            | PpuFetchKind::BgAttribute => true,
+            // Sprite fetches in 8×16 mode use the sprite set.
+            PpuFetchKind::SpritePattern => false,
+            // Idle / sprite NT/AT (8×16 garbage) fall back to the
+            // last-written-set rule. `last_chr_reg == 0` (8×8 mode
+            // reset) collapses to BG. Once the cart has written a
+            // sprite register during 8×16 mode, vblank-time
+            // fetches stay in the sprite set until a BG-range
+            // write flips it back.
+            _ => self.last_chr_reg <= 0x5127,
+        }
     }
 
     fn chr_reg(&self, idx: usize) -> u8 {
@@ -573,13 +643,17 @@ impl Mapper for Mmc5 {
                 self.prg_regs[(addr - 0x5113) as usize] = data;
                 self.update_prg_banks();
             }
-            // $5120-$5127: BG CHR bank selectors.
+            // $5120-$5127: BG CHR bank selectors. Mesen2 records the
+            // last-written register address and uses it during vblank
+            // to pick BG vs sprite set (see resolve_chr).
             0x5120..=0x5127 => {
                 self.chr_bg_regs[(addr - 0x5120) as usize] = data;
+                self.last_chr_reg = addr;
             }
             // $5128-$512B: sprite CHR bank selectors (8×16 mode).
             0x5128..=0x512B => {
                 self.chr_spr_regs[(addr - 0x5128) as usize] = data;
+                self.last_chr_reg = addr;
             }
             // $5130: upper bits for >256 KB CHR.
             0x5130 => self.chr_upper = data & 0x03,
@@ -680,6 +754,21 @@ impl Mapper for Mmc5 {
     fn ppu_read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => {
+                // ExAttribute mode 1: pattern bytes for the current
+                // tile come from a 4 KiB CHR bank picked by the AT
+                // fetch (see ppu_nametable_read). The fetch counter
+                // is decremented in on_ppu_addr; values 0 and 1 mean
+                // "we're inside the pattern-low / pattern-high
+                // fetches that follow the most recent AT fetch".
+                if self.exram_mode == 1 && self.ex_attr_fetch_counter <= 1 {
+                    let bank = (self.ex_attr_chr_bank as usize) & 0xFF;
+                    let bank_size = 4 * 1024;
+                    let off_in_bank = (addr as usize) & (bank_size - 1);
+                    let total = bank * bank_size + off_in_bank;
+                    let total = total
+                        % (self.chr_bank_count_1k * CHR_BANK_1K).max(1);
+                    return self.chr[total];
+                }
                 let off = self.resolve_chr(addr, self.last_fetch_kind);
                 self.chr[off]
             }
@@ -701,6 +790,34 @@ impl Mapper for Mmc5 {
         // immediately before `ppu_read` (same bus access), so the
         // tag is fresh when CHR routing runs.
         self.last_fetch_kind = kind;
+
+        // ExAttribute mode 1 fetch tracking. NT fetch arms the
+        // counter; AT fetch decrements it (and the AT-byte override
+        // is computed in ppu_nametable_read using the latched NT
+        // address); the next two pattern fetches consume the
+        // remaining counter values, returning CHR bytes from the
+        // ExRAM-selected 4 KiB bank.
+        let is_nt_addr = (0x2000..=0x2FFF).contains(&addr);
+        let is_nt_fetch = is_nt_addr && (addr & 0x03FF) < 0x03C0;
+        let is_at_fetch = is_nt_addr && (addr & 0x03FF) >= 0x03C0;
+        if self.exram_mode == 1 {
+            if is_nt_fetch {
+                self.ex_attr_last_nt_fetch = addr & 0x03FF;
+                self.ex_attr_fetch_counter = 3;
+            } else if self.ex_attr_fetch_counter > 0 {
+                self.ex_attr_fetch_counter -= 1;
+                if is_at_fetch {
+                    // AT slot: pull the matching ExRAM byte and
+                    // resolve the per-tile CHR bank for the upcoming
+                    // pattern fetches.
+                    let v = self.exram[self.ex_attr_last_nt_fetch as usize] as u16;
+                    self.ex_attr_chr_bank =
+                        (v & 0x3F) | ((self.chr_upper as u16 & 0x03) << 6);
+                }
+            }
+        } else {
+            self.ex_attr_fetch_counter = 0;
+        }
 
         // Scanline IRQ - follows Mesen2's MapperReadVram +
         // DetectScanlineStart structure in our own words.
@@ -768,6 +885,22 @@ impl Mapper for Mmc5 {
     }
 
     fn ppu_nametable_read(&mut self, slot: u8, offset: u16) -> NametableSource {
+        let off = offset as usize & 0x03FF;
+        // ExAttribute mode 1: AT-fetch override. The byte we return
+        // gets shifted by the PPU per-quadrant; replicating the
+        // 2-bit palette across all four positions makes the result
+        // independent of which quadrant the PPU picks. Pattern
+        // bytes for the same tile are overridden in `ppu_read`
+        // using `ex_attr_chr_bank` (resolved here in on_ppu_addr).
+        // NT-byte fetches (offset < 0x3C0) fall through to normal
+        // routing below.
+        if self.exram_mode == 1 && off >= 0x03C0 {
+            let v = self.exram[self.ex_attr_last_nt_fetch as usize];
+            let palette = (v >> 6) & 0x03;
+            return NametableSource::Byte(
+                palette | (palette << 2) | (palette << 4) | (palette << 6),
+            );
+        }
         let nt_id = (self.nt_mapping >> (slot * 2)) & 0x03;
         match nt_id {
             0 => NametableSource::CiramA,
@@ -779,7 +912,7 @@ impl Mapper for Mmc5 {
                 // these slots instead - matches Mesen2's
                 // `_emptyNametable` mapping in `SetNametableMapping`.
                 if self.exram_mode <= 1 {
-                    NametableSource::Byte(self.exram[offset as usize & 0x03FF])
+                    NametableSource::Byte(self.exram[off])
                 } else {
                     NametableSource::Byte(0)
                 }
@@ -788,7 +921,6 @@ impl Mapper for Mmc5 {
                 // Fill mode: tile byte from $5106 at offsets < $3C0;
                 // attribute byte from $5107's 2 bits replicated
                 // across all four 2×2 quadrants at $3C0..=$3FF.
-                let off = offset as usize & 0x03FF;
                 if off < 0x03C0 {
                     NametableSource::Byte(self.fill_tile)
                 } else {
@@ -881,6 +1013,7 @@ impl Mapper for Mmc5 {
             mult_a: self.mult_a,
             mult_b: self.mult_b,
             save_dirty: self.save_dirty,
+            last_chr_reg: self.last_chr_reg,
         })))
     }
 
@@ -923,9 +1056,15 @@ impl Mapper for Mmc5 {
         self.mult_a = snap.mult_a;
         self.mult_b = snap.mult_b;
         self.save_dirty = snap.save_dirty;
+        self.last_chr_reg = snap.last_chr_reg;
         // Reset transient/derived state and recompute window cache
-        // from prg_mode + prg_regs + prg_ram_protect*.
+        // from prg_mode + prg_regs + prg_ram_protect*. The
+        // ExAttribute fetch counter and bank cache are 1-3 PPU
+        // cycles transient and self-heal on the next NT/AT pair.
         self.last_fetch_kind = PpuFetchKind::Idle;
+        self.ex_attr_fetch_counter = 0;
+        self.ex_attr_chr_bank = 0;
+        self.ex_attr_last_nt_fetch = 0;
         self.update_prg_banks();
         Ok(())
     }
@@ -1224,6 +1363,96 @@ mod tests {
             chr_read(&mut m, 0x1800, PpuFetchKind::SpritePattern),
             18,
         );
+    }
+
+    #[test]
+    fn idle_chr_fetch_uses_last_written_set_bg_then_sprite() {
+        // After a BG-range write the vblank ($2007) read path
+        // resolves to the BG set; after a sprite-range write it
+        // flips to the sprite set. Mesen2's `_lastChrReg <= 0x5127`
+        // rule.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5101, 0x03); // 1 KB mode
+        for i in 0..8u8 {
+            m.cpu_write(0x5120 + i as u16, i); // BG bank N
+        }
+        for i in 0..4u8 {
+            m.cpu_write(0x5128 + i as u16, 32 + i); // sprite bank 32+N
+        }
+        // Last write was sprite ($512B) -> Idle fetch picks sprite.
+        assert_eq!(chr_read(&mut m, 0x0000, PpuFetchKind::Idle), 32);
+        // Now write a BG reg -> Idle fetch flips back to BG.
+        m.cpu_write(0x5120, 5);
+        assert_eq!(chr_read(&mut m, 0x0000, PpuFetchKind::Idle), 5);
+    }
+
+    #[test]
+    fn exattribute_mode_overrides_attribute_byte_with_palette_replicated() {
+        // ExRAM byte top 2 bits = palette; AT fetch returns
+        // palette*0x55 (0b<pp><pp><pp><pp>) so the PPU's per-quadrant
+        // shift gets the same palette regardless of position.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5104, 0x01); // ExRAM mode 1 (ExAttribute)
+        m.cpu_write(0x5105, 0xAA); // every NT slot -> ExRAM-as-NT
+        // ExRAM[0x10] = 0xC5 -> palette = 0b11, CHR bank = 0b000101.
+        m.exram[0x10] = 0xC5;
+        // Walk the PPU through one tile cycle: NT fetch at $2010,
+        // then AT fetch at $23C0+(...) - we use $23C0 + 0 since the
+        // exact slot doesn't matter, the AT-byte override looks up
+        // ex_attr_last_nt_fetch.
+        m.on_ppu_addr(0x2010, 0, PpuFetchKind::BgNametable);
+        m.on_ppu_addr(0x23C0, 0, PpuFetchKind::BgAttribute);
+        let at = m.ppu_nametable_read(3, 0x03C0);
+        // 0b11 replicated 4 times = 0xFF.
+        assert!(matches!(at, NametableSource::Byte(0xFF)));
+    }
+
+    #[test]
+    fn exattribute_mode_routes_pattern_fetch_through_exram_bank() {
+        // Same setup as above but verify the pattern bytes that
+        // follow the AT fetch read from the ExRAM-selected 4 KiB
+        // CHR bank rather than the normal chr_bg_regs path.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5104, 0x01); // ExRAM mode 1
+        m.cpu_write(0x5105, 0xAA);
+        // Bank index 5 in the low 6 bits + chr_upper=0 -> 4 KiB bank 5.
+        m.exram[0x20] = 0x05;
+        // Walk the full per-tile fetch sequence so the counter
+        // ticks through NT(3) -> AT(2) -> pat-low(1) -> pat-high(0).
+        m.on_ppu_addr(0x2020, 0, PpuFetchKind::BgNametable);
+        m.on_ppu_addr(0x23E0, 0, PpuFetchKind::BgAttribute);
+        // Our tagged_cart fills 1 KiB bank N with byte N, so the
+        // first byte of the 4 KiB region starting at offset 5*4096
+        // is 1 KiB bank 20 (5*4 = 20).
+        let p_lo = chr_read(&mut m, 0x0000, PpuFetchKind::BgPattern);
+        assert_eq!(p_lo, 20, "ExAttribute should pull from ExRAM-selected bank");
+        // Pattern-high (8 bytes later) hits the same 1 KiB bank
+        // - tagged_cart fills the whole 1 KiB with the bank index.
+        let p_hi = chr_read(&mut m, 0x0008, PpuFetchKind::BgPattern);
+        assert_eq!(p_hi, 20, "still inside 1 KiB bank 20");
+    }
+
+    #[test]
+    fn exattribute_mode_picks_fresh_bank_per_tile_cycle() {
+        // Successive tile cycles each pull their own bank from
+        // ExRAM - no carryover from the previous tile's bank.
+        let mut m = Mmc5::new(tagged_cart());
+        m.cpu_write(0x5104, 0x01);
+        m.cpu_write(0x5105, 0xAA);
+        m.exram[0x10] = 0x05; // first tile: bank 5
+        m.exram[0x30] = 0x02; // second tile: bank 2
+
+        // Tile 1 - NT, AT, pattern-low.
+        m.on_ppu_addr(0x2010, 0, PpuFetchKind::BgNametable);
+        m.on_ppu_addr(0x23C0, 0, PpuFetchKind::BgAttribute);
+        let p1 = chr_read(&mut m, 0x0000, PpuFetchKind::BgPattern);
+        assert_eq!(p1, 20, "first tile -> bank 5 (1 KiB bank 20)");
+
+        // Tile 2 - NT, AT, pattern-low.
+        m.on_ppu_addr(0x2030, 0, PpuFetchKind::BgNametable);
+        m.on_ppu_addr(0x23F0, 0, PpuFetchKind::BgAttribute);
+        let p2 = chr_read(&mut m, 0x0000, PpuFetchKind::BgPattern);
+        assert_eq!(p2, 8, "second tile -> bank 2 (1 KiB bank 8)");
     }
 
     #[test]
