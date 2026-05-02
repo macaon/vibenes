@@ -1575,6 +1575,10 @@ impl App {
         // hot-plug events into the runtime via a notice list, and
         // handle Mode + nav inline.
         let mut hotplug_after: Vec<(gilrs::GamepadId, gilrs::EventType)> = Vec::new();
+        // Raw button edges to feed back into the InputRuntime
+        // after the gilrs borrow drops. Tuple is (pad_id, raw u32
+        // code, pressed?). Backs PhysicalSource::GamepadRawCode.
+        let mut raw_edges: Vec<(gilrs::GamepadId, u32, bool)> = Vec::new();
         if let Some(g) = self.input.gilrs_mut() {
             while let Some(ev) = g.next_event() {
                 match ev.event {
@@ -1584,7 +1588,13 @@ impl App {
                             eprintln!("gamepad[{:?}] Mode pressed -> menu toggle", ev.id);
                         }
                     }
-                    EventType::ButtonPressed(btn, _) => {
+                    EventType::ButtonPressed(btn, code) => {
+                        // Stash raw-code state so
+                        // PhysicalSource::GamepadRawCode bindings
+                        // can resolve. into_u32 packs platform-
+                        // specific (kind, code) into a single u32 -
+                        // on Linux that's (kind << 16) | evdev_code.
+                        raw_edges.push((ev.id, code.into_u32(), true));
                         // Menu nav while the overlay is open. We
                         // forward edges unconditionally; the UI
                         // layer ignores them when the overlay is
@@ -1597,8 +1607,19 @@ impl App {
                             _ => {}
                         }
                         if debug {
-                            eprintln!("gamepad[{:?}] pressed {:?}", ev.id, btn);
+                            // For pads with no SDL game-controller-DB
+                            // mapping (Buffalo BGC-FC801 etc) gilrs
+                            // reports the slot as `Unknown`. The
+                            // into_u32 value is what to put in
+                            // input.toml as `gamepad-raw:N`.
+                            eprintln!(
+                                "gamepad[{:?}] pressed {:?} (code={:?} = {})",
+                                ev.id, btn, code, code.into_u32(),
+                            );
                         }
+                    }
+                    EventType::ButtonReleased(_, code) => {
+                        raw_edges.push((ev.id, code.into_u32(), false));
                     }
                     EventType::Connected | EventType::Disconnected => {
                         // Defer hot-plug bookkeeping to the
@@ -1607,6 +1628,23 @@ impl App {
                     }
                     _ => {}
                 }
+            }
+        }
+        // Replay raw edges into the runtime now that the gilrs
+        // borrow has dropped.
+        for (id, code, pressed) in raw_edges {
+            self.input.note_gamepad_button(id, code, pressed);
+        }
+        // Reconcile any stale slot ids before processing connects.
+        // Linux evdev sometimes drops the Disconnected event when
+        // a controller is unplugged + replugged faster than the
+        // kernel notices, leaving pad_id pointing at a gilrs id
+        // that's no longer connected. Without this sweep the
+        // reconnect would fall to rule 4 (Ignored) because the
+        // stale id makes the slot look occupied.
+        for notice in self.input.reconcile_stale_slots() {
+            if let HotplugNotice::Disconnected { player: Some(p), name } = &notice {
+                eprintln!("vibenes: P{p} controller disconnected ({name})");
             }
         }
         // Re-inject hot-plug events into the runtime as if it had

@@ -189,6 +189,15 @@ pub enum PhysicalSource {
     /// Analog axis treated as a digital input via a deflection
     /// threshold ([`AXIS_THRESHOLD`]).
     GamepadAxis { axis: GamepadAxis, sign: AxisSign },
+    /// Raw gamepad button by its `gilrs::ev::Code::into_u32()`
+    /// value. Use when gilrs reports the button as `Unknown`
+    /// (typical for cheap retro-USB pads with no SDL
+    /// game-controller-DB mapping - Buffalo BGC-FC801, generic
+    /// Famicom clones, etc.). The encoded u32 is platform-specific:
+    /// on Linux it's `(kind << 16) | evdev_code`. Read the
+    /// `(code=N)` value from `VIBENES_GAMEPAD_DEBUG=1` output to
+    /// learn the right number for your pad.
+    GamepadRawCode(u32),
 }
 
 impl PhysicalSource {
@@ -205,6 +214,7 @@ impl PhysicalSource {
                 };
                 format!("axis:{}{s}", axis.name())
             }
+            Self::GamepadRawCode(code) => format!("gamepad-raw:{code}"),
         }
     }
 
@@ -214,6 +224,12 @@ impl PhysicalSource {
         }
         if let Some(rest) = s.strip_prefix("gamepad:") {
             return Ok(Self::GamepadButton(GamepadButton::from_name(rest)?));
+        }
+        if let Some(rest) = s.strip_prefix("gamepad-raw:") {
+            let code: u32 = rest.parse().with_context(|| {
+                format!("gamepad-raw code must be a u32, got {rest:?}")
+            })?;
+            return Ok(Self::GamepadRawCode(code));
         }
         if let Some(rest) = s.strip_prefix("axis:") {
             // Last char is sign.
@@ -233,7 +249,7 @@ impl PhysicalSource {
             });
         }
         Err(anyhow!(
-            "unknown source kind in {s:?}; expected key:..., gamepad:..., or axis:..."
+            "unknown source kind in {s:?}; expected key:..., gamepad:..., gamepad-raw:..., or axis:..."
         ))
     }
 }
@@ -921,6 +937,12 @@ pub struct InputRuntime {
     /// when the assigned pad is currently disconnected).
     p1_pad_id: Option<gilrs::GamepadId>,
     p2_pad_id: Option<gilrs::GamepadId>,
+    /// Raw gamepad-button state, indexed by gilrs `GamepadId` and
+    /// then by `Code::into_u32()`. Populated from event-loop
+    /// drains via [`InputRuntime::note_gamepad_button`]. Backs
+    /// [`PhysicalSource::GamepadRawCode`] so we can support pads
+    /// gilrs reports as `Button::Unknown`.
+    raw_buttons: HashMap<gilrs::GamepadId, HashMap<u32, bool>>,
     /// Rolling frame counter, used to drive turbo oscillators.
     /// Wraps freely - we only care about the period modulus.
     frame_counter: u32,
@@ -942,6 +964,7 @@ impl InputRuntime {
             keys_held: HashMap::new(),
             p1_pad_id: None,
             p2_pad_id: None,
+            raw_buttons: HashMap::new(),
             frame_counter: 0,
         };
         // Apply the boot-time auto-assignment rule to whatever
@@ -950,18 +973,27 @@ impl InputRuntime {
         rt
     }
 
-    /// Walk gilrs's startup list and apply the assignment rules in
-    /// detection order. Sticky UUIDs win over detection order, so
-    /// "the Xbox controller is always P1" survives even if it
-    /// happens to enumerate second this session.
+    /// Walk gilrs's startup list and assign slots fresh, ignoring
+    /// any UUIDs persisted from a previous session. Aligns with
+    /// the "disconnect frees the slot" runtime policy: assignments
+    /// are session-scoped, not durable. Persisted UUIDs are still
+    /// written to disk during the session for diagnostics, but
+    /// the boot path overwrites them rather than honoring them.
+    ///
+    /// Two-step:
+    /// 1. Clear any stored UUIDs (they're stale - the prior
+    ///    session's pads may not even be connected).
+    /// 2. Walk connected pads in detection order; auto-assign per
+    ///    rules 2 + 3 (P1 first if empty, then P2 only if P1 has
+    ///    a pad), skipping `name_blocks_auto_assign` matches
+    ///    (Keychron-as-HID etc).
     fn resolve_initial_pads(&mut self) {
         let Some(g) = self.gilrs.as_ref() else { return };
-        // First pass: sticky UUIDs. Each device is claimed by at
-        // most one slot - the `continue` after a P1 match prevents
-        // duplicate-UUID controllers (two 8BitDos of the same
-        // model both ship UUID X) from collapsing onto a single
-        // slot. The slot-empty guards mirror the runtime
-        // `on_connect` rule 1.
+        // Step 1: clear ghost UUIDs from prior sessions.
+        self.cfg.p1.gamepad_uuid = None;
+        self.cfg.p2.gamepad_uuid = None;
+        // Step 2: detection-order auto-assign. Collect the list
+        // first so we don't borrow gilrs across the persist call.
         let connected: Vec<(gilrs::GamepadId, GamepadUuid, String)> = g
             .gamepads()
             .filter_map(|(id, pad)| {
@@ -972,43 +1004,23 @@ impl InputRuntime {
                 Some((id, uuid, pad.name().to_string()))
             })
             .collect();
-        for (id, uuid, _name) in &connected {
-            if Some(*uuid) == self.cfg.p1.gamepad_uuid && self.p1_pad_id.is_none() {
-                self.p1_pad_id = Some(*id);
-                continue;
-            }
-            if Some(*uuid) == self.cfg.p2.gamepad_uuid && self.p2_pad_id.is_none() {
-                self.p2_pad_id = Some(*id);
-            }
-        }
-        // Second pass: auto-assign the unassigned slots, in detection
-        // order. Skip pads we just resolved via sticky UUID, and skip
-        // devices that are almost certainly not real controllers (see
-        // `name_blocks_auto_assign`).
         for (id, uuid, name) in &connected {
-            if Some(*id) == self.p1_pad_id || Some(*id) == self.p2_pad_id {
-                continue;
-            }
             if name_blocks_auto_assign(name) {
                 continue;
             }
-            if self.cfg.p1.gamepad_uuid.is_none() && self.p1_pad_id.is_none() {
+            if self.p1_pad_id.is_none() {
                 self.cfg.p1.gamepad_uuid = Some(*uuid);
                 self.p1_pad_id = Some(*id);
-                self.persist_quietly();
                 continue;
             }
-            // Rule: P2 only fills if P1 has a pad.
-            let p1_has_pad = self.p1_pad_id.is_some();
-            if p1_has_pad
-                && self.cfg.p2.gamepad_uuid.is_none()
-                && self.p2_pad_id.is_none()
-            {
+            // Rule 3: P2 only fills if P1 has a pad.
+            if self.p2_pad_id.is_none() {
                 self.cfg.p2.gamepad_uuid = Some(*uuid);
                 self.p2_pad_id = Some(*id);
-                self.persist_quietly();
             }
         }
+        // Single persist after the sweep.
+        self.persist_quietly();
     }
 
     fn persist_quietly(&self) {
@@ -1026,6 +1038,7 @@ impl InputRuntime {
     /// [`gilrs::Gilrs::gamepad`].
     pub fn drain_events(&mut self) -> Vec<HotplugNotice> {
         let mut notices = Vec::new();
+        notices.extend(self.reconcile_stale_slots());
         let mut needs_persist = false;
         // Inner block borrows `self.gilrs` mutably; we defer persist
         // I/O until the borrow drops.
@@ -1088,6 +1101,73 @@ impl InputRuntime {
         self.keys_held.insert(code, pressed);
     }
 
+    /// Record a raw gamepad button edge for the given pad. Called
+    /// from main.rs's gilrs event drain so [`PhysicalSource::GamepadRawCode`]
+    /// bindings can resolve. The caller must pass `code.into_u32()`
+    /// directly - we don't re-derive it here so this stays
+    /// independent of gilrs's `Code` type.
+    pub fn note_gamepad_button(
+        &mut self,
+        pad: gilrs::GamepadId,
+        code_u32: u32,
+        pressed: bool,
+    ) {
+        self.raw_buttons.entry(pad).or_default().insert(code_u32, pressed);
+    }
+
+    /// Walk both player slots and validate that the saved gilrs
+    /// id still corresponds to a gilrs-connected pad. When it
+    /// doesn't, the slot is treated as if a Disconnected event had
+    /// arrived for it - clear `pad_id` + `gamepad_uuid` and emit a
+    /// notice. Catches the gilrs / evdev edge case where a fast
+    /// unplug/replug cycle produces only a fresh Connected event
+    /// (the old id silently goes away). Without reconciliation the
+    /// reconnect would land in rule 4 (Ignored) because the stale
+    /// id makes the slot look occupied.
+    pub fn reconcile_stale_slots(&mut self) -> Vec<HotplugNotice> {
+        let mut notices = Vec::new();
+        let mut persisted = false;
+        let snapshot = |pad_id: &mut Option<gilrs::GamepadId>,
+                            cfg_uuid: &mut Option<GamepadUuid>,
+                            slot: u8|
+         -> Option<HotplugNotice> {
+            let id = (*pad_id)?;
+            let g = self.gilrs.as_ref()?;
+            if g.connected_gamepad(id).is_some() {
+                return None;
+            }
+            // Use the cached gamepad entry to recover the friendly
+            // name even though the device is gone.
+            let name = g.gamepad(id).name().to_string();
+            *pad_id = None;
+            *cfg_uuid = None;
+            Some(HotplugNotice::Disconnected { player: Some(slot), name })
+        };
+        // Have to split the mutable borrows manually; the closure
+        // can't both capture &mut self and re-borrow individual
+        // fields without help.
+        let mut p1_pad = self.p1_pad_id;
+        let mut p1_uuid = self.cfg.p1.gamepad_uuid;
+        if let Some(n) = snapshot(&mut p1_pad, &mut p1_uuid, 1) {
+            notices.push(n);
+            self.p1_pad_id = p1_pad;
+            self.cfg.p1.gamepad_uuid = p1_uuid;
+            persisted = true;
+        }
+        let mut p2_pad = self.p2_pad_id;
+        let mut p2_uuid = self.cfg.p2.gamepad_uuid;
+        if let Some(n) = snapshot(&mut p2_pad, &mut p2_uuid, 2) {
+            notices.push(n);
+            self.p2_pad_id = p2_pad;
+            self.cfg.p2.gamepad_uuid = p2_uuid;
+            persisted = true;
+        }
+        if persisted {
+            self.persist_quietly();
+        }
+        notices
+    }
+
     /// Apply a previously-drained Connect/Disconnect event to the
     /// runtime's slot routing. Used by callers that want to peek at
     /// gilrs events for non-binding purposes (menu nav, Mode-button
@@ -1095,6 +1175,13 @@ impl InputRuntime {
     /// - keeps a single drain consumer without losing hot-plug
     /// updates. Returns the same notice [`InputRuntime::drain_events`]
     /// would have produced.
+    ///
+    /// Callers that go through this path **must** call
+    /// [`InputRuntime::reconcile_stale_slots`] before processing
+    /// connect events, to handle the case where gilrs missed
+    /// delivering a Disconnected event (Linux evdev fast
+    /// unplug/replug). Otherwise a stale `pad_id` will block the
+    /// reconnect from landing in its old slot.
     pub fn handle_synthetic_event(
         &mut self,
         id: gilrs::GamepadId,
@@ -1161,13 +1248,14 @@ impl InputRuntime {
             _ => None,
         };
         let pad = pad_id.and_then(|id| self.gilrs.as_ref()?.connected_gamepad(id));
+        let raw = pad_id.and_then(|id| self.raw_buttons.get(&id));
         let mut bits = 0u8;
         for (nes_button, sources) in &p.bindings {
             // Turbo bits oscillate when held; non-turbo bits set on
             // any pressed source.
             let any_held = sources
                 .iter()
-                .any(|src| source_is_active(src, &self.keys_held, pad.as_ref()));
+                .any(|src| source_is_active(src, &self.keys_held, pad.as_ref(), raw));
             if !any_held {
                 continue;
             }
@@ -1297,6 +1385,7 @@ fn source_is_active(
     src: &PhysicalSource,
     keys_held: &HashMap<KeyCode, bool>,
     pad: Option<&gilrs::Gamepad<'_>>,
+    raw_buttons: Option<&HashMap<u32, bool>>,
 ) -> bool {
     match src {
         PhysicalSource::Key(k) => *keys_held.get(&k.to_winit()).unwrap_or(&false),
@@ -1311,6 +1400,9 @@ fn source_is_active(
                 AxisSign::Negative => v < -AXIS_THRESHOLD,
             }
         }
+        PhysicalSource::GamepadRawCode(code) => raw_buttons
+            .and_then(|m| m.get(code).copied())
+            .unwrap_or(false),
     }
 }
 
@@ -1405,12 +1497,20 @@ mod tests {
                 axis: GamepadAxis::LeftStickX,
                 sign: AxisSign::Positive,
             },
+            // Buffalo A button on Linux: (kind=1 << 16) | 288 = 65824
+            PhysicalSource::GamepadRawCode(65824),
         ];
         for c in cases {
             let s = c.encode();
             let back = PhysicalSource::parse(&s).unwrap();
             assert_eq!(back, c, "round-trip via {s:?}");
         }
+    }
+
+    #[test]
+    fn gamepad_raw_code_parse_rejects_non_numeric() {
+        assert!(PhysicalSource::parse("gamepad-raw:abc").is_err());
+        assert!(PhysicalSource::parse("gamepad-raw:").is_err());
     }
 
     #[test]
