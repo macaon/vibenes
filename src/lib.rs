@@ -16,6 +16,7 @@ pub mod crc32;
 pub mod debug_overlay;
 pub mod gamedb;
 pub mod gfx;
+pub mod input;
 pub mod nes;
 pub mod save;
 pub mod save_header;

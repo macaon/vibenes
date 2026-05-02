@@ -17,6 +17,7 @@ use vibenes::nes::clock::Region;
 use vibenes::config::Config;
 use vibenes::debug_overlay;
 use vibenes::gfx::{PresentOutcome, Renderer};
+use vibenes::input::{HotplugNotice, InputConfig, InputRuntime};
 use vibenes::nes::Nes;
 use vibenes::nes::rom::Cartridge;
 use vibenes::settings;
@@ -279,24 +280,13 @@ struct App {
     /// `None` means we haven't set `WaitUntil` yet this session
     /// (startup default is `Poll`).
     last_wait_deadline: Option<Instant>,
-    /// Controller-1 bits sourced from the keyboard. Updated from
-    /// winit key events; merged with `gamepad_bits_p1` once per
-    /// frame and written to the NES controller shifter.
-    keyboard_bits_p1: u8,
-    /// Controller-1 bits sourced from the first connected gamepad
-    /// (see `poll_gamepad`). Re-sampled once per frame.
-    gamepad_bits_p1: u8,
-    /// gilrs runtime. `None` if initialization failed (headless
-    /// systems, missing permissions on evdev, etc.) - the
-    /// keyboard path keeps working.
-    gamepad: Option<gilrs::Gilrs>,
-    /// Most-recently-active gamepad id. Set whenever an input event
-    /// (button or axis) is drained from gilrs. This is how we avoid
-    /// polling a phantom HID device (e.g. a Keychron keyboard dock
-    /// that Linux classifies as a gamepad) that enumerates before
-    /// the real controller - the first device that actually reports
-    /// input wins.
-    active_pad: Option<gilrs::GamepadId>,
+    /// Unified input runtime: holds the gilrs handle, the
+    /// keyboard-state map, the loaded `input.toml` config, and the
+    /// hot-plug-resolved P1/P2 gamepad ids. Replaces the previous
+    /// keyboard_bits / gamepad_bits / active_pad fields. The
+    /// settings UI reads + mutates the bindings here once it
+    /// arrives in phase 2.
+    input: InputRuntime,
     /// Edge-triggered overlay toggle request from the gamepad's
     /// Mode button (Xbox "Guide" / PlayStation "PS" / 8BitDo
     /// "Home"). Set inside `poll_gamepad` on press, consumed by
@@ -427,19 +417,26 @@ impl App {
                 }
             }
         }
-        let gamepad = match gilrs::Gilrs::new() {
-            Ok(g) => {
-                let count = g.gamepads().count();
-                if count > 0 {
-                    eprintln!("gamepad: {count} connected (P1 uses the first)");
-                }
-                Some(g)
-            }
-            Err(e) => {
-                eprintln!("vibenes: gamepad init failed ({e}) - keyboard only");
-                None
-            }
+        // Load (or eagerly write) the user's input bindings before
+        // building the runtime, so the runtime sees any sticky
+        // gamepad UUIDs in its boot-time auto-assign sweep.
+        let input_path = InputConfig::default_path();
+        let input_cfg = match input_path.as_ref() {
+            Some(p) => InputConfig::load_or_init(p),
+            None => InputConfig::default(),
         };
+        let input = InputRuntime::new(input_cfg, input_path.clone());
+        if let Some(p) = input_path.as_ref() {
+            eprintln!("vibenes: input bindings → {}", p.display());
+        }
+        if let Some(g) = input.gilrs() {
+            let count = g.gamepads().count();
+            if count > 0 {
+                eprintln!("gamepad: {count} connected");
+            }
+        } else {
+            eprintln!("vibenes: gamepad runtime unavailable - keyboard only");
+        }
         Self {
             nes,
             snes: None,
@@ -468,10 +465,7 @@ impl App {
             config,
             frames_since_autosave: 0,
             last_wait_deadline: None,
-            keyboard_bits_p1: 0,
-            gamepad_bits_p1: 0,
-            gamepad,
-            active_pad: None,
+            input,
             pending_menu_toggle: false,
             pending_nav: Vec::new(),
             show_scanline_ruler: false,
@@ -546,7 +540,7 @@ impl App {
             .is_some_and(|ui| ui.is_overlay_open());
 
         if !overlay_open {
-            self.commit_controller_p1();
+            self.commit_controllers();
         }
 
         let renderer = match self.renderer.as_mut() {
@@ -780,6 +774,10 @@ impl App {
         } else {
             next
         });
+        // Advance the turbo oscillator. Tied to presented frames
+        // (not emulated frames) so the visible cadence matches the
+        // user's monitor refresh.
+        self.input.end_frame();
         if self.fps_print_enabled {
             self.fps_frames = self.fps_frames.saturating_add(1);
             if self.fps_window_start.is_none() {
@@ -1541,182 +1539,115 @@ impl App {
         }
     }
 
-    /// Map keyboard keys to NES controller-1 bits. The NES shifter
-    /// reads LSB-first in this order: A, B, Select, Start, Up, Down,
-    /// Left, Right (see `Controller::read`). Layout mirrors the
-    /// common Mesen / FCEUX default:
+    /// Update the input runtime's keyboard state on every winit
+    /// key edge. Bindings live in `input.toml` (see
+    /// [`vibenes::input`]); this function no longer hardcodes a
+    /// keyboard map. Key-repeat events are filtered at the call
+    /// site, so each call here is a real edge.
     ///
-    /// | Key                 | NES button |
-    /// | ------------------- | ---------- |
-    /// | X                   | A          |
-    /// | Z                   | B          |
-    /// | Right Shift         | Select     |
-    /// | Enter / Return      | Start      |
-    /// | Arrow keys          | D-pad      |
-    ///
-    /// `R` triggers a warm reset (the console's Reset button) and is
-    /// handled in `window_event` before this function runs.
-    ///
-    /// Key-repeat events are ignored (filtered at the call site) so
-    /// holding a button doesn't toggle it. Only physical press/release
-    /// edges flip the bit.
+    /// `R` triggers a warm reset (the console's Reset button) and
+    /// is handled in `window_event` before this function runs.
     fn apply_controller_input(&mut self, code: KeyCode, state: ElementState) {
-        let bit: u8 = match code {
-            KeyCode::KeyX => 0x01,        // A
-            KeyCode::KeyZ => 0x02,        // B
-            KeyCode::ShiftRight => 0x04,  // Select
-            KeyCode::Enter => 0x08,       // Start
-            KeyCode::ArrowUp => 0x10,
-            KeyCode::ArrowDown => 0x20,
-            KeyCode::ArrowLeft => 0x40,
-            KeyCode::ArrowRight => 0x80,
-            _ => return,
-        };
-        match state {
-            ElementState::Pressed => self.keyboard_bits_p1 |= bit,
-            ElementState::Released => self.keyboard_bits_p1 &= !bit,
-        }
-        self.commit_controller_p1();
+        self.input.note_key(code, state == ElementState::Pressed);
+        self.commit_controllers();
     }
 
-    /// Poll the first connected gamepad and project its state onto
-    /// NES controller-1 bits. Fixed mapping, Xbox-first:
+    /// Drain gilrs events, surface hot-plug toasts / nav presses to
+    /// the host, and refresh both controllers from the input
+    /// runtime. Called every frame before `step_until_frame`.
+    /// Bindings come from `input.toml` (see [`vibenes::input`]);
+    /// this function no longer hardcodes a button map.
     ///
-    /// | gilrs logical Button       | Xbox label | NES        |
-    /// | -------------------------- | ---------- | ---------- |
-    /// | South                      | A          | A (0x01)   |
-    /// | North                      | X          | B (0x02)   |
-    /// | Select / Back              | Back/View  | Select     |
-    /// | Start / Menu               | Menu       | Start      |
-    /// | D-pad                      | D-pad      | D-pad      |
-    /// | Left stick (± `DEADBAND`)  | LS         | D-pad      |
-    ///
-    /// Note on North vs West: the user's 8BitDo Ultimate 2 emits
-    /// `Button::North` for the physical X (left) face button under
-    /// gilrs' default mapping - opposite to the usual evdev
-    /// convention where `West = X`. Binding NES B to `North`
-    /// matches this controller; a future remapping UI will handle
-    /// pads that follow the other convention.
-    ///
-    /// Called every frame before `step_until_frame`. Draining
-    /// `next_event()` is required for connect/disconnect state to
-    /// propagate inside gilrs.
+    /// Two classes of gilrs event are handled outside the binding
+    /// system because they're UI concerns rather than NES input:
+    /// - **`Button::Mode`** (Xbox Guide / PS PS / 8BitDo Home) toggles
+    ///   the overlay.
+    /// - **DPad up/down + South/East face buttons** while the
+    ///   overlay is open feed the menu navigator.
     fn poll_gamepad(&mut self) {
-        use gilrs::{Axis, Button, EventType};
-        const DEADBAND: f32 = 0.5;
-        let Some(g) = self.gamepad.as_mut() else { return };
-        // Drain events. Track the most recent id that emitted an
-        // actual input event - this is the reliable signal for
-        // "which of the enumerated HID devices is really the
-        // player's gamepad". Both naive "pick first" and "has South
-        // button mapped" fail here: Linux enumerates Keychron's
-        // keyboard dock as a gamepad ahead of the real 8BitDo, and
-        // gilrs' default mapping auto-binds the fallback device's
-        // HID axes too, so static inspection can't tell them apart.
-        // Whichever one the user physically moves is the real one.
+        use gilrs::{Button, EventType};
         let debug = std::env::var_os("VIBENES_GAMEPAD_DEBUG").is_some();
-        while let Some(ev) = g.next_event() {
-            match ev.event {
-                EventType::ButtonPressed(Button::Mode, _) => {
-                    self.active_pad = Some(ev.id);
-                    self.pending_menu_toggle = true;
-                    if debug {
-                        eprintln!("gamepad[{:?}] Mode pressed -> menu toggle", ev.id);
+        // Pre-pass: scrape Mode + nav button presses straight from
+        // gilrs's event queue. We do this by peeking at events
+        // before InputRuntime drains the queue - except gilrs
+        // delivers each event exactly once, so we have to choose
+        // one consumer. Solution: drain here once, dispatch the
+        // hot-plug events into the runtime via a notice list, and
+        // handle Mode + nav inline.
+        let mut hotplug_after: Vec<(gilrs::GamepadId, gilrs::EventType)> = Vec::new();
+        if let Some(g) = self.input.gilrs_mut() {
+            while let Some(ev) = g.next_event() {
+                match ev.event {
+                    EventType::ButtonPressed(Button::Mode, _) => {
+                        self.pending_menu_toggle = true;
+                        if debug {
+                            eprintln!("gamepad[{:?}] Mode pressed -> menu toggle", ev.id);
+                        }
                     }
+                    EventType::ButtonPressed(btn, _) => {
+                        // Menu nav while the overlay is open. We
+                        // forward edges unconditionally; the UI
+                        // layer ignores them when the overlay is
+                        // closed.
+                        match btn {
+                            Button::DPadUp => self.pending_nav.push(NavKey::Up),
+                            Button::DPadDown => self.pending_nav.push(NavKey::Down),
+                            Button::South => self.pending_nav.push(NavKey::Select),
+                            Button::East => self.pending_nav.push(NavKey::Back),
+                            _ => {}
+                        }
+                        if debug {
+                            eprintln!("gamepad[{:?}] pressed {:?}", ev.id, btn);
+                        }
+                    }
+                    EventType::Connected | EventType::Disconnected => {
+                        // Defer hot-plug bookkeeping to the
+                        // InputRuntime; it owns slot routing.
+                        hotplug_after.push((ev.id, ev.event));
+                    }
+                    _ => {}
                 }
-                EventType::ButtonPressed(btn, _) => {
-                    self.active_pad = Some(ev.id);
-                    // Edge-triggered menu nav. South/East are the
-                    // Xbox A/B face buttons: South = confirm, East
-                    // = back (matches the dominant convention
-                    // across modern emulators, Steam Big Picture,
-                    // and the Nintendo-style physical layout once
-                    // rotated). D-pad up/down drives the cursor.
-                    match btn {
-                        Button::DPadUp => self.pending_nav.push(NavKey::Up),
-                        Button::DPadDown => self.pending_nav.push(NavKey::Down),
-                        Button::South => self.pending_nav.push(NavKey::Select),
-                        Button::East => self.pending_nav.push(NavKey::Back),
-                        _ => {}
-                    }
-                    if debug {
-                        eprintln!("gamepad[{:?}] pressed {:?}", ev.id, btn);
-                    }
-                }
-                EventType::ButtonReleased(..)
-                | EventType::AxisChanged(..)
-                | EventType::ButtonChanged(..) => {
-                    self.active_pad = Some(ev.id);
-                    if debug {
-                        eprintln!("gamepad[{:?}] {:?}", ev.id, ev.event);
-                    }
-                }
-                EventType::Connected => {
-                    if debug {
-                        eprintln!("gamepad[{:?}] connected", ev.id);
-                    }
-                }
-                EventType::Disconnected => {
-                    if self.active_pad == Some(ev.id) {
-                        self.active_pad = None;
-                    }
-                    if debug {
-                        eprintln!("gamepad[{:?}] disconnected", ev.id);
-                    }
-                }
-                _ => {}
             }
         }
-        // Prefer the most-recently-active pad; if nothing has moved
-        // yet this session, fall back to a heuristic (non-keyboard
-        // name or a mapped face button) so the first-frame press
-        // still works.
-        let mut bits = 0u8;
-        let pad = self
-            .active_pad
-            .and_then(|id| g.connected_gamepad(id).map(|p| (id, p)))
-            .or_else(|| {
-                g.gamepads().find(|(_, p)| {
-                    let n = p.name().to_ascii_lowercase();
-                    !n.contains("keyboard") && !n.contains("keychron")
-                })
-            })
-            .or_else(|| {
-                g.gamepads().find(|(_, p)| {
-                    p.button_code(Button::South).is_some()
-                        || p.axis_code(Axis::LeftStickX).is_some()
-                })
-            });
-        if let Some((id, pad)) = pad {
-            if debug {
-                eprintln!(
-                    "gamepad: polling id={:?} name={:?}", id, pad.name(),
-                );
+        // Re-inject hot-plug events into the runtime as if it had
+        // drained them itself. We do this by calling drain_events,
+        // which inspects `next_event` on the gilrs queue - but we've
+        // already drained it. To keep a single source of truth, we
+        // re-implement the connect/disconnect handling against the
+        // saved events here so the runtime's slot state stays
+        // current.
+        for (id, ev) in &hotplug_after {
+            if let Some(notice) = self.input.handle_synthetic_event(*id, ev) {
+                match &notice {
+                    HotplugNotice::Assigned { player, name } => {
+                        eprintln!("vibenes: P{player} = {name}");
+                    }
+                    HotplugNotice::Disconnected { player, name } => {
+                        if let Some(p) = player {
+                            eprintln!("vibenes: P{p} controller disconnected ({name})");
+                        } else if debug {
+                            eprintln!("gamepad disconnected: {name}");
+                        }
+                    }
+                    HotplugNotice::Ignored { name } => {
+                        if debug {
+                            eprintln!("gamepad ignored (both slots filled): {name}");
+                        }
+                    }
+                }
             }
-            if pad.is_pressed(Button::South)     { bits |= 0x01; }
-            if pad.is_pressed(Button::North)     { bits |= 0x02; }
-            if pad.is_pressed(Button::Select)    { bits |= 0x04; }
-            if pad.is_pressed(Button::Start)     { bits |= 0x08; }
-            if pad.is_pressed(Button::DPadUp)    { bits |= 0x10; }
-            if pad.is_pressed(Button::DPadDown)  { bits |= 0x20; }
-            if pad.is_pressed(Button::DPadLeft)  { bits |= 0x40; }
-            if pad.is_pressed(Button::DPadRight) { bits |= 0x80; }
-            let x = pad.value(Axis::LeftStickX);
-            let y = pad.value(Axis::LeftStickY);
-            if y >  DEADBAND { bits |= 0x10; }
-            if y < -DEADBAND { bits |= 0x20; }
-            if x < -DEADBAND { bits |= 0x40; }
-            if x >  DEADBAND { bits |= 0x80; }
         }
-        self.gamepad_bits_p1 = bits;
+        self.commit_controllers();
     }
 
-    /// Write the OR of keyboard + gamepad bits into the NES
-    /// controller-1 latch. Safe to call while `self.nes` is `None`
-    /// (the CLI "no ROM yet" startup case); the merge simply
-    /// no-ops.
-    fn commit_controller_p1(&mut self) {
-        let Some(nes) = self.nes.as_mut() else { return };
-        nes.bus.controllers[0].buttons = self.keyboard_bits_p1 | self.gamepad_bits_p1;
+    /// Refresh both NES controllers from the input runtime. Safe to
+    /// call while `self.nes` is `None`; the assignment just no-ops.
+    fn commit_controllers(&mut self) {
+        let p1 = self.input.compute_player_bits(1);
+        let p2 = self.input.compute_player_bits(2);
+        if let Some(nes) = self.nes.as_mut() {
+            nes.bus.controllers[0].buttons = p1;
+            nes.bus.controllers[1].buttons = p2;
+        }
     }
 }
