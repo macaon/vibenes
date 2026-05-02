@@ -291,6 +291,13 @@ struct App {
     /// point it moves into the `Nes`. On subsequent swaps it stays
     /// inside `Nes` and is re-tuned via `swap_cartridge`.
     pending_audio_sink: Option<audio::AudioSink>,
+    /// Receiver for the result of a pending native file-open dialog.
+    /// `Some` while the dialog is on screen; the per-frame tick polls
+    /// it and applies the result. Without this, calling
+    /// `rfd::FileDialog::pick_file()` synchronously on the event-loop
+    /// thread blocks winit's compositor pings and GNOME shows
+    /// "Application is not responding" within a few seconds.
+    pending_rom_pick: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
     /// Keeps the cpal output stream alive. Dropping this silences the
     /// device - hence why it lives on the App owner rather than a
     /// local inside `run()`.
@@ -503,6 +510,7 @@ impl App {
             halted_notice_shown: false,
             frame_period,
             next_frame_deadline: None,
+            pending_rom_pick: None,
             pending_audio_sink,
             _audio_stream: audio_stream,
             recent_roms,
@@ -590,6 +598,27 @@ impl App {
     }
 
     fn advance_and_present(&mut self, event_loop: &ActiveEventLoop) {
+        // Pick up the result of any pending file-open dialog before
+        // we step. The dialog runs on a worker thread (see
+        // `OpenRomDialog` handler); a closed dialog with a path is
+        // load_rom; closed-with-cancel is dropped silently.
+        if let Some(rx) = self.pending_rom_pick.as_ref() {
+            match rx.try_recv() {
+                Ok(Some(path)) => {
+                    self.pending_rom_pick = None;
+                    self.load_rom(&path);
+                }
+                Ok(None) => {
+                    self.pending_rom_pick = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Worker thread died without sending. Clear so
+                    // the user can re-open the dialog.
+                    self.pending_rom_pick = None;
+                }
+            }
+        }
         // Snapshot inputs before grabbing mutable borrows.
         let region = self.region_opt();
         let nes_loaded = self.nes.is_some();
@@ -619,8 +648,14 @@ impl App {
             .ui
             .as_ref()
             .is_some_and(|ui| ui.is_overlay_open());
+        // Pause emulation while a native file-open dialog is on
+        // screen - same UX as the F1 overlay. Without this the
+        // game audio keeps playing under the modal and time
+        // advances while the user browses for a ROM.
+        let dialog_open = self.pending_rom_pick.is_some();
+        let paused = overlay_open || dialog_open;
 
-        if !overlay_open {
+        if !paused {
             self.commit_controllers();
         }
 
@@ -656,10 +691,11 @@ impl App {
         // chrome region with the menu strip.
         renderer.set_chrome_insets(chrome_top, 0);
 
-        // Step + audio only when not paused by the overlay. The
-        // framebuffer freezes on the last presented frame, which the
-        // overlay then dims via a translucent pass.
-        if !overlay_open {
+        // Step + audio only when not paused (overlay open or a
+        // native file dialog up). The framebuffer freezes on the
+        // last presented frame; the overlay dims it via a
+        // translucent pass and the dialog leaves it as-is.
+        if !paused {
             if let Some(snes) = self.snes.as_mut() {
                 if let Err(e) = vibenes::core::Core::step_until_frame(snes) {
                     if !self.halted_notice_shown {
@@ -1143,12 +1179,33 @@ impl App {
     fn apply_ui_command(&mut self, cmd: UiCommand, event_loop: &ActiveEventLoop) {
         match cmd {
             UiCommand::OpenRomDialog => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("NES ROM", &["nes"])
-                    .pick_file()
-                {
-                    self.load_rom(&path);
+                // Run the native dialog on a worker thread so winit
+                // keeps pumping events; otherwise GNOME's compositor
+                // flags the window unresponsive within a few seconds.
+                // Drop the request silently if a dialog is already
+                // open to avoid stacking modal windows.
+                if self.pending_rom_pick.is_some() {
+                    return;
                 }
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::Builder::new()
+                    .name("vibenes-rom-picker".into())
+                    .spawn(move || {
+                        // Filters listed in user-visible order. The
+                        // first entry is the default; "All supported"
+                        // covers the common case, the per-format
+                        // entries narrow it, and "All files" lets the
+                        // user pick non-standard extensions.
+                        let pick = rfd::FileDialog::new()
+                            .add_filter("All supported", &["nes", "fds"])
+                            .add_filter("NES ROM", &["nes"])
+                            .add_filter("Famicom Disk System", &["fds"])
+                            .add_filter("All files", &["*"])
+                            .pick_file();
+                        let _ = tx.send(pick);
+                    })
+                    .ok();
+                self.pending_rom_pick = Some(rx);
             }
             UiCommand::OpenRom(path) => self.load_rom(&path),
             UiCommand::Quit => {
