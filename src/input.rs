@@ -12,9 +12,13 @@
 //!   second controller to P2 *only if* P1 already has a gamepad - so
 //!   "first controller plugged in goes to P1" is the predictable rule
 //!   no matter what order devices show up.
-//! - **Sticky UUID assignments.** Once a slot is bound to a gamepad's
-//!   UUID, that binding survives disconnect / reconnect; manual
-//!   reassignment is the only way to break it.
+//! - **Disconnect frees the slot.** When a controller disconnects,
+//!   its slot's UUID is cleared - the next plug-in (any controller)
+//!   can take it via the auto-assign rules. Trade-off: a brief
+//!   Bluetooth flap with another controller racing for the slot
+//!   could swap assignments. In practice the same controller
+//!   reconnecting just lands back where it was, since detection
+//!   order is what determined "P1" in the first place.
 //!
 //! The data model intentionally separates *what fires the button*
 //! ([`PhysicalSource`]) from *which gamepad is yours*
@@ -1054,9 +1058,13 @@ impl InputRuntime {
                         let name = g.gamepad(ev.id).name().to_string();
                         let player = if Some(ev.id) == self.p1_pad_id {
                             self.p1_pad_id = None;
+                            self.cfg.p1.gamepad_uuid = None;
+                            needs_persist = true;
                             Some(1)
                         } else if Some(ev.id) == self.p2_pad_id {
                             self.p2_pad_id = None;
+                            self.cfg.p2.gamepad_uuid = None;
+                            needs_persist = true;
                             Some(2)
                         } else {
                             None
@@ -1115,15 +1123,23 @@ impl InputRuntime {
                 // gilrs caches the gamepad entry past disconnect
                 // so we can still recover the friendly name.
                 let name = g.gamepad(id).name().to_string();
+                let mut cleared_a_slot = false;
                 let player = if Some(id) == self.p1_pad_id {
                     self.p1_pad_id = None;
+                    self.cfg.p1.gamepad_uuid = None;
+                    cleared_a_slot = true;
                     Some(1)
                 } else if Some(id) == self.p2_pad_id {
                     self.p2_pad_id = None;
+                    self.cfg.p2.gamepad_uuid = None;
+                    cleared_a_slot = true;
                     Some(2)
                 } else {
                     None
                 };
+                if cleared_a_slot {
+                    self.persist_quietly();
+                }
                 Some(HotplugNotice::Disconnected { player, name })
             }
             _ => None,
@@ -1229,16 +1245,22 @@ fn on_connect<Id: Copy>(
     p1_pad_id: &mut Option<Id>,
     p2_pad_id: &mut Option<Id>,
 ) -> Option<HotplugNotice> {
-    // Rule 1: sticky UUID match restores silently, but only when
-    // the slot is currently *unassigned* (no live pad id). The
-    // empty-slot guard handles the duplicate-UUID case: two
-    // controllers of the same model (e.g. two 8BitDo Ultimate 2Cs)
-    // ship identical HID UUIDs, so without the guard the second
-    // pad would silently overwrite the first slot's live id and
-    // never reach the rule 3 auto-assign-to-P2 path. The
-    // auto-assign filter (`name_blocks_auto_assign`) does NOT
-    // apply here - if the user explicitly bound a Keychron-as-
-    // gamepad device, we honor it.
+    // Rule 1: same-session sticky UUID match restores silently,
+    // but only when the slot is currently *unassigned* (no live
+    // pad id). The empty-slot guard handles the duplicate-UUID
+    // case: two controllers of the same model (e.g. two 8BitDo
+    // Ultimate 2Cs) ship identical HID UUIDs, so without the
+    // guard the second pad would silently overwrite the first
+    // slot's live id and never reach the rule 3 auto-assign-to-P2
+    // path.
+    //
+    // Note: cfg.p{1,2}.gamepad_uuid is cleared on disconnect (see
+    // `handle_synthetic_event`), so rule 1 only ever matches
+    // *within* a session. Across sessions, detection order at
+    // boot determines slots. The auto-assign filter
+    // (`name_blocks_auto_assign`) does NOT apply here - if the
+    // user explicitly bound a Keychron-as-gamepad device by hand
+    // editing input.toml, we honor it.
     if Some(uuid) == cfg.p1.gamepad_uuid && p1_pad_id.is_none() {
         *p1_pad_id = Some(id);
         return None;
@@ -1544,6 +1566,34 @@ mod tests {
         assert!(matches!(n, Some(HotplugNotice::Ignored { .. })));
         assert_eq!(p1, Some(fake_id(1)));
         assert_eq!(p2, Some(fake_id(2)));
+    }
+
+    #[test]
+    fn disconnect_then_different_pad_takes_freed_slot() {
+        // After a disconnect frees the UUID slot, a different
+        // controller arriving should auto-assign into it - that's
+        // the whole point of the option-A policy. We simulate the
+        // disconnect by hand here since the gilrs-side of
+        // `handle_synthetic_event` needs a real Gilrs handle to
+        // look up the cached gamepad.
+        let mut cfg = InputConfig::default();
+        let (mut p1, mut p2) = (None, None);
+        on_connect(fake_id(1), uuid(0xAA), "Pad A", &mut cfg, &mut p1, &mut p2);
+        // Simulate disconnect of P1.
+        p1 = None;
+        cfg.p1.gamepad_uuid = None;
+        // A different controller plugs in.
+        let n = on_connect(
+            fake_id(2),
+            uuid(0xBB),
+            "Pad B",
+            &mut cfg,
+            &mut p1,
+            &mut p2,
+        );
+        assert_eq!(p1, Some(fake_id(2)));
+        assert_eq!(cfg.p1.gamepad_uuid, Some(uuid(0xBB)));
+        assert!(matches!(n, Some(HotplugNotice::Assigned { player: 1, .. })));
     }
 
     #[test]
