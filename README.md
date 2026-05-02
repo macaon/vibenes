@@ -61,9 +61,20 @@ developers in any way.
   counter, IRQ, DMC DMA
 - Expansion audio via bus-level mixer with per-chip pre-scaled blend
 - Host audio via cpal + blip_buf
-- Windowed runtime on wgpu, NTSC/PAL-paced, keyboard input
+- Windowed runtime on wgpu, NTSC/PAL-paced
+- Input: P1 keyboard + first-detected gamepad, P2 second-detected
+  gamepad, sticky-by-detection-order with hot-plug
+  reconciliation; bindings live in `~/.config/vibenes/input.toml`
+  and support standard gilrs buttons, axes, and raw HID codes for
+  pads with no SDL game-controller-DB mapping (Buffalo
+  BGC-FC801, Famicom clones, etc.)
 - Overlay UI (egui, F1)
-- Battery-backed saves with atomic writes and flush-on-quit/swap
+- Battery-backed saves with atomic writes and flush-on-quit/swap,
+  protected by a 48-byte self-validating header (refuses cross-cart,
+  cross-mapper, cross-region applies)
+- PRG-flash saves for mapper 30 sub 1 (UNROM-512 / SST39SF040)
+  and other future flash carts, IPS-encoded against the pristine
+  ROM
 - Save states: 10 slots, F2/F3 hotkeys, in-memory backup-on-load
   rollback, region/CRC-tagged file paths so renames and patches
   don't collide
@@ -166,8 +177,11 @@ All ROMs in these suites pass:
 
 ### Known gaps
 
-- **Second controller + rebinding.** Player 1 is wired to the
-  keyboard; player 2 and configurable bindings are future work.
+- **In-app rebinding UI.** Bindings work today via direct edits
+  to `~/.config/vibenes/input.toml`; the egui-based settings
+  window with click-to-rebind is the next phase. The data model
+  it'll consume already supports keyboard, standard gamepad
+  buttons, analog axes, and raw HID codes.
 - **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.
   Compares the power-on palette byte-for-byte against values captured
   from blargg's specific NES unit; passing requires hardcoding that
@@ -186,17 +200,26 @@ load one. Current region (NTSC/PAL) is detected from the iNES header
 and the built-in CRC32 game DB, and the host audio sample rate is
 matched to it.
 
-**Keys**: `Z`=B, `X`=A, `Enter`=Start, `RShift`=Select, arrows=D-pad,
+**Keys** (defaults; rebindable via `~/.config/vibenes/input.toml`):
+`Z`=B, `X`=A, `Enter`=Start, `RShift`=Select, arrows=D-pad,
 `R`=reset, `F1`=overlay menu, `F2`=save state to active slot, `F3`=load
 state from active slot, `0`-`9`=select active save-state slot,
 `F4`=FDS disk swap, `F12`=debug submenu, `Esc`=back/quit.
 
-**Gamepad** (P1, fixed mapping for now - remapping UI is future
-work): Xbox-style `A`=A, `X`=B, `Back`=Select, `Menu/Start`=Start,
-D-pad or left stick for the D-pad. `Home`/`Guide` toggles the overlay
-menu; while the menu is open, D-pad up/down moves the cursor, `A`
-confirms, `B` backs out. Keyboard and gamepad state OR together, so
-either works at any time. Controller 2 is still future work.
+**Gamepad** (defaults; rebindable via `input.toml`): physical-position
+mapping - South face button (Xbox A / PS X / SNES B) = NES A, West
+(Xbox X / PS □ / SNES Y) = NES B, Select / Start map straight through,
+D-pad or left stick for the D-pad. `Home` / `Guide` toggles the
+overlay menu; while the menu is open, D-pad up/down moves the cursor,
+South confirms, East backs out. Keyboard and gamepad state OR
+together, so either works at any time.
+
+**Multi-controller**: P1 is the keyboard plus the first detected
+gamepad. P2 is the second detected gamepad (only after P1 has one).
+Disconnect frees the slot, the next plug-in can take it.
+Pads gilrs has no SDL mapping for (Buffalo BGC-FC801 etc.) bind via
+raw HID codes - see `input.toml` plus
+`VIBENES_GAMEPAD_DEBUG=1` to discover the codes for your pad.
 
 The overlay menu (F1) pauses the emulator and shows a centered modal
 over a darkened freeze-frame: Scale (1x-6x), Aspect (Auto / 1:1 / 5:4
@@ -205,25 +228,39 @@ with arrows / Enter / Esc or the mouse.
 
 ## Saves
 
-Cartridges with battery-backed PRG-RAM (iNES flag6 bit 1, or the
-NES 2.0 `prg_nvram_size` byte) persist their RAM to
-`~/.config/vibenes/saves/<rom-stem>.sav` (respects
-`$XDG_CONFIG_HOME`). The save is written atomically (temp file +
-rename) so a crash mid-write leaves either the old save or the new
-one, never a torn file.
+Three persistence channels, each with its own sidecar extension:
 
-Alternative layouts are selectable via [`SaveStyle`](src/config.rs):
-- `NextToRom` writes `<rom-dir>/<rom-stem>.sav`.
-- `ByCrc` writes `<saves-dir>/<PRG+CHR CRC32>.sav`, which survives ROM
-  renames.
+| Channel | File | Format |
+|---|---|---|
+| Battery PRG-RAM | `<rom-stem>.sav` | `SaveHeader` envelope + raw RAM |
+| FDS disk | `<rom-stem>.ips` | IPS diff vs. the pristine disk |
+| PRG-flash (UNROM-512 sub 1, GTROM, ...) | `<rom-stem>.fsav` | `SaveHeader` envelope + IPS diff |
 
-Today the selection is a compile-time default; a settings UI is
-planned.
+All paths default to `~/.config/vibenes/saves/` (respects
+`$XDG_CONFIG_HOME`). Alternative layouts are selectable via
+[`SaveStyle`](src/config.rs):
+
+- `NextToRom` writes `<rom-dir>/<rom-stem>.<ext>`.
+- `ByCrc` writes `<saves-dir>/<PRG+CHR CRC32>.<ext>`, which survives
+  ROM renames.
+
+Battery and PRG-flash sidecars carry a 48-byte
+[`SaveHeader`](src/save_header.rs) inside the file: magic, version,
+channel, region, mapper id + submapper, cart CRC32, payload CRC32,
+length, timestamp, emulator version. On load it refuses cross-cart
+/ cross-mapper / cross-channel applies (and warns on cross-region)
+- so a romhack with a different CRC can't accidentally clobber the
+original cart's save even though they share a stem. FDS `.ips`
+sidecars stay header-less for cross-emulator interop with Mesen2.
+
+Writes are atomic (temp file + rename) so a crash mid-write leaves
+either the old save or the new one, never a torn file.
 
 Flush triggers:
 
 1. App quit (window close and the F1 -> Quit menu item).
-2. ROM swap (outgoing cart flushes before the new one loads).
+2. ROM swap (outgoing cart flushes all three channels before the new
+   one loads).
 3. Periodic safety flush every ~3 minutes of emulated time
    (10800 frames at 60 Hz). This only narrows the SIGKILL
    data-loss window; the quit/swap triggers above are the
@@ -236,13 +273,8 @@ diagnostic that exercises the full load/write/save/reload pipeline
 on any ROM so you can verify the save path end-to-end without
 reaching the in-game save trigger.
 
-Non-battery cartridges produce no save files.
-
-FDS disks save as an IPS sidecar: writes performed by the game are
-captured as a delta against the original `.fds` image and written to
-`<rom-stem>.ips` next to the save path. On reload, the sidecar is
-applied over the pristine disk image, so the on-disk `.fds` stays
-untouched and the save is portable.
+Cartridges with no battery, no flash, and no FDS disk produce no
+save files.
 
 ## Save states
 
@@ -295,6 +327,13 @@ tiny `key=value` file managed by [`src/settings.rs`](src/settings.rs).
 Today the integer scale and the active save-state slot survive a
 restart; more fields move out of `config.rs` and into the
 persisted file as the settings UI grows.
+
+Input bindings are persisted separately in
+`~/.config/vibenes/input.toml`, a human-editable TOML file written
+eagerly on first run with the defaults. Hand-edit it to remap keys
+or gamepad buttons until the in-app rebinding UI lands; see
+[`src/input.rs`](src/input.rs) module docs for the source-string
+grammar.
 
 ## Testing
 
