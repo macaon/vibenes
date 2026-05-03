@@ -395,6 +395,26 @@ Mitsutaka Okazaki under [`vendor/emu2413/`](vendor/emu2413/), used
 unmodified under its MIT license - see the file there for the full
 notice.
 
+The shader runtime vendors `librashader-common` and
+`librashader-runtime-wgpu` from
+[librashader](https://github.com/SnowflakePowered/librashader) by
+Ronny Chan under [`vendor/librashader-common/`](vendor/librashader-common/)
+and
+[`vendor/librashader-runtime-wgpu/`](vendor/librashader-runtime-wgpu/),
+patched as documented in [`vendor/README.md`](vendor/README.md). Used
+under the GPL-3.0 half of librashader's `MPL-2.0 OR GPL-3.0-only`
+dual licence. Each vendored crate ships its `LICENSE-MPL-2.0` and
+`LICENSE-GPL-3.0` alongside the source.
+
+The default CRT shader bundled under
+[`assets/shaders/jintenji-crt/`](assets/shaders/jintenji-crt/) is the
+2-pass [CRT-Shader-in-retroarch](https://github.com/jintenji/CRT-Shader-in-retroarch)
+by jintenji, used unmodified under its MIT license - see
+[`assets/shaders/jintenji-crt/LICENSE`](assets/shaders/jintenji-crt/LICENSE)
+for the full notice. We ship only the aperture-grille variant; the
+shadowmask and slotmask variants are upstream but interact poorly
+with NES-resolution content.
+
 ## Credits and references
 
 - [Mesen2](https://github.com/SourMesen/Mesen2) by Sour -
@@ -409,6 +429,14 @@ notice.
 - [emu2413](https://github.com/digital-sound-antiques/emu2413) by
   Mitsutaka Okazaki - YM2413/VRC7 OPLL FM core, vendored verbatim
   under [`vendor/emu2413/`](vendor/emu2413/). MIT.
+- [librashader](https://github.com/SnowflakePowered/librashader) by
+  Ronny Chan - RetroArch shader runtime; the `common` and
+  `runtime-wgpu` crates are vendored under [`vendor/`](vendor/) with
+  the wgpu-version bump documented in
+  [`vendor/README.md`](vendor/README.md). MPL-2.0 OR GPL-3.0-only.
+- [CRT-Shader-in-retroarch](https://github.com/jintenji/CRT-Shader-in-retroarch)
+  by jintenji - the default bundled CRT shader, shipped under
+  [`assets/shaders/jintenji-crt/`](assets/shaders/jintenji-crt/). MIT.
 - [NESdev Wiki](https://www.nesdev.org/wiki/Nesdev_Wiki) and the
   [blargg test ROMs](https://github.com/christopherpow/nes-test-roms)
   underpin essentially every subsystem.
