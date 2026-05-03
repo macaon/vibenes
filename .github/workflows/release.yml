@@ -1,0 +1,192 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Release workflow.
+#
+# Trigger options:
+# - Pushing a tag matching `v*` (e.g. v0.1.0): builds the tarball
+#   and attaches it to a GitHub release for that tag.
+# - Manual `workflow_dispatch`: builds the tarball and uploads it
+#   as a workflow artifact only - useful for shaking out CI issues
+#   before tagging anything.
+#
+# Build environment: `ubuntu-22.04` runner (glibc 2.35). Anyone on a
+# 2022-era LTS or newer should be able to run the binary.
+# `actions/checkout@v4` requires Node 20 (glibc >= 2.34) so we can't
+# use older runner images even if we wanted - and ubuntu-20.04 was
+# retired from GHA in April 2025 anyway.
+#
+# Output: vibenes-${version}-x86_64-linux.tar.gz, layout:
+#   vibenes-${version}-x86_64-linux/
+#     vibenes                       # the binary
+#     assets/                       # bundled shaders + fonts
+#     LICENSE                       # GPL-3.0-or-later (project)
+#     README.md
+#     THIRD_PARTY_LICENSES/         # licences for libs the binary
+#                                   # statically links + bundled
+#                                   # shader notices
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write  # softprops/action-gh-release needs this to attach files
+
+jobs:
+  build-linux-x86_64:
+    name: Build Linux x86_64 tarball
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          # gcc-c++ / cmake / pkg-config: build-time only.
+          # `librashader-reflect` compiles the spirv-cross2 C++
+          # binding, hence g++ + cmake.
+          # The remaining -dev packages are linker headers for
+          # cpal (alsa), gilrs (udev/dbus), winit (xkbcommon /
+          # wayland / xcb), and wgpu (vulkan loader). End users
+          # need the runtime equivalents but not the -dev side.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            pkg-config \
+            libasound2-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libdbus-1-dev \
+            libvulkan-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + git deps + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Build vibenes
+        # --bin vibenes skips the test runners under src/bin/. The
+        # release profile in Cargo.toml already enables thin LTO +
+        # codegen-units=1 so this is the artefact we ship.
+        run: cargo build --release --bin vibenes
+
+      - name: Stage release tree
+        id: stage
+        run: |
+          set -euo pipefail
+          # Pick a version string. On a tag push, strip the leading
+          # `v`. On manual dispatch, fall back to a dev-<sha> label
+          # so artefact names stay distinct between attempts.
+          REF="${GITHUB_REF_NAME:-}"
+          if [[ "$REF" == v* ]]; then
+            VERSION="${REF#v}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          NAME="vibenes-${VERSION}-x86_64-linux"
+          STAGE="release/$NAME"
+          mkdir -p "$STAGE"
+          cp target/release/vibenes "$STAGE/"
+          cp -r assets "$STAGE/"
+          cp LICENSE README.md "$STAGE/"
+          # Third-party licence texts for code statically linked
+          # into the binary (librashader's MPL-2.0/GPL-3.0 dual
+          # licence; emu2413's MIT). The slang-shaders bundled
+          # under assets/ already carry their own LICENSE / NOTICE
+          # files alongside the presets, so they don't need to be
+          # restaged here. Source for everything we statically
+          # link lives in the GitHub repo whose source archive is
+          # auto-attached to the release - that satisfies the GPL
+          # written-offer requirement for binary distribution.
+          mkdir -p "$STAGE/THIRD_PARTY_LICENSES"
+          cp vendor/librashader-common/LICENSE-MPL-2.0 \
+             "$STAGE/THIRD_PARTY_LICENSES/librashader-MPL-2.0"
+          cp vendor/librashader-common/LICENSE-GPL-3.0 \
+             "$STAGE/THIRD_PARTY_LICENSES/librashader-GPL-3.0"
+          cp vendor/README.md "$STAGE/THIRD_PARTY_LICENSES/librashader-VENDOR-NOTES.md"
+
+          # Quick sanity sweep: list dynamic library deps. Lets us
+          # eyeball the runtime requirements documented in the
+          # release notes ("needs libvulkan1, libasound2, etc.").
+          echo "--- ldd output ---"
+          ldd "$STAGE/vibenes" || true
+          echo "--- file output ---"
+          file "$STAGE/vibenes"
+
+          (cd release && tar czf "$NAME.tar.gz" "$NAME")
+          ls -lh "release/$NAME.tar.gz"
+          {
+            echo "name=$NAME"
+            echo "version=$VERSION"
+            echo "tarball=release/$NAME.tar.gz"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: ${{ steps.stage.outputs.tarball }}
+          if-no-files-found: error
+
+      - name: Attach to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.stage.outputs.tarball }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ## vibenes ${{ steps.stage.outputs.version }} - Linux x86_64
+
+            **Early-preview build.** Active development; expect
+            breaking changes (including save-state format) between
+            point releases.
+
+            ### Runtime requirements
+
+            - Linux with glibc >= 2.35 (Ubuntu 22.04+, Debian 12+,
+              Fedora 36+, Arch, openSUSE Tumbleweed/15.5+, RHEL 9+,
+              Mint 21+, or any rolling-release).
+            - A working Vulkan ICD (Mesa is fine; install via your
+              distro's `mesa-vulkan-drivers` / `mesa-vulkan-driver-32`
+              package if missing).
+            - PulseAudio or PipeWire for audio (Pipewire's pulse
+              compatibility layer counts).
+            - libstdc++6 (universal on Linux desktops).
+
+            ### Install
+
+            ```
+            tar xzf vibenes-${{ steps.stage.outputs.version }}-x86_64-linux.tar.gz
+            cd vibenes-${{ steps.stage.outputs.version }}-x86_64-linux
+            ./vibenes [path/to/rom.nes]
+            ```
+
+            ### Status
+
+            See `README.md` in the tarball for the per-subsystem
+            test-ROM matrix. Roughly: NES core (CPU/PPU/APU/MMC3/MMC5)
+            green, FDS works, several less-common mappers in
+            progress; SNES core in early bring-up.
