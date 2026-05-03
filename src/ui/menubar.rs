@@ -219,10 +219,11 @@ fn shader_submenu(
     }
     if !params.shader_catalog.is_empty() {
         ui.separator();
-        // Bundled section. We render entries flat under their
-        // source heading rather than nested by category - the
-        // bundled set is small enough that an extra layer of
-        // submenus is friction, not navigation help.
+        // Flat alphabetized list under each source heading. The
+        // catalog is already sorted (source -> category -> display
+        // name) so we just walk it. The bundle stays small enough
+        // that nested category submenus would be more friction
+        // than help.
         let mut current_source: Option<ShaderSource> = None;
         for entry in params.shader_catalog.entries() {
             if Some(entry.source) != current_source {
@@ -282,6 +283,7 @@ fn shader_submenu(
         ui.close();
     }
 }
+
 
 fn tools_menu(ui: &mut egui::Ui, params: &MenuBarParams<'_>, cmds: &mut Vec<UiCommand>) {
     ui.menu_button("Tools", |ui| {

@@ -92,13 +92,15 @@ impl Catalog {
         if let Some(root) = user_root {
             scan_root(root, ShaderSource::User, &mut entries);
         }
-        // Stable ordering: Bundled before User, then by category,
-        // then by display name. The menu layer relies on this so
-        // it doesn't have to re-sort per frame.
+        // Stable ordering: Bundled before User, then strictly
+        // alphabetical by display name. The menu renders this as a
+        // flat list under each source heading - users scan by name,
+        // not by directory layout, so category-grouped sort is the
+        // wrong default. (`grouped()` rebuckets by source+category
+        // for callers that want a tree.)
         entries.sort_by(|a, b| {
             a.source
                 .cmp(&b.source)
-                .then_with(|| a.category.cmp(&b.category))
                 .then_with(|| a.display_name.cmp(&b.display_name))
         });
         Self { entries }
@@ -404,6 +406,23 @@ mod tests {
         assert_eq!(custom_user.len(), 1);
         let _ = fs::remove_dir_all(&bundled);
         let _ = fs::remove_dir_all(&user);
+    }
+
+    #[test]
+    fn entries_sort_alphabetically_within_source_regardless_of_category() {
+        let root = tmp("flat-sort");
+        // Files spread across two categories - if the sort still
+        // bucketed by category we'd see eagle's entries first; with
+        // a pure alphabetical sort by display name the order
+        // interleaves.
+        touch(&root.join("eagle/2xsai.slangp"));
+        touch(&root.join("eagle/super-2xsai.slangp"));
+        touch(&root.join("hqx/hq2x.slangp"));
+        touch(&root.join("ntsc/blargg.slangp"));
+        let cat = Catalog::scan(Some(&root), None);
+        let names: Vec<_> = cat.entries().iter().map(|e| e.display_name.as_str()).collect();
+        assert_eq!(names, vec!["2xsai", "blargg", "hq2x", "super 2xsai"]);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

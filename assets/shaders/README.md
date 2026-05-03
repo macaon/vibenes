@@ -17,6 +17,30 @@ at it directly.
 
 ## Inventory
 
+### slang-shaders bundled subset
+
+A curated mirror of the libretro
+[`slang-shaders`](https://github.com/libretro/slang-shaders) repository
+covering the puNES "Software Filter" menu equivalents: pixel-art
+scalers, NTSC simulators, and a PAL filter. Copied verbatim from
+upstream with the directory layout preserved so the `.slangp`
+relative paths resolve unchanged.
+
+| Directory | Presets | Roughly equivalent puNES filter |
+|---|---|---|
+| `edge-smoothing/eagle/` | 2xsai, super-2xsai, supereagle | 2xSaI, Super 2xSaI, Super Eagle |
+| `edge-smoothing/hqx/` | hq2x, hq3x, hq4x | Hq2X, Hq3X, Hq4X |
+| `edge-smoothing/scalenx/` | scale2x, scale3x | Scale2X, Scale3X (no Scale4x in slang) |
+| `edge-smoothing/xbrz/` | 2/4/5/6 xbrz-linear | xBRZ 2X-6X |
+| `ntsc/` | blargg, ntsc-256px-composite, ntsc-256px-svideo | NTSC RGB / Composite / S-Video |
+| `pal/` | pal-r57shell | PAL TV variants |
+
+Per-shader licences vary across GPL-2.0+, LGPL-2.1+, GPL-3.0+, MIT.
+Each `.slang` retains its upstream copyright header. See
+[`SLANG-SHADERS-NOTICE.md`](SLANG-SHADERS-NOTICE.md) for the full
+attribution table and notes on the three upstream presets we tested
+but couldn't bundle (wgpu/naga incompatibility - see the notice).
+
 ### `crt-guest-advanced-fast/`
 
 The "fast" variant of guest(r)'s widely-recommended CRT shader.

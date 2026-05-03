@@ -415,6 +415,16 @@ for the full notice. We ship only the aperture-grille variant; the
 shadowmask and slotmask variants are upstream but interact poorly
 with NES-resolution content.
 
+A curated subset of presets from
+[libretro/slang-shaders](https://github.com/libretro/slang-shaders)
+is bundled to give users the puNES "Software Filter" menu
+equivalents (pixel-art scalers, NTSC simulators, a PAL filter). The
+upstream repo has no top-level licence; per-shader headers carry
+the authoritative copyright (mix of GPL-2.0+, LGPL-2.1+, GPL-3.0+,
+and MIT). See
+[`assets/shaders/SLANG-SHADERS-NOTICE.md`](assets/shaders/SLANG-SHADERS-NOTICE.md)
+for the consolidated attribution table.
+
 ## Credits and references
 
 - [Mesen2](https://github.com/SourMesen/Mesen2) by Sour -
@@ -443,6 +453,14 @@ with NES-resolution content.
   is bundled under
   [`assets/shaders/crt-guest-advanced-fast/`](assets/shaders/crt-guest-advanced-fast/).
   GPL-2.0-or-later.
+- [libretro/slang-shaders](https://github.com/libretro/slang-shaders) -
+  curated subset of pixel-art scalers (2xSaI / Super 2xSaI / Super
+  Eagle / HqNx / ScaleNx / xBRZ), NTSC simulators (blargg /
+  Themaister), and r57shell's PAL filter, bundled verbatim under
+  [`assets/shaders/edge-smoothing/`](assets/shaders/edge-smoothing/),
+  [`ntsc/`](assets/shaders/ntsc/), and [`pal/`](assets/shaders/pal/).
+  Per-shader licences (GPL-2.0+, LGPL-2.1+, GPL-3.0+, MIT) - see
+  [`assets/shaders/SLANG-SHADERS-NOTICE.md`](assets/shaders/SLANG-SHADERS-NOTICE.md).
 - [NESdev Wiki](https://www.nesdev.org/wiki/Nesdev_Wiki) and the
   [blargg test ROMs](https://github.com/christopherpow/nes-test-roms)
   underpin essentially every subsystem.
