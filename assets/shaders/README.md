@@ -21,13 +21,14 @@ at it directly.
 
 A 2-pass CRT shader (electron gun + phosphor mask) by jintenji,
 upstream <https://github.com/jintenji/CRT-Shader-in-retroarch>. Three
-mask variants ship side by side:
+mask variants exist upstream (grill, shadowmask, slotmask); we ship
+only the aperture-grille (Trinitron-style) variant because shadowmask
+and slotmask interact poorly with the NES's low pixel resolution -
+the masks dominate the image and obscure the actual artwork.
 
 | Preset | Look |
 |---|---|
 | `crt-tetchi-grill.slangp` | Aperture-grille (Trinitron-style) |
-| `crt-tetchi-shadowmask.slangp` | Shadow-mask (typical 4:3 PC monitor) |
-| `crt-tetchi-slotmask.slangp` | Slot-mask (consumer TV hybrid) |
 
 Adjust `Mask Scale` (1x-4x) once the in-app parameter UI lands; for
 now the default scale renders at 1x.
