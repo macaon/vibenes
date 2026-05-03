@@ -386,6 +386,15 @@ struct App {
     /// `VIBENES_FPS` env var). Used to diagnose frame-rate drift -
     /// e.g. PAL ROMs running at the host monitor's refresh rather
     /// than the 50 Hz target.
+    /// Discovered shader presets (bundled + user). Built once in
+    /// `App::new` and refreshed on the `RescanShaders` UI command.
+    /// Cheap to clone references out of for menu params.
+    shader_catalog: vibenes::shader_catalog::Catalog,
+    /// Path of the currently-active shader preset, mirrored from
+    /// the renderer's `current_shader_path()` so the menu can draw
+    /// its checkmark without holding a borrow on the renderer
+    /// during egui layout.
+    active_shader_path: Option<PathBuf>,
     fps_window_start: Option<Instant>,
     fps_frames: u32,
     /// CPU cycle count snapshot at `fps_window_start`. Diff'd with the
@@ -538,6 +547,15 @@ impl App {
             show_scanline_ruler: false,
             debug_fb_scratch: Vec::new(),
             oam_dump_frames: 0,
+            shader_catalog: {
+                let bundled = vibenes::shader_catalog::bundled_shaders_dir();
+                let user = vibenes::shader_catalog::user_shaders_dir();
+                vibenes::shader_catalog::Catalog::scan(
+                    bundled.as_deref(),
+                    user.as_deref().filter(|p| p.is_dir()),
+                )
+            },
+            active_shader_path: None,
             fps_window_start: None,
             fps_frames: 0,
             fps_cpu_cycles_at_window_start: 0,
@@ -876,6 +894,8 @@ impl App {
                 mapper_label,
                 fds_present: fds_info.is_some(),
                 recent: &self.recent_roms,
+                shader_catalog: &self.shader_catalog,
+                current_shader: self.active_shader_path.as_deref(),
             };
             ui.run(
                 window,
@@ -1044,9 +1064,13 @@ impl ApplicationHandler for App {
         // shader pipeline before any UI exists. Set
         // VIBENES_SHADER=/path/to/preset.slangp to try a chain.
         if let Ok(path) = std::env::var("VIBENES_SHADER") {
-            match renderer.load_shader(std::path::Path::new(&path)) {
-                Ok(()) => eprintln!("vibenes: loaded shader {path}"),
-                Err(e) => eprintln!("vibenes: shader load failed ({path}): {e:#}"),
+            let path = std::path::PathBuf::from(path);
+            match renderer.load_shader(&path) {
+                Ok(()) => {
+                    eprintln!("vibenes: loaded shader {}", path.display());
+                    self.active_shader_path = Some(path);
+                }
+                Err(e) => eprintln!("vibenes: shader load failed ({}): {e:#}", path.display()),
             }
         }
         let ui = UiLayer::new(renderer.device(), renderer.surface_format(), &window);
@@ -1277,6 +1301,51 @@ impl App {
                 self.show_info_toast(format!(
                     "vibenes {} - clean-room NES emulator in Rust",
                     env!("CARGO_PKG_VERSION"),
+                ));
+            }
+            UiCommand::LoadShader(path) => {
+                let Some(renderer) = self.renderer.as_mut() else {
+                    return;
+                };
+                match renderer.load_shader(&path) {
+                    Ok(()) => {
+                        self.active_shader_path = Some(path);
+                        if let Some(name) = self
+                            .active_shader_path
+                            .as_ref()
+                            .and_then(|p| p.file_stem())
+                            .and_then(|s| s.to_str())
+                        {
+                            self.show_info_toast(format!("Shader: {name}"));
+                        }
+                    }
+                    Err(e) => {
+                        let label = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        eprintln!("vibenes: shader load failed ({}): {e:#}", path.display());
+                        self.show_error_toast(format!("Shader load failed: {label}"));
+                    }
+                }
+            }
+            UiCommand::ClearShader => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.clear_shader();
+                }
+                self.active_shader_path = None;
+                self.show_info_toast("Shader: off");
+            }
+            UiCommand::RescanShaders => {
+                let bundled = vibenes::shader_catalog::bundled_shaders_dir();
+                let user = vibenes::shader_catalog::user_shaders_dir();
+                self.shader_catalog = vibenes::shader_catalog::Catalog::scan(
+                    bundled.as_deref(),
+                    user.as_deref().filter(|p| p.is_dir()),
+                );
+                self.show_info_toast(format!(
+                    "Shaders: {} found",
+                    self.shader_catalog.entries().len()
                 ));
             }
         }

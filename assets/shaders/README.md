@@ -17,6 +17,24 @@ at it directly.
 
 ## Inventory
 
+### `crt-guest-advanced-fast/`
+
+The "fast" variant of guest(r)'s widely-recommended CRT shader.
+9-pass chain (~210 KB, including 4 LUT PNGs from the advanced
+package). Hits a sweet spot between the heavier `advanced` variant
+(12 passes) and the stripped `fastest` (5 passes); runs comfortably
+on integrated GPUs while delivering the full mask + bloom +
+deconvergence look. Exposes ~50 tweakable parameters (mask type,
+scanline strength, glow, geometry curvature, etc.) - we ship
+upstream defaults until the in-app parameter UI lands.
+
+Source: <https://github.com/libretro/slang-shaders/tree/master/crt>
+(`crt-guest-advanced-fast.slangp` + `shaders/guest/fast/*.slang` +
+`shaders/guest/advanced/lut/*.png`). Paths in the `.slangp` were
+rewritten to siblings so the chain is self-contained.
+
+License: GPL-2.0-or-later (see `crt-guest-advanced-fast/LICENSE`).
+
 ### `jintenji-crt/`
 
 A 2-pass CRT shader (electron gun + phosphor mask) by jintenji,

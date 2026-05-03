@@ -435,8 +435,14 @@ with NES-resolution content.
   the wgpu-version bump documented in
   [`vendor/README.md`](vendor/README.md). MPL-2.0 OR GPL-3.0-only.
 - [CRT-Shader-in-retroarch](https://github.com/jintenji/CRT-Shader-in-retroarch)
-  by jintenji - the default bundled CRT shader, shipped under
-  [`assets/shaders/jintenji-crt/`](assets/shaders/jintenji-crt/). MIT.
+  by jintenji - one of the default bundled CRT shaders, shipped
+  under [`assets/shaders/jintenji-crt/`](assets/shaders/jintenji-crt/).
+  MIT.
+- [CRT - Guest - Advanced](https://github.com/libretro/slang-shaders/tree/master/crt)
+  by guest(r) - widely-recommended CRT shader; the "fast" variant
+  is bundled under
+  [`assets/shaders/crt-guest-advanced-fast/`](assets/shaders/crt-guest-advanced-fast/).
+  GPL-2.0-or-later.
 - [NESdev Wiki](https://www.nesdev.org/wiki/Nesdev_Wiki) and the
   [blargg test ROMs](https://github.com/christopherpow/nes-test-roms)
   underpin essentially every subsystem.

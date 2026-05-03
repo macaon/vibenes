@@ -65,4 +65,17 @@ pub enum UiCommand {
     /// Show an info modal with the build version and a one-line
     /// project blurb. Drawn as a transient toast for now.
     ShowAbout,
+    /// Load a RetroArch shader preset from disk and make it the
+    /// active post-process chain. Replaces any currently-loaded
+    /// shader. On parse / init failure the host shows an error
+    /// toast and the previous shader (or passthrough) stays
+    /// active.
+    LoadShader(PathBuf),
+    /// Drop the active shader and revert to the built-in
+    /// passthrough blit.
+    ClearShader,
+    /// Re-walk the bundled and user shader directories. Picks up
+    /// presets the user dropped into `$XDG_DATA_HOME/vibenes/shaders/`
+    /// while the app was running.
+    RescanShaders,
 }

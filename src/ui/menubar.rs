@@ -22,10 +22,11 @@
 //! hidden, the window shrinks back. See [`crate::main`] window-
 //! sizing call sites for the math.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::Panel;
 
+use crate::shader_catalog::{Catalog, ShaderSource};
 use crate::ui::commands::UiCommand;
 use crate::ui::recent::RecentRoms;
 use crate::video::{ParMode, PixelAspectRatio};
@@ -51,6 +52,13 @@ pub struct MenuBarParams<'a> {
     pub mapper_label: Option<String>,
     pub fds_present: bool,
     pub recent: &'a RecentRoms,
+    /// Discovered shader presets (bundled + user). The View > Shader
+    /// submenu lists these grouped by source. Empty catalog renders
+    /// only the "None" entry.
+    pub shader_catalog: &'a Catalog,
+    /// Path of the currently-active shader preset, if any. Used to
+    /// draw the active-state checkmark on the matching menu item.
+    pub current_shader: Option<&'a Path>,
 }
 
 /// Render the menu bar (a no-op when `params.visible` is false or
@@ -174,6 +182,9 @@ fn view_menu(ui: &mut egui::Ui, params: &MenuBarParams<'_>, cmds: &mut Vec<UiCom
                 }
             }
         });
+        ui.menu_button("Shader", |ui| {
+            shader_submenu(ui, params, cmds);
+        });
         ui.separator();
         if ui
             .selectable_label(params.visible, "Show Menu Bar")
@@ -183,6 +194,61 @@ fn view_menu(ui: &mut egui::Ui, params: &MenuBarParams<'_>, cmds: &mut Vec<UiCom
             ui.close();
         }
     });
+}
+
+/// Render the View > Shader contents. Lists "None / Off" first,
+/// then groups by source (Bundled, then User), separated by
+/// dividers. Selectable-label state drives the active-shader
+/// checkmark. A "Rescan" item at the bottom re-walks the source
+/// directories so users can drop a preset into the user dir
+/// without restarting.
+fn shader_submenu(
+    ui: &mut egui::Ui,
+    params: &MenuBarParams<'_>,
+    cmds: &mut Vec<UiCommand>,
+) {
+    let none_active = params.current_shader.is_none();
+    if ui.selectable_label(none_active, "None / Off").clicked() {
+        cmds.push(UiCommand::ClearShader);
+        ui.close();
+    }
+    if !params.shader_catalog.is_empty() {
+        ui.separator();
+        // Bundled section. We render entries flat under their
+        // source heading rather than nested by category - the
+        // bundled set is small enough that an extra layer of
+        // submenus is friction, not navigation help.
+        let mut current_source: Option<ShaderSource> = None;
+        for entry in params.shader_catalog.entries() {
+            if Some(entry.source) != current_source {
+                if current_source.is_some() {
+                    ui.separator();
+                }
+                let header = match entry.source {
+                    ShaderSource::Bundled => "Bundled",
+                    ShaderSource::User => "User",
+                };
+                ui.label(egui::RichText::new(header).weak().small());
+                current_source = Some(entry.source);
+            }
+            let active = params
+                .current_shader
+                .map(|p| p == entry.path)
+                .unwrap_or(false);
+            if ui
+                .selectable_label(active, &entry.display_name)
+                .clicked()
+            {
+                cmds.push(UiCommand::LoadShader(entry.path.clone()));
+                ui.close();
+            }
+        }
+    }
+    ui.separator();
+    if ui.button("Rescan").clicked() {
+        cmds.push(UiCommand::RescanShaders);
+        ui.close();
+    }
 }
 
 fn tools_menu(ui: &mut egui::Ui, params: &MenuBarParams<'_>, cmds: &mut Vec<UiCommand>) {

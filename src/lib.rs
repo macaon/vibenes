@@ -22,6 +22,7 @@ pub mod save;
 pub mod save_header;
 pub mod save_state;
 pub mod screenshot;
+pub mod shader_catalog;
 pub mod snes;
 pub mod settings;
 pub mod ui;
