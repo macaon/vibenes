@@ -298,6 +298,12 @@ struct App {
     /// thread blocks winit's compositor pings and GNOME shows
     /// "Application is not responding" within a few seconds.
     pending_rom_pick: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
+    /// Worker-thread receiver for the "Browse for a shader preset"
+    /// file picker. Same pattern as `pending_rom_pick`. Polled at
+    /// the top of `advance_and_present`; on a `Some(path)` we feed
+    /// it back through the existing `LoadShader` dispatch arm so
+    /// recent-list bookkeeping happens in one place.
+    pending_shader_pick: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
     /// Keeps the cpal output stream alive. Dropping this silences the
     /// device - hence why it lives on the App owner rather than a
     /// local inside `run()`.
@@ -395,6 +401,10 @@ struct App {
     /// its checkmark without holding a borrow on the renderer
     /// during egui layout.
     active_shader_path: Option<PathBuf>,
+    /// Persisted ring of recently-loaded shader presets. Pushed to
+    /// after every successful `LoadShader` (catalog click, recent
+    /// click, or Browse...).
+    recent_shaders: vibenes::ui::recent_shaders::RecentShaders,
     fps_window_start: Option<Instant>,
     fps_frames: u32,
     /// CPU cycle count snapshot at `fps_window_start`. Diff'd with the
@@ -520,6 +530,7 @@ impl App {
             frame_period,
             next_frame_deadline: None,
             pending_rom_pick: None,
+            pending_shader_pick: None,
             pending_audio_sink,
             _audio_stream: audio_stream,
             recent_roms,
@@ -556,6 +567,9 @@ impl App {
                 )
             },
             active_shader_path: None,
+            recent_shaders: vibenes::ui::recent_shaders::RecentShaders::load_or_init(
+                vibenes::ui::recent_shaders::RecentShaders::default_storage_path(),
+            ),
             fps_window_start: None,
             fps_frames: 0,
             fps_cpu_cycles_at_window_start: 0,
@@ -637,6 +651,24 @@ impl App {
                 }
             }
         }
+        // Same pattern for the shader-browse picker. Result feeds
+        // the existing LoadShader dispatch so toast + recent-list
+        // bookkeeping happens in one place.
+        if let Some(rx) = self.pending_shader_pick.as_ref() {
+            match rx.try_recv() {
+                Ok(Some(path)) => {
+                    self.pending_shader_pick = None;
+                    self.apply_ui_command(UiCommand::LoadShader(path), event_loop);
+                }
+                Ok(None) => {
+                    self.pending_shader_pick = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending_shader_pick = None;
+                }
+            }
+        }
         // Snapshot inputs before grabbing mutable borrows.
         let region = self.region_opt();
         let nes_loaded = self.nes.is_some();
@@ -670,7 +702,7 @@ impl App {
         // screen - same UX as the F1 overlay. Without this the
         // game audio keeps playing under the modal and time
         // advances while the user browses for a ROM.
-        let dialog_open = self.pending_rom_pick.is_some();
+        let dialog_open = self.pending_rom_pick.is_some() || self.pending_shader_pick.is_some();
         let paused = overlay_open || dialog_open;
 
         if !paused {
@@ -896,6 +928,7 @@ impl App {
                 recent: &self.recent_roms,
                 shader_catalog: &self.shader_catalog,
                 current_shader: self.active_shader_path.as_deref(),
+                recent_shaders: &self.recent_shaders,
             };
             ui.run(
                 window,
@@ -1068,9 +1101,42 @@ impl ApplicationHandler for App {
             match renderer.load_shader(&path) {
                 Ok(()) => {
                     eprintln!("vibenes: loaded shader {}", path.display());
+                    // Sync the menu's checkmark only - we don't
+                    // push env-var loads into `recent_shaders`.
+                    // The env var is for CI / debug overrides;
+                    // recent should reflect explicit user picks
+                    // through the menu so a one-off shell run
+                    // doesn't pollute the persisted ring.
                     self.active_shader_path = Some(path);
                 }
                 Err(e) => eprintln!("vibenes: shader load failed ({}): {e:#}", path.display()),
+            }
+        } else if let Some(path) = self.recent_shaders.active() {
+            // Restore the user's last-active shader from the
+            // previous session. `active()` already filters out
+            // missing files (user moved or deleted the preset)
+            // so reopening doesn't error out on stale state.
+            let path = path.to_path_buf();
+            match renderer.load_shader(&path) {
+                Ok(()) => {
+                    eprintln!(
+                        "vibenes: restored last-active shader {}",
+                        path.display()
+                    );
+                    self.active_shader_path = Some(path);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "vibenes: failed to restore last-active shader {}: {e:#}",
+                        path.display()
+                    );
+                    // Drop the stale active marker so the next
+                    // session doesn't re-attempt the same broken
+                    // load. The Recent submenu still shows the
+                    // path (file may come back) but it's no
+                    // longer auto-applied.
+                    self.recent_shaders.clear_active();
+                }
             }
         }
         let ui = UiLayer::new(renderer.device(), renderer.surface_format(), &window);
@@ -1309,13 +1375,15 @@ impl App {
                 };
                 match renderer.load_shader(&path) {
                     Ok(()) => {
-                        self.active_shader_path = Some(path);
-                        if let Some(name) = self
-                            .active_shader_path
-                            .as_ref()
-                            .and_then(|p| p.file_stem())
-                            .and_then(|s| s.to_str())
-                        {
+                        self.active_shader_path = Some(path.clone());
+                        // Push to the persisted recent ring so the
+                        // path comes back after a restart and the
+                        // Recent submenu shows it MRU-first. Also
+                        // mark this preset as the active one so the
+                        // next session reopens with the same look.
+                        self.recent_shaders.push(path.clone());
+                        self.recent_shaders.set_active(path.clone());
+                        if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                             self.show_info_toast(format!("Shader: {name}"));
                         }
                     }
@@ -1329,11 +1397,41 @@ impl App {
                     }
                 }
             }
+            UiCommand::BrowseShaderDialog => {
+                // Same worker-thread dance as OpenRomDialog: keep
+                // winit pumping while rfd shows the native dialog,
+                // otherwise GNOME's compositor flags the window
+                // unresponsive within a few seconds. Drop the
+                // request silently if a dialog is already open to
+                // avoid stacked modal windows.
+                if self.pending_shader_pick.is_some() {
+                    return;
+                }
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::Builder::new()
+                    .name("vibenes-shader-picker".into())
+                    .spawn(move || {
+                        let pick = rfd::FileDialog::new()
+                            .add_filter(
+                                "RetroArch shader presets",
+                                &["slangp", "glslp", "cgp"],
+                            )
+                            .add_filter("All files", &["*"])
+                            .pick_file();
+                        let _ = tx.send(pick);
+                    })
+                    .ok();
+                self.pending_shader_pick = Some(rx);
+            }
             UiCommand::ClearShader => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.clear_shader();
                 }
                 self.active_shader_path = None;
+                // Persist the off-state so reopening the app
+                // doesn't silently re-enable the shader the user
+                // just turned off.
+                self.recent_shaders.clear_active();
                 self.show_info_toast("Shader: off");
             }
             UiCommand::RescanShaders => {

@@ -78,4 +78,10 @@ pub enum UiCommand {
     /// presets the user dropped into `$XDG_DATA_HOME/vibenes/shaders/`
     /// while the app was running.
     RescanShaders,
+    /// Open the native file picker to select an arbitrary
+    /// `.slangp` / `.glslp` / `.cgp` preset on disk. The host runs
+    /// the dialog on a worker thread (same pattern as
+    /// `OpenRomDialog`) and feeds the picked path back through
+    /// `LoadShader`.
+    BrowseShaderDialog,
 }

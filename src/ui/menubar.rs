@@ -29,6 +29,7 @@ use egui::Panel;
 use crate::shader_catalog::{Catalog, ShaderSource};
 use crate::ui::commands::UiCommand;
 use crate::ui::recent::RecentRoms;
+use crate::ui::recent_shaders::RecentShaders;
 use crate::video::{ParMode, PixelAspectRatio};
 
 /// Logical pixel height reserved for the top menu bar. Matches
@@ -59,6 +60,10 @@ pub struct MenuBarParams<'a> {
     /// Path of the currently-active shader preset, if any. Used to
     /// draw the active-state checkmark on the matching menu item.
     pub current_shader: Option<&'a Path>,
+    /// Recently-loaded shader presets (last via Browse... or
+    /// catalog click), most-recent first. Drives the
+    /// View > Shader > Recent submenu.
+    pub recent_shaders: &'a RecentShaders,
 }
 
 /// Render the menu bar (a no-op when `params.visible` is false or
@@ -244,6 +249,33 @@ fn shader_submenu(
             }
         }
     }
+    ui.separator();
+    if ui.button("Browse…").clicked() {
+        cmds.push(UiCommand::BrowseShaderDialog);
+        ui.close();
+    }
+    ui.menu_button("Recent", |ui| {
+        let mut any = false;
+        for path in params.recent_shaders.iter_existing() {
+            any = true;
+            let label = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.replace(['-', '_'], " "))
+                .unwrap_or_else(|| path.display().to_string());
+            let active = params
+                .current_shader
+                .map(|p| p == path.as_path())
+                .unwrap_or(false);
+            if ui.selectable_label(active, label).clicked() {
+                cmds.push(UiCommand::LoadShader(path.clone()));
+                ui.close();
+            }
+        }
+        if !any {
+            ui.add_enabled(false, egui::Button::new("(no recent shaders)"));
+        }
+    });
     ui.separator();
     if ui.button("Rescan").clicked() {
         cmds.push(UiCommand::RescanShaders);

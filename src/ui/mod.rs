@@ -30,6 +30,7 @@ pub mod commands;
 pub mod menubar;
 mod menus;
 pub mod recent;
+pub mod recent_shaders;
 
 pub use commands::UiCommand;
 pub use menubar::{MenuBarParams, MENU_BAR_HEIGHT_LOGICAL};
