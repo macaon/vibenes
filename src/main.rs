@@ -1030,7 +1030,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        let renderer = match Renderer::new(Arc::clone(&window)) {
+        let mut renderer = match Renderer::new(Arc::clone(&window)) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("vibenes: failed to init wgpu: {e:#}");
@@ -1038,6 +1038,17 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        // Optional bring-up hook: load a RetroArch shader preset at
+        // startup. This is the seam the eventual menu / config
+        // settings will use; for now it lets us iterate on the
+        // shader pipeline before any UI exists. Set
+        // VIBENES_SHADER=/path/to/preset.slangp to try a chain.
+        if let Ok(path) = std::env::var("VIBENES_SHADER") {
+            match renderer.load_shader(std::path::Path::new(&path)) {
+                Ok(()) => eprintln!("vibenes: loaded shader {path}"),
+                Err(e) => eprintln!("vibenes: shader load failed ({path}): {e:#}"),
+            }
+        }
         let ui = UiLayer::new(renderer.device(), renderer.surface_format(), &window);
         self.window = Some(window);
         self.renderer = Some(renderer);

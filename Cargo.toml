@@ -72,6 +72,28 @@ toml = "0.8"
 # framebuffer (256x240 RGBA) gets written as-is - no surface
 # readback, no PAR scaling. Pure-Rust; no system dependency.
 png = "0.17"
+# RetroArch shader runtime. Reads .slangp/.glslp/.cgp presets and
+# runs the multi-pass filter chain on our existing wgpu pipeline.
+# We pull just `runtime-wgpu` + `reflect-naga` + presets/preprocess
+# (the wgpu runtime needs naga-based reflection for SPIR-V → WGSL).
+# `presets` and `preprocess` parse the preset file and the included
+# shader sources before they hit the runtime.
+# RetroArch shader runtime. We pull the sub-crates directly rather
+# than the `librashader` umbrella because the umbrella has its own
+# optional `wgpu` dep (used only as a feature-flag chain) which
+# pulls in a second copy of wgpu at the upstream-pinned major
+# version (28) alongside our stack's wgpu 29. Importing the sub-crates
+# directly keeps the dep tree single-version. `stable` features opt
+# out of nightly-only `feature(impl_trait_in_assoc_type)` and
+# `feature(type_alias_impl_trait)` gates so we build on stable rustc.
+librashader-common = { version = "0.10", features = ["wgpu"] }
+librashader-presets = "0.10"
+librashader-preprocess = "0.10"
+librashader-runtime-wgpu = { version = "0.10", features = ["stable"] }
+librashader-reflect = { version = "0.10", default-features = false, features = [
+    "wgsl",
+    "stable",
+] }
 
 [profile.dev]
 opt-level = 1
@@ -79,3 +101,18 @@ opt-level = 1
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Vendored librashader. Upstream librashader-runtime-wgpu 0.10.1 (the
+# latest stable, also the master branch as of this commit) pins
+# wgpu = "28". egui-wgpu 0.34 - the line we use - is on wgpu 29, and
+# egui-wgpu skipped wgpu 28 entirely (0.33 was on 27, 0.34 jumped to
+# 29). No combination of upstream releases lines up. We vendor only
+# the two librashader crates that actually touch wgpu types
+# (librashader-common via the `wgpu` feature, librashader-runtime-wgpu
+# itself) and bump them to wgpu 29 in place. Everything else
+# (presets, reflect, preprocess, runtime, cache) stays on crates.io
+# unchanged - those crates don't see wgpu in their public API. See
+# vendor/README.md for the upstream-tracking notes.
+[patch.crates-io]
+librashader-common = { path = "vendor/librashader-common" }
+librashader-runtime-wgpu = { path = "vendor/librashader-runtime-wgpu" }

@@ -190,6 +190,16 @@ All ROMs in these suites pass:
 
 ## Building and running
 
+Build prerequisites:
+
+- A Rust toolchain (stable).
+- A C++ compiler. The vendored `librashader-runtime-wgpu` (under
+  `vendor/`) pulls in `spirv-cross2`, a Rust binding around the
+  SPIRV-Cross C++ library, which translates SPIR-V into WGSL for the
+  shader runtime. On Fedora: `sudo dnf install gcc-c++`. On
+  Debian/Ubuntu: `sudo apt install g++`. macOS ships clang++ with
+  Xcode CLT. See `vendor/README.md` for why librashader is vendored.
+
 ```
 cargo build --release
 ./target/release/vibenes [path/to/rom.nes]

@@ -11,11 +11,15 @@
 //! intermediate textures. 6A.3 ships the direct blit; shader stages
 //! come later.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
+
+pub mod shader;
+use shader::ShaderRuntime;
 
 pub const NES_WIDTH: u32 = 256;
 pub const NES_HEIGHT: u32 = 240;
@@ -56,6 +60,10 @@ pub struct Renderer {
     /// Bottom inset (physical pixels) reserved for window chrome
     /// (status bar, future). See [`Renderer::chrome_top`].
     chrome_bottom: u32,
+    /// Active RetroArch shader chain. `None` selects the built-in
+    /// passthrough blit. See [`Renderer::load_shader`] /
+    /// [`Renderer::clear_shader`].
+    shader: Option<ShaderRuntime>,
 }
 
 impl Renderer {
@@ -130,7 +138,12 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // COPY_SRC lets the shader runtime push the texture into
+            // its history ring (copy_texture_to_texture). Cheap when
+            // unused.
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let framebuffer_view =
@@ -250,7 +263,29 @@ impl Renderer {
             bind_group,
             chrome_top: 0,
             chrome_bottom: 0,
+            shader: None,
         })
+    }
+
+    /// Load a RetroArch shader preset (`.slangp` / `.glslp` / `.cgp`).
+    /// Replaces any currently active shader. Returns the parse /
+    /// init error from librashader on failure - the previous shader
+    /// (or passthrough) stays active in that case.
+    pub fn load_shader(&mut self, path: &Path) -> Result<()> {
+        let runtime = ShaderRuntime::load(&self.device, &self.queue, path)?;
+        self.shader = Some(runtime);
+        Ok(())
+    }
+
+    /// Drop the active shader and revert to the built-in passthrough.
+    pub fn clear_shader(&mut self) {
+        self.shader = None;
+    }
+
+    /// Path the active shader was loaded from, or `None` when no
+    /// shader is active.
+    pub fn current_shader_path(&self) -> Option<&Path> {
+        self.shader.as_ref().map(|s| s.path())
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -370,6 +405,15 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("vibenes.encoder"),
             });
+        // Always start with a clear pass so the chrome rows (top
+        // menu strip, future status bar) are black before egui
+        // paints. The actual NES image gets written next - either by
+        // our passthrough pipeline below, or by the shader runtime.
+        let inset_y = self.chrome_top.min(self.config.height);
+        let inset_h = self
+            .config
+            .height
+            .saturating_sub(self.chrome_top + self.chrome_bottom);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("vibenes.present"),
@@ -387,22 +431,38 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            // Clip the NES blit to the unreserved middle band so
-            // chrome rows stay black for the egui overlay to paint
-            // into. saturating_sub guards a transient frame where
-            // chrome insets sum exceeds surface height.
-            let y = self.chrome_top.min(self.config.height) as f32;
-            let h = self
-                .config
-                .height
-                .saturating_sub(self.chrome_top + self.chrome_bottom)
-                as f32;
-            if h > 0.0 {
-                pass.set_viewport(0.0, y, self.config.width as f32, h, 0.0, 1.0);
+            // When a shader chain is active we leave the blit to it
+            // (it begins its own render passes inside `frame()`); the
+            // empty pass above just commits the clear. With no shader,
+            // run the passthrough pipeline clipped to the inset band.
+            if self.shader.is_none() && inset_h > 0 {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_viewport(
+                    0.0,
+                    inset_y as f32,
+                    self.config.width as f32,
+                    inset_h as f32,
+                    0.0,
+                    1.0,
+                );
+                pass.draw(0..3, 0..1);
             }
-            pass.draw(0..3, 0..1);
+        }
+        if let Some(rt) = self.shader.as_mut() {
+            if inset_h > 0 {
+                if let Err(err) = rt.frame(
+                    &self.framebuffer_texture,
+                    &view,
+                    self.config.format,
+                    (self.config.width, self.config.height),
+                    (0, inset_y),
+                    (self.config.width, inset_h),
+                    &mut encoder,
+                ) {
+                    log::error!("shader frame failed: {err:#}");
+                }
+            }
         }
         on_overlay(
             &self.device,
