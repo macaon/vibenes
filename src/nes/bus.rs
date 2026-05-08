@@ -652,14 +652,25 @@ mod tests {
     // this as "total DMA = 513 cycles, +1 if starting on a put cycle";
     // the unit tests below pin the two branches so any future
     // `extra_idle` tweak must deliberately update this contract.
+    //
+    // Note on initial parity: `cpu_cycles` is initialised to `u64::MAX`
+    // (= -1) by `MasterClock::new` to match Mesen2's `_state.CycleCount
+    // = (uint64_t)-1` so that 8 reset/warm-up reads land us at cycle 7
+    // for the first ROM instruction (NesCpu.cpp:138 + 160-164). For
+    // these tests that bypass reset, that means a fresh `build_bus()`
+    // bus enters STA with cpu_cycles = u64::MAX, the STA tick brings
+    // it to 0 (even), and the halt cycle that follows is on the
+    // even-cpu-cycle "put" branch (DMA = 514). The opposite-parity
+    // test does one extra read first to land on odd before STA.
 
     #[test]
     fn oam_dma_halt_on_get_runs_513_beyond_sta() {
         let mut bus = build_bus();
-        // cpu_cycles starts at 0. STA's tick_pre_access brings it to 1
-        // (odd) for the match-arm parity check → extra_idle=false →
-        // DMA = 513 cycles beyond STA's own cycle. Total ticks in
-        // `write()` = 1 + 513 = 514.
+        // After one bus.read, cpu_cycles = 0. STA's tick_pre_access
+        // brings it to 1 (odd) for the match-arm parity check →
+        // extra_idle=false → DMA = 513 cycles beyond STA's own cycle.
+        // Total ticks in `write()` = 1 + 513 = 514.
+        let _ = bus.read(0x0000);
         let before = bus.clock.cpu_cycles();
         bus.write(0x4014, 0x00);
         let dma_cycles = bus.clock.cpu_cycles() - before;
@@ -672,16 +683,14 @@ mod tests {
     #[test]
     fn oam_dma_halt_on_put_runs_514_beyond_sta() {
         let mut bus = build_bus();
-        // Advance cpu_cycles by 1 (a cheap RAM read) so STA enters on
-        // the opposite parity from the "halt_on_get" test. With
-        // cpu_cycles=1 before STA, the write-cycle pushes it to 2 and
-        // the halt lands on cycle 3 (odd get-cycle prereq), requiring
-        // one align cycle → DMA = 514 cycles beyond STA's own cycle.
-        // Total ticks in `write()` = 1 + 514 = 515.
-        let _ = bus.read(0x0000);
+        // Fresh bus: cpu_cycles = u64::MAX. STA's tick brings it to 0
+        // (even); the halt that follows lands on cycle 1 (odd get
+        // prereq with the parity flipped vs the get-branch test),
+        // requiring one align cycle → DMA = 514 cycles beyond STA's
+        // own cycle. Total ticks in `write()` = 1 + 514 = 515.
         let before = bus.clock.cpu_cycles();
         bus.write(0x4014, 0x00);
-        let dma_cycles = bus.clock.cpu_cycles() - before;
+        let dma_cycles = bus.clock.cpu_cycles().wrapping_sub(before);
         assert_eq!(
             dma_cycles, 515,
             "STA + 1 halt + 1 align + 512 pairs = 515 ticks (514-cycle DMA branch)"

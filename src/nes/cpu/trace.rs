@@ -51,6 +51,17 @@ pub fn emit_instruction(cpu: &Cpu, bus: &Bus) {
     if cyc < cfg.start || cyc > cfg.limit {
         return;
     }
+    if std::env::var_os("VIBENES_PPU_PROBE").is_some()
+        && (cyc == 7 || cyc == 100 || cyc == 27393)
+    {
+        eprintln!(
+            "PROBE cpu_cycles={cyc} master={} ppu_scanline={} ppu_dot={} frame={}",
+            bus.clock.master_cycles(),
+            bus.ppu.scanline(),
+            bus.ppu.dot(),
+            bus.ppu.frame(),
+        );
+    }
     let pc = cpu.pc;
     let op = bus.peek(pc);
     let dmc = bus.apu.dmc_trace();

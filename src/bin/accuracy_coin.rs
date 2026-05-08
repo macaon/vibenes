@@ -286,6 +286,35 @@ fn step_frames(nes: &mut Nes, frames: u32, detect_trap: bool) -> Result<()> {
     // See docs/accuracy_coin/idr_crash.md for the open investigation.
     const TRAP_PC: u16 = 0x80DF;
     let mut trap_frames: u32 = 0;
+    let mut first_trap_logged = false;
+    // Trace each visit to PC=$400F (the IDR-loop "dance" entry point)
+    // for the next ~32 instructions. The test JMPs here per loop
+    // iteration; the resulting opcode chain reads the live data bus
+    // each cycle and depends on the test opcode at zp $A5. Capturing
+    // the actual opcode bytes the CPU executes in this window tells
+    // us where the dance diverges from what the test expected.
+    let mut dance_trace_remaining: u32 = 0;
+    let mut dance_iteration: u32 = 0;
+    const DANCE_PC: u16 = 0x400F;
+    // Once we pass dance iteration 13 (last successful iteration
+    // before the test goes off the rails), enable a compact PC-only
+    // trace so we can see every instruction up to the first $80DF
+    // entry. Filtered: skip the WaitForVBlank inner loop ($F919/$F91C)
+    // since it produces tens of thousands of repeats during the
+    // 30000-cycle frame-counter wait between iterations. The
+    // WaitForFrameCounter loop also runs for ages; emit one summary
+    // line when we enter/leave it.
+    let mut compact_trace_active = false;
+    let mut last_compact_pc: u16 = 0;
+    let mut compact_repeat_count: u32 = 0;
+    // 64-entry ring buffer of (cycles, PC, opcode-at-PC, A, X, Y, SP, P)
+    // captured at every instruction boundary. Dumped on first entry to
+    // $80DF so we can see the last 64 instructions before the test
+    // ROM's panic-trap fired - that's typically enough to show the
+    // off-the-rails sequence + the NMI handler that RTI'd into $80DF.
+    const RING: usize = 64;
+    let mut ring: Vec<(u64, u16, u8, u8, u8, u8, u8, u8)> = Vec::with_capacity(RING);
+    let mut ring_head: usize = 0;
     for _ in 0..frames {
         if nes.cpu.halted {
             anyhow::bail!(
@@ -301,15 +330,176 @@ fn step_frames(nes: &mut Nes, frames: u32, detect_trap: bool) -> Result<()> {
             let mut visited_trap = false;
             while nes.bus.ppu.frame() == start_frame {
                 if nes.cpu.halted { break; }
-                if nes.cpu.pc == TRAP_PC { visited_trap = true; }
+                // Ring-buffer the instruction boundary state BEFORE
+                // we step, so the entry at the trap-detection moment
+                // shows the 64 instructions leading up to it (not
+                // including the trapped one itself).
+                let entry = (
+                    nes.cpu.cycles,
+                    nes.cpu.pc,
+                    nes.bus.peek(nes.cpu.pc),
+                    nes.cpu.a,
+                    nes.cpu.x,
+                    nes.cpu.y,
+                    nes.cpu.sp,
+                    nes.cpu.p.to_u8(),
+                );
+                if ring.len() < RING {
+                    ring.push(entry);
+                } else {
+                    ring[ring_head] = entry;
+                    ring_head = (ring_head + 1) % RING;
+                }
+                if dance_iteration == 13 && !compact_trace_active {
+                    compact_trace_active = true;
+                    eprintln!("--- compact PC trace enabled after iter 13 ---");
+                }
+                if compact_trace_active {
+                    let pc = nes.cpu.pc;
+                    // Skip the wait loops (LDA $2002 / BPL or wait-frame-flag).
+                    // These produce huge volume of repeated lines without
+                    // adding signal. Show one "..." line on entry / exit.
+                    if pc == 0xF919 || pc == 0xF91C {
+                        if last_compact_pc != 0xF919 && last_compact_pc != 0xF91C {
+                            eprintln!("  pc=$F919 (WaitForVBlank inner loop ...)");
+                        }
+                    } else {
+                        if last_compact_pc == 0xF919 || last_compact_pc == 0xF91C {
+                            eprintln!("  (WaitForVBlank exit)");
+                        }
+                        let op = nes.bus.peek(pc);
+                        if pc == last_compact_pc {
+                            compact_repeat_count += 1;
+                        } else {
+                            if compact_repeat_count > 0 {
+                                eprintln!("  (last pc repeated {compact_repeat_count} more times)");
+                                compact_repeat_count = 0;
+                            }
+                            eprintln!(
+                                "  pc=${pc:04X} op=${op:02X} A=${:02X} X=${:02X} Y=${:02X} SP=${:02X} P=${:02X}",
+                                nes.cpu.a, nes.cpu.x, nes.cpu.y, nes.cpu.sp, nes.cpu.p.to_u8()
+                            );
+                        }
+                    }
+                    last_compact_pc = pc;
+                }
+                if nes.cpu.pc == DANCE_PC && dance_trace_remaining == 0 {
+                    dance_iteration += 1;
+                    dance_trace_remaining = 24;
+                    eprintln!(
+                        "--- IDR dance iteration #{} entered at $400F ---",
+                        dance_iteration
+                    );
+                    eprintln!(
+                        "  pre-dance: A=${:02X} X=${:02X} Y=${:02X} \
+                         SP=${:02X} P=${:02X} ErrorCode=${:02X} \
+                         Copy_X=${:02X} $A4=${:02X} $A5=${:02X}",
+                        nes.cpu.a,
+                        nes.cpu.x,
+                        nes.cpu.y,
+                        nes.cpu.sp,
+                        nes.cpu.p.to_u8(),
+                        nes.bus.peek(0x10),
+                        nes.bus.peek(0xFD),
+                        nes.bus.peek(0xA4),
+                        nes.bus.peek(0xA5),
+                    );
+                }
+                if dance_trace_remaining > 0 {
+                    let pc = nes.cpu.pc;
+                    let op = nes.bus.peek(pc);
+                    let op_plus1 = nes.bus.peek(pc.wrapping_add(1));
+                    eprintln!(
+                        "  dance pc=${pc:04X} op=${op:02X} \
+                         next=${op_plus1:02X} A=${:02X} P=${:02X} SP=${:02X}",
+                        nes.cpu.a,
+                        nes.cpu.p.to_u8(),
+                        nes.cpu.sp,
+                    );
+                    dance_trace_remaining -= 1;
+                }
+                if nes.cpu.pc == TRAP_PC {
+                    visited_trap = true;
+                    if !first_trap_logged {
+                        first_trap_logged = true;
+                        // Dump the ring in chronological order.
+                        eprintln!("--- last {} instructions before first $80DF ---", ring.len());
+                        let n = ring.len();
+                        for i in 0..n {
+                            let (cyc, pc, op, a, x, y, sp, p) =
+                                ring[(ring_head + i) % n];
+                            eprintln!(
+                                "  cyc={cyc:>10} pc=${pc:04X} op=${op:02X} \
+                                 A=${a:02X} X=${x:02X} Y=${y:02X} \
+                                 SP=${sp:02X} P=${p:02X}"
+                            );
+                        }
+                        eprintln!(
+                            "first $80DF entry: frame={} cycles={} \
+                             ErrorCode($10)=${:02X} \
+                             BRK_indicator($60)=${:02X} \
+                             $A4=${:02X} $A5=${:02X} \
+                             Copy_X($FD)=${:02X} \
+                             A=${:02X} X=${:02X} Y=${:02X} \
+                             SP=${:02X} P=${:02X} \
+                             stack@$100+SP+1=${:02X} \
+                             stack@$100+SP+2=${:02X} \
+                             stack@$100+SP+3=${:02X}",
+                            nes.bus.ppu.frame(),
+                            nes.cpu.cycles,
+                            nes.bus.peek(0x10),
+                            nes.bus.peek(0x60),
+                            nes.bus.peek(0xA4),
+                            nes.bus.peek(0xA5),
+                            nes.bus.peek(0xFD),
+                            nes.cpu.a,
+                            nes.cpu.x,
+                            nes.cpu.y,
+                            nes.cpu.sp,
+                            nes.cpu.p.to_u8(),
+                            nes.bus.peek(0x100u16.wrapping_add(nes.cpu.sp.wrapping_add(1) as u16)),
+                            nes.bus.peek(0x100u16.wrapping_add(nes.cpu.sp.wrapping_add(2) as u16)),
+                            nes.bus.peek(0x100u16.wrapping_add(nes.cpu.sp.wrapping_add(3) as u16)),
+                        );
+                    }
+                }
                 nes.step().map_err(anyhow::Error::msg)?;
             }
             if visited_trap {
                 trap_frames += 1;
                 if trap_frames >= 32 {
+                    // Dump the zero-page and CPU register state at
+                    // the trap point. AccuracyCoin's IDR test stores
+                    // its progress in well-known zp slots:
+                    //   $10 = ErrorCode (0..N as the test advances)
+                    //   $19 = bitfield (bit 4 = "in failure handler")
+                    //   $60 = BRK-vs-RTI indicator (1 if BRK fired)
+                    //   $A4 = scratch (opcode setup)
+                    //   $A5 = opcode-under-test
+                    //   $FD = Copy_X (loop iteration index)
+                    // Knowing where in the loop we died narrows the
+                    // failing opcode / sub-test from "all of test 136"
+                    // to "opcode N of sub-test M". See
+                    // docs/accuracy_coin/idr_crash.md for the broader
+                    // context on this trap.
                     eprintln!(
                         "note: test ROM trapped at ${TRAP_PC:04X} (panic landing pad). \
-                         Aborting frame loop; report reflects state at trap entry."
+                         Aborting frame loop; report reflects state at trap entry.\n\
+                         IDR state: ErrorCode=${:02X} \
+                         bit_flags($19)=${:02X} BRK_indicator($60)=${:02X} \
+                         opcode_under_test($A5)=${:02X} \
+                         Copy_X($FD)=${:02X} A=${:02X} X=${:02X} Y=${:02X} \
+                         SP=${:02X} P=${:02X}",
+                        nes.bus.peek(0x10),
+                        nes.bus.peek(0x19),
+                        nes.bus.peek(0x60),
+                        nes.bus.peek(0xA5),
+                        nes.bus.peek(0xFD),
+                        nes.cpu.a,
+                        nes.cpu.x,
+                        nes.cpu.y,
+                        nes.cpu.sp,
+                        nes.cpu.p.to_u8(),
                     );
                     return Ok(());
                 }

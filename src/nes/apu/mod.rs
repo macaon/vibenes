@@ -41,7 +41,12 @@ pub struct DmcDmaRequest {
 pub struct Apu {
     region: Region,
     /// Absolute CPU cycle count since power-on. Used for `$4017` write
-    /// delay parity decisions and as the reference timebase.
+    /// delay parity decisions and as the reference timebase. Tracks
+    /// `MasterClock::cpu_cycles` 1:1 - both start at `u64::MAX` so that
+    /// after the 8 reset/warm-up reads (NesCpu.cpp:158-164) we land at
+    /// cycle 7 with matching parity. This is what the DMC's
+    /// `set_enabled` parity branch and the frame counter's `$4017`
+    /// write delay rely on.
     cycle: u64,
     frame_counter: FrameCounter,
     pulse1: Pulse,
@@ -57,7 +62,7 @@ impl Apu {
     pub fn new(region: Region) -> Self {
         Self {
             region,
-            cycle: 0,
+            cycle: u64::MAX,
             frame_counter: FrameCounter::new(region),
             pulse1: Pulse::new_pulse1(),
             pulse2: Pulse::new_pulse2(),

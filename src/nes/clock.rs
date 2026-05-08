@@ -105,15 +105,19 @@ impl MasterClock {
     pub fn new(region: Region) -> Self {
         // Mesen2 initialises `_masterClock = cpuDivider + cpuOffset`
         // (`NesCpu.cpp:158`) - master starts at one full CPU cycle
-        // ahead of zero, so the first CPU cycle's start/end phases
-        // land at master = cpuDivider+5 then +12 on a read. We match
-        // that priming so phase math lines up with Mesen from the
-        // first instruction.
+        // ahead of zero - then runs eight reset/warm-up cycles
+        // (NesCpu.cpp:160-164) before the first ROM instruction.
+        // CycleCount is initialised to (uint64_t)-1 so that after
+        // those eight increments the first opcode fetch lands at
+        // CycleCount=7. We mirror both: cpu_cycles starts at -1
+        // (u64::MAX) so 8 reset reads land us at 7 (wrapping add
+        // semantics handle the underflow cleanly), and master starts
+        // at one CPU cycle ahead so phase math lines up.
         let master_cycles = region.master_per_cpu();
         Self {
             region,
             master_cycles,
-            cpu_cycles: 0,
+            cpu_cycles: u64::MAX,
             ppu_cycles: 0,
             ppu_offset: 1,
         }

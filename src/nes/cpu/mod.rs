@@ -138,15 +138,23 @@ impl Cpu {
     }
 
     pub fn reset(&mut self, bus: &mut Bus) {
-        // Real 6502 reset = 7 cycles: 2 dummy opcode/operand fetches,
-        // 3 dummy stack "pushes" (reads because write is suppressed on
-        // RESET), then the low and high vector reads from $FFFC/$FFFD.
-        // We reproduce the 5 dummy cycles as bus reads so the APU /
-        // PPU see the correct cycle count. The read addresses don't
-        // matter (side effects fall through open bus / RAM), but we
-        // stick to $00FF which is the post-decrement stack slot on
-        // real hardware - lets future stack-watching tests agree.
-        for _ in 0..5 {
+        // Reset / power-up takes 8 CPU cycles before the first ROM
+        // instruction fetch. Mesen2 (`NesCpu.cpp:160-164`) loops
+        // `StartCpuCycle/EndCpuCycle` exactly eight times; the
+        // hardware-level breakdown is 6 dummy bus reads (2 opcode/
+        // operand fetches + 3 dummy stack "pushes" + 1 alignment
+        // cycle) followed by the vector reads at `$FFFC` / `$FFFD`.
+        //
+        // Cycle count matters here: each reset cycle ticks the PPU
+        // and APU. If we run only 7 reset cycles, our PPU is exactly
+        // one CPU cycle (=3 PPU dots) behind Mesen forever after,
+        // which manifests as VBlank arriving ~7 CPU cycles late and
+        // breaks AccuracyCoin's `DMASyncWith48` polling loop in the
+        // PHA -> Loop5 transition (the cycle drift compounds across
+        // sub-tests). Read addresses don't matter for side effects;
+        // we stick to `$00FF` for the dummy reads to mirror the
+        // post-decrement stack slot real hardware uses.
+        for _ in 0..6 {
             let _ = bus.read(0x00FF);
         }
         let lo = bus.read(0xFFFC);
