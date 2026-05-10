@@ -13,8 +13,126 @@ gets stuck in the test ROM's "park" landing pad:
 
 The runner detects a sustained PC at `$80DF` and aborts the frame
 loop early so the report still renders, with a `note: test ROM trapped`
-banner. `accuracy_coin` reports 117 / 18 / 5 untouched as of this
-writing.
+banner. `accuracy_coin` currently reports 116 / 19 / 5 untouched after
+the 2026-05-08 reset/apu-cycle fix (was 117 / 18 / 5 before; the
+delta is one Loop1-class test that was passing by accident under
+the previous dual-bug compensation).
+
+`$80DF` itself is just `InfiniteLoop` (asm:467) - the rom's normal
+"wait for NMI" park between tests and on the result screen. The
+"trap" detection in the runner abort isn't seeing a panic landing
+pad, it's seeing the rom sit in InfiniteLoop for >32 frames without
+$046D ever being written, which is the symptom of IDR not completing.
+
+## What changed on 2026-05-08
+
+Two real cycle-accuracy bugs were fixed (commit `7d37180`):
+
+1. CPU reset ran 7 cycles instead of Mesen2's documented 8
+   (NesCpu.cpp:160-164). Each missing reset cycle is +3 PPU dots;
+   without the 8th tick, PPU + APU sat one full CPU cycle behind
+   from power-on forever, with the drift compounding through
+   `DMASync` polling loops.
+2. With `cpu_cycles` initialised to `u64::MAX` so the 8 reset reads
+   land first instruction at cycle 7 (matching Mesen), `apu.cycle`
+   still started at 0 and ran +1 ahead of `cpu_cycles` permanently.
+   That inverted the parity passed to `Dmc::set_enabled` at every
+   `$4015` write, mis-shifting DMC DMA arming by one CPU cycle and
+   breaking `cpu_interrupts_v2/4-irq_and_dma`. Aligning `apu.cycle`
+   init to `u64::MAX` restores the contract that `apu.cycle ==
+   cpu_cycles` at observation time.
+
+`4-irq_and_dma` went from FAIL back to PASS as a result, plus all
+1349 lib tests, all `apu_test` 8/8, all `apu_reset` 6/6, all
+`ppu_vbl_nmi` 10/10, `mmc3_test` 6/6, `mmc3_test_2` 6/6,
+`dmc_dma_during_read4` 5/5, both `sprdma_and_dmc_dma` ROMs, and
+`instr_test-v5` 16/16 stayed green.
+
+But: the IDR trap was **not** unblocked by the fix. The rom now
+reaches dance iteration 15 (vs prior 13-14), `ErrorCode` at trap
+is `$07` (vs prior `$1D`), and the first `$80DF` lands at cycle
+~140.4M (vs prior ~139.5M). Different symptom, same end state.
+
+## Why we can't currently get a full Mesen2 reference trace
+
+`tools/mesen_trace_acc.lua` was built to drive Start through the
+auto-Start menu so Mesen2's `--testRunner` mode runs the test
+suite. It works for short ROMs but **Mesen2's testRunner exits at
+about 5.2 M CPU cycles** (~175 NTSC frames, ~3 seconds) regardless
+of the script's `LIMIT_CYCLES`. AccuracyCoin's auto-Start press
+happens at frame ~240 (~7.2 M cycles), so the testRunner gives up
+before the test suite even begins. Verified empirically by setting
+`LIMIT=200000000 START=0` and observing the trace cuts off at
+cyc ≈ 5.2 M with PC sitting in the menu's `InfiniteLoop`.
+
+## What we learned on 2026-05-09 (Mesen2 trace diff attempt)
+
+The earlier note about the testRunner exiting at 5.2 M cycles was
+wrong - the script was using `emu.stop(0)` instead of the documented
+`emu.exit(0)`. Once that was fixed (and stdout-buffering worked
+around by deferring `addMemoryCallback` registration until just
+before `START_CYCLES`), the harness can capture Mesen2 traces at
+arbitrary cycle ranges.
+
+**But the diff revealed a much bigger gap than the original Loop5
+investigation suspected:** vibenes runs 2-3 M cycles **ahead** of
+Mesen2 by the time the IDR test starts. Concrete evidence (post-
+2026-05-08 reset/apu fix):
+
+- vibenes hits IDR Loop1 iter 1 at `cyc = 139,438,083`.
+- vibenes hits IDR PHA dance entry at `cyc = 140,167,299`.
+- vibenes traps at `$80DF` at `cyc = 140,354,348`.
+- Mesen2 traced over `cyc 138,000,000 - 141,750,000` shows **zero**
+  `pc=400F` entries. Mesen2 is sitting in `ClockslideFromWord`
+  (`pc=$FD71/$FD72` DEY/BNE loop) for more than 4 M cycles, well
+  before reaching IDR Loop1.
+
+So the cycle-by-cycle drift is at least 2.3 M cycles long before
+the Loop5 dance corruption ever happens. Reasoning purely about
+"Loop5 first iter's $4015 parity" was missing the upstream
+discrepancy.
+
+The implication: this isn't a single off-by-one DMC parity bug.
+Some test (or several) earlier in the suite consume different cycle
+counts on vibenes vs Mesen2, and the accumulated drift puts vibenes
+into a different spot in Mesen's overall cycle timeline by the time
+IDR runs. The IDR test rom's hand-crafted DMA-sync dances assume
+specific cycle alignments that hold on real hardware (and on Mesen2
+closely enough that it produces a clean fail-byte rather than a
+hang); on vibenes the alignment is wrong enough that the dance
+produces opcodes that loop back to `JMP $400F` indefinitely.
+
+Practical next steps to actually localise the upstream divergence:
+
+1. Find where vibenes and Mesen2 first disagree on a cycle count
+   for the same PC. The trace harness produces matching `[M]`-line
+   format - run both with `START=0` and a moderate `LIMIT` (say
+   30 M cycles, ~150 frames past auto-Start), then `diff` the
+   first divergent line. That gives us the test (and likely the
+   instruction) where the drift began.
+2. The drift accumulator is most likely an early test that polls
+   a flag that flips at a different cycle on vibenes vs Mesen2 -
+   classic suspects are `$2002` VBlank flag, the APU frame-counter
+   IRQ flag, or DMC sample-loop alignment. Once the offending
+   test is identified, the fix may be small (a few-cycle PPU dot
+   shift, a frame-counter event-table tweak, or a DMC fetch
+   tick-count off by one).
+3. Mesen2 testRunner runs at ~1.5% real-time speed (about 1 M
+   cycles per 70 s wall time), so capturing a full
+   `cyc 0 - 30 M` Mesen2 trace takes ~35 minutes wall time but is
+   feasible. The `tools/mesen_trace_acc.{lua,sh}` harness now
+   handles this correctly with `emu.exit` + deferred-arm.
+
+Available reference options:
+
+- **Mesen2 testRunner (now usable)**: emu.exit + deferred-arm
+  fix in `tools/mesen_trace_acc.lua` makes long-window captures
+  possible. Wall time grows linearly with the cycle window so
+  staying close to `START=0` is best.
+- **puNES / Nestopia**: per prior notes, both also FAIL this test.
+  Useful as a sanity-check but not authoritative.
+- **Real hardware capture**: closest to authoritative. Out of
+  scope for a local session.
 
 ## What we know now (after the 2026-05-03 round)
 
