@@ -220,7 +220,20 @@ impl Ppu {
             rendering_enabled: false,
             prevent_vbl: false,
             oam: [0; 256],
-            palette: [0; 32],
+            // Documented NES power-on palette pattern (nesdev wiki "PPU
+            // power up state"; matches Mesen2 NesPpu.cpp:53-56 verbatim).
+            // Real hardware boots with these specific values in palette
+            // RAM, and AccuracyCoin's first-frame palette-snapshot routine
+            // copies them into the rom's RAM-resident PowerOnPalette
+            // table. Booting with all-zero palette there causes downstream
+            // tests that branch on those values to take different paths
+            // and accumulates cycle drift through to the IDR test.
+            palette: [
+                0x09, 0x01, 0x00, 0x01, 0x00, 0x02, 0x02, 0x0D,
+                0x08, 0x10, 0x08, 0x24, 0x00, 0x00, 0x04, 0x2C,
+                0x09, 0x01, 0x34, 0x03, 0x00, 0x04, 0x00, 0x14,
+                0x08, 0x3A, 0x00, 0x02, 0x00, 0x20, 0x2C, 0x08,
+            ],
             vram: [0; 0x800],
             bg_next_nt: 0,
             bg_next_attr_bits: 0,
