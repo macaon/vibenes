@@ -53,6 +53,19 @@ pub struct Dmc {
     enable_dma_delay: u8,
     enable_dma_addr: u16,
 
+    /// Mesen2-style `_disableDelay` (`DeltaModulationChannel.cpp:
+    /// 250-259`): when `$4015` bit 4 disables the channel, the
+    /// disable is NOT immediate - it's delayed 2 or 3 CPU cycles based
+    /// on cycle-count parity. During the delay any DMA that was about
+    /// to fire gets cancelled, but if `dma_pending` was already armed
+    /// the CPU still halts for one cycle (the halt is the "absorbed"
+    /// fetch that real hardware can't undo). `0` = no pending disable.
+    /// Required by AccuracyCoin's "Implied Dummy Reads" dance, which
+    /// disables DMC inside a stack-crafted `JMP $4013` sequence; an
+    /// immediate disable produces wrong open-bus dance bytes and the
+    /// rom takes a stack-corrupting branch instead of TEST_Fail.
+    disable_delay: u8,
+
     output: u8,
     enabled: bool,
 }
@@ -103,6 +116,7 @@ impl Dmc {
             dma_pending: None,
             enable_dma_delay: 0,
             enable_dma_addr: 0,
+            disable_delay: 0,
             output: 0,
             enabled: false,
         }
@@ -126,16 +140,18 @@ impl Dmc {
     pub fn set_enabled(&mut self, enabled: bool, cpu_cycle_odd: bool) {
         self.enabled = enabled;
         if !enabled {
-            // `$4015` bit 4 = 0: drop the remaining sample and discard any
-            // outstanding DMA fetch. Without clearing `dma_pending`, a
-            // fetch armed just before the disable would still be serviced
-            // by the bus and the byte would land in `buffer`, which the
-            // next enable would then shift out - an extra stray sample.
-            // The currently-buffered / mid-shift byte is *kept* (hardware
-            // lets the current shift register finish naturally).
-            self.bytes_remaining = 0;
-            self.dma_pending = None;
-            self.enable_dma_delay = 0;
+            // `$4015` bit 4 = 0: per Mesen2
+            // (`DeltaModulationChannel.cpp:250-259`), the disable is
+            // DELAYED 2 or 3 CPU cycles. During that window any DMA
+            // that was about to start is cancelled but if `dma_pending`
+            // was already armed the CPU still gets halted for one
+            // cycle (the halt is the "absorbed" fetch real hardware
+            // can't undo). Only arm the delay if we're not already
+            // in a disable-pending window, matching Mesen's `if
+            // (_disableDelay == 0)` guard.
+            if self.disable_delay == 0 {
+                self.disable_delay = if cpu_cycle_odd { 3 } else { 2 };
+            }
         } else if self.bytes_remaining == 0 {
             self.restart_sample_pending(cpu_cycle_odd);
         }
@@ -227,10 +243,23 @@ impl Dmc {
     /// DMA to refill the buffer).
     pub fn tick_cpu(&mut self) -> DmcStepResult {
         let result = DmcStepResult::default();
-        // Apply any pending $4015-enable transfer-start delay first
-        // (Mesen2 `ProcessClock`). Once the countdown hits zero, move
-        // the deferred address into `dma_pending` so the bus sees it
-        // at the next read.
+        // Apply any pending $4015-disable delay first (Mesen2
+        // `ProcessClock` lines 277-283). When it hits zero, drop the
+        // remaining sample and cancel any pending DMA. Anything that
+        // was already in `dma_pending` gets cleared here, mirroring
+        // Mesen's `StopDmcTransfer()`.
+        if self.disable_delay > 0 {
+            self.disable_delay -= 1;
+            if self.disable_delay == 0 {
+                self.bytes_remaining = 0;
+                self.dma_pending = None;
+                self.enable_dma_delay = 0;
+            }
+        }
+        // Apply any pending $4015-enable transfer-start delay
+        // (Mesen2 `ProcessClock` lines 285-287). Once the countdown
+        // hits zero, move the deferred address into `dma_pending` so
+        // the bus sees it at the next read.
         if self.enable_dma_delay > 0 {
             self.enable_dma_delay -= 1;
             if self.enable_dma_delay == 0
@@ -419,6 +448,13 @@ mod tests {
         assert!(d.dma_pending.is_some(), "DMA was armed");
 
         d.set_enabled(false, false);
+
+        // Disable is delayed 2-3 cycles per Mesen2
+        // `DeltaModulationChannel.cpp:250-259`. After ticking past
+        // the delay, bytes_remaining and dma_pending must be cleared.
+        for _ in 0..3 {
+            d.tick_cpu();
+        }
 
         assert_eq!(d.bytes_remaining(), 0);
         assert!(
