@@ -4,7 +4,7 @@
 # cycle-exact instruction trace on stdout.
 #
 # Usage:
-#   tools/trace_mesen_acc.sh <rom> [limit_cycles] [start_cycles]
+#   tools/trace_mesen_acc.sh <rom> [limit_cycles] [start_cycles] [boot] [hold] [timeout_sec]
 #                            [boot_frames] [hold_frames]
 #
 # Defaults match `accuracy_coin` runner conventions (boot_frames=240,
@@ -32,6 +32,8 @@ sed \
   -e "s/@@HOLD_FRAMES@@/$HOLD_FRAMES/" \
   "$SCRIPT_SRC" > "$TMP_LUA"
 
+TIMEOUT_SEC="${6:-3600}"
+
 exec mesen --testRunner "$TMP_LUA" "$ROM" \
   --enableStdout --doNotSaveSettings --preferences.disableOsd=true \
-  --emulation.emulationSpeed=0
+  --emulation.emulationSpeed=0 --timeout="$TIMEOUT_SEC"
