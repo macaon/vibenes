@@ -235,6 +235,32 @@ impl Dmc {
                 fire_irq = true;
             }
         }
+
+        // Mesen2 `DeltaModulationChannel.cpp:95-115`: when a DMA
+        // completes with sample length == 1 and no loop, real
+        // hardware has a glitch where, if the DMA ended on the APU
+        // cycle right before the bit counter resets, the DMC
+        // re-arms but is immediately aborted 3 CPU cycles later
+        // (causing one halted CPU cycle as side effect). This is
+        // the "AccuracyCoin Delta Modulation Channel test" hardware
+        // quirk. Without emulating it, the open-bus dance in the
+        // Implied Dummy Reads test sees the open-bus byte at a
+        // shifted cycle, derailing the stack-crafted return path.
+        if self.sample_length_cfg == 1
+            && !self.loop_flag
+            && self.bits_remaining == 1
+            && self.timer < 2
+        {
+            self.shift_reg = byte;
+            self.silence = false;
+            self.buffer = None;
+            self.current_addr = self.sample_addr_start;
+            self.bytes_remaining = self.sample_length_cfg;
+            if self.disable_delay == 0 {
+                self.disable_delay = 3;
+            }
+        }
+
         fire_irq
     }
 
