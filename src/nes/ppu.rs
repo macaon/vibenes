@@ -190,12 +190,17 @@ pub struct Ppu {
     open_bus_refresh: [u64; 8],
 }
 
-/// PPU open-bus decay threshold in PPU dots. NTSC PPU runs at
-/// ~5.369 MHz, so 3.2 M dots ≈ 596 ms - well inside the "< 1 second"
-/// window asserted by `ppu_open_bus` tests 3/5/7/9 while still longer
-/// than the 100 × 10 ms burst loops those tests use. Real hardware
-/// varies per unit and with temperature (~600 ms typical per nesdev).
-const OPEN_BUS_DECAY_PPU_DOTS: u64 = 3_200_000;
+/// PPU open-bus decay threshold in PPU dots. Conservative at ~3 NTSC
+/// frames (89342 dots/frame × 3 ≈ 268k dots) to match Mesen2's
+/// `_frameCount - _openBusDecayStamp[i] > 3` rule (NesPpu.cpp:241).
+/// Real hardware varies per unit and with temperature (~600 ms
+/// typical), but the test ROMs in the Implied Dummy Reads chain and
+/// the `ppu_open_bus` battery both calibrate against the faster
+/// Mesen-style decay; sticking to a hardware-spec-only delay leaves
+/// open-bus bits live across many more frames than other emulators
+/// and breaks the open-bus-dance assumptions of AccuracyCoin's
+/// $2002-status-with-bus probes.
+const OPEN_BUS_DECAY_PPU_DOTS: u64 = 270_000;
 
 impl Ppu {
     pub fn new(region: Region) -> Self {
