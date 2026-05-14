@@ -167,6 +167,16 @@ impl Bus {
 
     /// iNES / NES 2.0 mapper id of the cart loaded into this bus.
     /// Used by the save-state header to refuse cross-mapper loads.
+    /// Current CPU-side data-bus latch (open bus). Updated on every
+    /// CPU read/write. Used by trace tooling to capture what byte an
+    /// unmapped-address read would return at any instruction boundary;
+    /// critical for diagnosing dance-corruption bugs like the
+    /// AccuracyCoin IDR test where wrong open-bus bytes at $4013-$4015
+    /// derail the stack-crafted return path.
+    pub fn open_bus(&self) -> u8 {
+        self.open_bus
+    }
+
     pub fn mapper_id(&self) -> u16 {
         self.mapper_id
     }

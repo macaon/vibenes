@@ -24,6 +24,65 @@ the previous dual-bug compensation).
 pad, it's seeing the rom sit in InfiniteLoop for >32 frames without
 $046D ever being written, which is the symptom of IDR not completing.
 
+## Smoking-gun cycle (2026-05-13)
+
+With `bus.open_bus` added to `src/nes/cpu/trace.rs` (as the `ob=`
+field) the exact moment the IDR dance derails is now visible. From
+the cycle-by-cycle trace at Loop5 iter 1 dance entry:
+
+```
+cyc=132813225 pc=$4013 ob=$40 ...   ← PHA opcode fetch (DMC byte $48 on bus)
+cyc=132813232 pc=$4014 ob=$28 ...   ← PHA pushed A=$28, bus latched $28
+cyc=132813236 pc=$4015 ob=$28 ...   ← bus still $28
+cyc=132813242 pc=$4061 ...          ← JSR'd to $4061 (wrong target)
+```
+
+The test rom's choreography (asm line 12229 comment): the open-bus
+dance at `JMP $4013` is supposed to fetch PHA at $4013 (DMC DMA
+puts $48 on the bus), then PLP at $4014 (bus stays $28 from the
+push), then **BRK at $4015** ($4015 returns
+`status | (open_bus & 0x20)` - to get `$00` (BRK) the bus latch
+must have bit 5 clear). DMC byte `$48 = 0100 1000` has bit 5 = 0,
+so a fresh DMC fetch on the bus latch at $4015 read time yields
+BRK and the rom routes into TEST_ImpliedDummyRead_BRKed5 cleanly.
+
+What we do instead: the DMC DMA fetches its byte ~5 CPU cycles too
+early - the byte lands at the bus latch during PHA's fetch (cyc
+132813225 area), then PHA pushes A=$28, **bus latch is now $28**,
+and by the $4015 read at cyc 132813236 the latch still reflects
+`$28` (the PLP-popped opcode byte). `$28 & $20 = $20`, so $4015
+returns `$20` - the JSR opcode. JSR's operand reads at $4016 and
+$4017 land at $61 / $40 respectively, JSR'ing to `$4061`. The rom
+ends up deep in unrelated test code, runs through corrupted
+state, eventually parks at `$80DF` without writing `$046D`.
+
+### Root-cause direction
+
+Our DMC DMA byte arrives on the data bus at a 5-cycle-earlier
+hardware moment than Mesen2's. The rom's "0 cycles until DMA"
+calibration (asm line 11857) is choreographed against the
+Mesen2-equivalent / hardware DMA-fire cycle, not ours. The
+candidate fixes that need investigating - in priority order:
+
+1. **DMC DMA halt-cycle count** - our `process_pending_dma` may be
+   running the halt + dummy + fetch in fewer total cycles than
+   Mesen2 does, so the fetch lands earlier. Check
+   `NesCpu.cpp:325-448` for cycle exactness.
+2. **Final-byte-after-loop-off path** - the IDR test sets
+   `$4010 = $0F` (loop off) during WaitForFrameCounterFlag, so the
+   final DMA after loop-off is what the dance reads. Our timing
+   of that specific final fetch (relative to bit-counter wrap)
+   may be off.
+3. **DMC sample-duplication glitch interaction** - the length-1
+   glitch added in `ebeebe5` triggers a `disable_delay = 3` that
+   subtly delays/cancels the final DMA. Worth a "remove the
+   glitch, see what changes" experiment.
+
+The fix isn't blind cycle-tweaking; with `ob=` visible in the
+trace, the test is now: nudge DMA timing so `ob=$48` at the
+`$4015` fetch (cyc 132813236 in current state). Any of the three
+candidates above could close that 5-cycle gap.
+
 ## What changed on 2026-05-08
 
 Two real cycle-accuracy bugs were fixed (commit `7d37180`):

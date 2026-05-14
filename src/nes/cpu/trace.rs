@@ -70,13 +70,14 @@ pub fn emit_instruction(cpu: &Cpu, bus: &Bus) {
     let _ = writeln!(
         out,
         "[M] cyc={cyc} pc={pc:04X} op={op:02X} a={a:02X} x={x:02X} y={y:02X} sp={sp:02X} ps={ps:02X} \
-         mclk={mclk} dbr={dbr} dtim={dtim} dbit={dbit} dbuf={dbuf} tsd={tsd} ntr={ntr}",
+         mclk={mclk} ob={ob:02X} dbr={dbr} dtim={dtim} dbit={dbit} dbuf={dbuf} tsd={tsd} ntr={ntr}",
         a = cpu.a,
         x = cpu.x,
         y = cpu.y,
         sp = cpu.sp,
         ps = cpu.p.to_u8(),
         mclk = bus.clock.master_cycles(),
+        ob = bus.open_bus(),
         dbr = dmc.bytes_remaining,
         dtim = dmc.timer,
         dbit = dmc.bits_remaining,
