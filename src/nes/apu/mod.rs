@@ -274,6 +274,14 @@ impl Apu {
         self.dmc.take_dma_request()
     }
 
+    /// Drained by the bus every CPU cycle. `true` means DMC just
+    /// disabled (its `disable_delay` reached zero this tick) and any
+    /// in-flight DMA must be cancelled - matches Mesen2's
+    /// `StopDmcTransfer` call from `DeltaModulationChannel.cpp:282`.
+    pub fn take_dmc_abort_request(&mut self) -> bool {
+        self.dmc.take_abort_request()
+    }
+
     pub fn dmc_dma_complete(&mut self, byte: u8) {
         if self.dmc.dma_complete(byte) {
             self.dmc_irq = true;

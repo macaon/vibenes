@@ -66,6 +66,17 @@ pub struct Dmc {
     /// rom takes a stack-corrupting branch instead of TEST_Fail.
     disable_delay: u8,
 
+    /// Set by `tick_cpu` when `disable_delay` decrements to zero AND a
+    /// DMA was in flight at that moment (either `dma_pending` was
+    /// armed or the bus had already pulled the request and is in the
+    /// halt / dummy / fetch phase). Drained by
+    /// [`Apu::take_dmc_abort_request`] which the bus consults after
+    /// every APU tick to mirror Mesen2's `StopDmcTransfer()` call from
+    /// `DeltaModulationChannel.cpp:282`. The bus then either cancels
+    /// the DMA cleanly (pre-halt) or latches a `dmc_abort` flag for a
+    /// mid-loop abort, matching `NesCpu.cpp:534-548`.
+    abort_pending: bool,
+
     output: u8,
     enabled: bool,
 }
@@ -117,6 +128,7 @@ impl Dmc {
             enable_dma_delay: 0,
             enable_dma_addr: 0,
             disable_delay: 0,
+            abort_pending: false,
             output: 0,
             enabled: false,
         }
@@ -217,6 +229,14 @@ impl Dmc {
         self.dma_pending.take().map(|addr| DmcDmaRequest { addr })
     }
 
+    /// Mesen2-style `StopDmcTransfer` trigger: clear the abort flag
+    /// and report whether one was pending. The bus drains this every
+    /// cycle and either fully cancels an in-flight DMA (pre-halt) or
+    /// latches a late-abort flag the DMA loop honours.
+    pub fn take_abort_request(&mut self) -> bool {
+        std::mem::take(&mut self.abort_pending)
+    }
+
     /// The bus calls this after fulfilling a DMA request. Returns true if
     /// the sample completed and a DMC IRQ should be raised.
     pub fn dma_complete(&mut self, byte: u8) -> bool {
@@ -277,6 +297,14 @@ impl Dmc {
         if self.disable_delay > 0 {
             self.disable_delay -= 1;
             if self.disable_delay == 0 {
+                // Signal the bus that a DMA may need aborting. The
+                // bus took ownership of `dma_pending` the moment its
+                // tick_pre_access ran `take_dmc_dma_request`, so by
+                // the time we get here our local `dma_pending` may
+                // already be `None` even though `bus.dmc_dma_running`
+                // is true. Flag unconditionally; the bus side decides
+                // whether to fully cancel or just latch a late abort.
+                self.abort_pending = true;
                 self.bytes_remaining = 0;
                 self.dma_pending = None;
                 self.enable_dma_delay = 0;

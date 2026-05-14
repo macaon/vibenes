@@ -70,6 +70,14 @@ pub struct Bus {
     need_dummy_read: bool,
     dmc_dma_running: bool,
     dmc_dma_addr: u16,
+    /// Mesen2 `NesCpu::_abortDmcDma` (`NesCpu.cpp:545`). Latched when
+    /// the APU's `disable_delay` reaches zero while DMC DMA has
+    /// already passed its halt cycle - the DMA still costs one halt
+    /// cycle (which has already been taken), but the fetch is
+    /// suppressed. Drained at the top of each DMA-loop iter; if pre-
+    /// halt (`need_halt` still set) the cancellation is full and the
+    /// flag never sees the loop.
+    dmc_abort: bool,
     sprite_dma_running: bool,
     sprite_dma_page: u8,
     in_dma_loop: bool,
@@ -145,6 +153,7 @@ impl Bus {
             need_dummy_read: false,
             dmc_dma_running: false,
             dmc_dma_addr: 0,
+            dmc_abort: false,
             sprite_dma_running: false,
             sprite_dma_page: 0,
             in_dma_loop: false,
@@ -405,6 +414,26 @@ impl Bus {
         self.mapper.on_cpu_cycle();
         self.irq_line = self.apu.irq_line() | self.mapper.irq_line();
 
+        // If the APU's DMC just disabled (its `disable_delay`
+        // decremented to zero this tick), mirror Mesen2's
+        // `StopDmcTransfer` (`NesCpu.cpp:534-548`): pre-halt cancels
+        // the DMA outright, post-halt latches `dmc_abort` so the DMA
+        // loop drops the fetch on its next iteration. Without this,
+        // a $4015 bit-4 = 0 fired while the DMA was queued would
+        // still pull the sample byte onto the open bus - producing
+        // the wrong byte for AccuracyCoin's IDR dance.
+        if self.apu.take_dmc_abort_request() {
+            if self.need_halt {
+                // Pre-halt: full cancel.
+                self.dmc_dma_running = false;
+                self.need_halt = false;
+                self.need_dummy_read = false;
+            } else if self.dmc_dma_running {
+                // Post-halt: late abort, drained inside the DMA loop.
+                self.dmc_abort = true;
+            }
+        }
+
         // If the APU's DMC just armed a DMA this cycle, promote the
         // request into bus-side DMA state so the next CPU read (or
         // the running DMA loop) picks it up. Matches Mesen2's
@@ -515,6 +544,21 @@ impl Bus {
         let mut sprite_byte: u8 = 0;
 
         while self.dmc_dma_running || self.sprite_dma_running {
+            // Mesen2 `NesCpu.cpp:386-395`: drain a pending DMC abort
+            // *before* deciding what this cycle does. Latched by
+            // `tick_pre_access` when APU signalled disable-mid-DMA.
+            // Post-halt abort clears the running flag and the dummy
+            // read, letting OAM DMA continue if it's also active.
+            if self.dmc_abort {
+                self.dmc_abort = false;
+                self.dmc_dma_running = false;
+                self.need_dummy_read = false;
+                self.need_halt = false;
+                if !self.sprite_dma_running {
+                    break;
+                }
+                continue;
+            }
             let get_cycle = (self.clock.cpu_cycles() & 1) == 0;
             // Mesen's `processCycle` lambda - clear exactly one
             // pending flag (halt > dummy priority) per DMA cycle,
