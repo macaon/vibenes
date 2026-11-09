@@ -279,8 +279,7 @@ impl Bus {
         let value = self.ppu.cpu_read_dummy(addr, &mut *self.mapper);
         self.open_bus = value;
         self.internal_bus = value;
-        self.tick_post_access(true);
-        value
+        self.finish_read_cycle(addr, value)
     }
 
     pub fn read(&mut self, addr: u16) -> u8 {
@@ -333,8 +332,22 @@ impl Bus {
         } else {
             self.open_bus = value;
         }
+        self.finish_read_cycle(addr, value)
+    }
+
+    /// Sample live PPU status outputs at the end of a read while retaining
+    /// the VBlank value and side effects from read assertion. All mirrors
+    /// and DMA reads use the same two edges; no extra PPU ticks are added.
+    fn finish_read_cycle(&mut self, addr: u16, value: u8) -> u8 {
         self.tick_post_access(true);
-        value
+        if (0x2000..=0x3FFF).contains(&addr) && addr & 7 == 2 {
+            let value = self.ppu.finish_status_read(value);
+            self.open_bus = value;
+            self.internal_bus = value;
+            value
+        } else {
+            value
+        }
     }
 
     /// One CPU bus write. Every write costs one CPU cycle.
@@ -555,8 +568,8 @@ impl Bus {
         // entering DMA's flag, not a new one that armed mid-cycle.
         self.need_halt = false;
         self.tick_pre_access(true);
-        let _ = self.dma_bus_read(pending_addr);
-        self.tick_post_access(true);
+        let value = self.dma_bus_read(pending_addr);
+        self.finish_read_cycle(pending_addr, value);
 
         // Cancellation detected during the halt can still release RDY
         // after this single cycle. Later cancellations are observed by
@@ -588,9 +601,11 @@ impl Bus {
                 if !self.sprite_dma_running {
                     self.tick_pre_access(true);
                     if !skip_dummy_reads {
-                        let _ = self.dma_bus_read(pending_addr);
+                        let value = self.dma_bus_read(pending_addr);
+                        self.finish_read_cycle(pending_addr, value);
+                    } else {
+                        self.tick_post_access(true);
                     }
-                    self.tick_post_access(true);
                     break;
                 }
                 continue;
@@ -631,8 +646,8 @@ impl Bus {
                     let sprite_addr =
                         ((self.sprite_dma_page as u16) << 8) | (sprite_counter >> 1);
                     self.tick_pre_access(true);
-                    sprite_byte = self.oam_bus_read(sprite_addr, pending_addr);
-                    self.tick_post_access(true);
+                    let value = self.oam_bus_read(sprite_addr, pending_addr);
+                    sprite_byte = self.finish_read_cycle(sprite_addr, value);
                     sprite_counter = sprite_counter.wrapping_add(1);
                 } else {
                     // DMC waiting, no sprite DMA - dummy read of
@@ -640,9 +655,11 @@ impl Bus {
                     // consumed one pending flag).
                     self.tick_pre_access(true);
                     if !skip_dummy_reads {
-                        let _ = self.dma_bus_read(pending_addr);
+                        let value = self.dma_bus_read(pending_addr);
+                        self.finish_read_cycle(pending_addr, value);
+                    } else {
+                        self.tick_post_access(true);
                     }
-                    self.tick_post_access(true);
                 }
             } else {
                 // Put cycle.
@@ -664,9 +681,11 @@ impl Bus {
                     // halt/dummy and DMC read.
                     self.tick_pre_access(true);
                     if !skip_dummy_reads {
-                        let _ = self.dma_bus_read(pending_addr);
+                        let value = self.dma_bus_read(pending_addr);
+                        self.finish_read_cycle(pending_addr, value);
+                    } else {
+                        self.tick_post_access(true);
                     }
-                    self.tick_post_access(true);
                 }
             }
         }
@@ -792,6 +811,51 @@ mod tests {
             fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), region, 0, 0)
+    }
+
+    #[test]
+    fn ppu_status_samples_live_sprite_flags_but_latches_vblank() {
+        // At phase offset 1 a read advances two dots before assertion
+        // and one afterward. Only the middle case straddles dot 1.
+        for (scanline, dot, expected) in [(260, 339, 0xFB), (260, 340, 0x9B), (261, 0, 0x1B)] {
+            for path in 0..4 {
+                let mut bus = build_bus();
+                let mut clock = bus.clock.save_state_capture();
+                clock.master_cycles = 12;
+                clock.ppu_cycles = 2;
+                bus.clock.save_state_apply(clock);
+                let mut ppu = bus.ppu.save_state_capture();
+                ppu.scanline = scanline;
+                ppu.dot = dot;
+                ppu.status = 0xE0;
+                ppu.open_bus = 0x1B;
+                ppu.w_latch = true;
+                bus.ppu.save_state_apply(ppu);
+                let before = bus.clock.ppu_cycles();
+                let addr = 0x3FFA; // PPUSTATUS mirror
+                let value = match path {
+                    0 => bus.read(addr),
+                    1 => bus.dummy_read(addr),
+                    _ => {
+                        bus.tick_pre_access(true);
+                        let value = if path == 2 {
+                            bus.dma_bus_read(addr)
+                        } else {
+                            bus.oam_bus_read(addr, 0)
+                        };
+                        bus.finish_read_cycle(addr, value)
+                    }
+                };
+                assert_eq!(value, expected, "scanline={scanline} dot={dot} path={path}");
+                assert_eq!(bus.clock.ppu_cycles() - before, 3);
+                assert_eq!(bus.open_bus, expected);
+                assert_eq!(bus.internal_bus, expected);
+                let ppu = bus.ppu.save_state_capture();
+                assert_eq!(ppu.open_bus, expected);
+                assert!(!ppu.w_latch);
+                assert_eq!(ppu.status & 0x80, 0);
+            }
+        }
     }
 
     #[test]

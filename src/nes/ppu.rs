@@ -1088,6 +1088,14 @@ impl Ppu {
         self.cpu_read_inner(addr, mapper, false)
     }
 
+    /// Finish a status read at the CPU sampling edge. VBlank is buffered
+    /// at read assertion, but sprite flags drive the pins throughout the read.
+    pub(crate) fn finish_status_read(&mut self, latched: u8) -> u8 {
+        let sprites = self.status & 0x60;
+        self.refresh_open_bus_bits(0x60, sprites);
+        (latched & !0x60) | sprites
+    }
+
     /// `cpu_read` variant that the bus calls for the page-cross dummy
     /// read emitted by `abs,X` / `abs,Y` / `(zp),Y`. For `$2007`, real
     /// hardware's aborted read doesn't advance the PPU's internal buffer
@@ -1111,6 +1119,10 @@ impl Ppu {
         let reg = addr & 0x0007;
         match reg {
             0x02 => {
+                // Read assertion: buffer VBlank and apply side effects.
+                // The bus calls finish_status_read at the sampling edge
+                // to replace bits 5-6 with the still-live sprite flags.
+                // Direct PPU callers observe an instantaneous read.
                 // $2002 read: bits 5-7 come from PPU status (VBlank,
                 // sprite-0, sprite-overflow); bits 0-4 come from the
                 // open-bus decay register. The read refreshes bits
