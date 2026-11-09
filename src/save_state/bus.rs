@@ -39,6 +39,7 @@ pub struct BusSnap {
     #[serde(with = "BigArray")]
     pub ram: [u8; 0x800],
     pub controllers: [ControllerSnap; 2],
+    pub controller_strobe_pending: bool,
     pub nmi_pending: bool,
     pub irq_line: bool,
     pub prev_irq_line: bool,
@@ -64,6 +65,7 @@ impl Default for BusSnap {
             clock: MasterClockSnap::default(),
             ram: [0; 0x800],
             controllers: [ControllerSnap::default(); 2],
+            controller_strobe_pending: false,
             nmi_pending: false,
             irq_line: false,
             prev_irq_line: false,

@@ -30,6 +30,9 @@ pub struct Bus {
     submapper: u8,
 
     pub controllers: [Controller; 2],
+    /// CPU-written OUT0 value, sampled by the controller output latch
+    /// at the get-to-put boundary. Separate from each pad's strobe pin.
+    controller_strobe_pending: bool,
 
     pub nmi_pending: bool,
     pub irq_line: bool,
@@ -143,6 +146,7 @@ impl Bus {
             submapper,
             mapper,
             controllers: [Controller::default(); 2],
+            controller_strobe_pending: false,
             nmi_pending: false,
             irq_line: false,
             prev_irq_line: false,
@@ -200,6 +204,7 @@ impl Bus {
                 self.controllers[0].save_state_capture(),
                 self.controllers[1].save_state_capture(),
             ],
+            controller_strobe_pending: self.controller_strobe_pending,
             nmi_pending: self.nmi_pending,
             irq_line: self.irq_line,
             prev_irq_line: self.prev_irq_line,
@@ -226,6 +231,7 @@ impl Bus {
         self.ram = snap.ram;
         self.controllers[0].save_state_apply(snap.controllers[0]);
         self.controllers[1].save_state_apply(snap.controllers[1]);
+        self.controller_strobe_pending = snap.controller_strobe_pending;
         self.nmi_pending = snap.nmi_pending;
         self.irq_line = snap.irq_line;
         self.prev_irq_line = snap.prev_irq_line;
@@ -378,9 +384,7 @@ impl Bus {
                 return;
             }
             0x4016 => {
-                let strobe = data;
-                self.controllers[0].write_strobe(strobe);
-                self.controllers[1].write_strobe(strobe);
+                self.controller_strobe_pending = data & 1 != 0;
             }
             0x4018..=0x401F => {}
             0x4020..=0xFFFF => self.mapper.cpu_write(addr, data),
@@ -419,6 +423,14 @@ impl Bus {
     /// state at end of the **previous** cycle, which is what the
     /// 6502's penultimate-cycle polling expects.
     fn tick_pre_access(&mut self, is_read: bool) {
+        // Sample OUT0 at the start of put, before that cycle's CPU
+        // write. A high written on the preceding get reaches the pin;
+        // a put-only high can be overwritten on get before sampling.
+        if self.clock.cpu_cycles() & 1 == 1 {
+            let strobe = u8::from(self.controller_strobe_pending);
+            self.controllers[0].write_strobe(strobe);
+            self.controllers[1].write_strobe(strobe);
+        }
         self.prev_irq_line = self.irq_line;
         self.prev_nmi_pending = self.nmi_pending;
 
@@ -704,6 +716,80 @@ mod tests {
             fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0, 0)
+    }
+
+    #[test]
+    fn controller_strobe_ignores_upper_write_bits() {
+        let mut bus = build_bus();
+        bus.controllers[0].shifter = 0xFF;
+        bus.write(0x4016, 2);
+        bus.read(0);
+        assert_eq!(bus.controllers[0].shifter, 0xFF);
+        assert!(!bus.controllers[0].strobe);
+        bus.write(0x4016, 3);
+        bus.read(0);
+        bus.read(0);
+        assert!(bus.controllers[0].strobe);
+        assert_eq!(bus.controllers[0].shifter, 0);
+    }
+
+    #[test]
+    fn controller_strobe_samples_the_previous_get_write_on_put() {
+        for high_on_put in [false, true] {
+            let mut bus = build_bus();
+            for pad in &mut bus.controllers {
+                pad.shifter = 0xFF;
+            }
+            bus.controllers[0].buttons = 0xA5;
+            bus.controllers[1].buttons = 0x5A;
+            // The next cycle is put when the completed count is odd.
+            if ((bus.clock.cpu_cycles() & 1) == 1) != high_on_put {
+                bus.read(0);
+            }
+            bus.write(0x4016, 1);
+            bus.write(0x4016, 0);
+            bus.read(0); // Let the low level reach the output latch.
+            for (port, buttons) in [(0x4016, 0xA5), (0x4017, 0x5A)] {
+                let mut report = 0u8;
+                for bit in 0..8 {
+                    report |= (bus.read(port) & 1) << bit;
+                }
+                assert_eq!(report, if high_on_put { 0xFF } else { buttons });
+                assert_eq!(bus.read(port) & 1, 1, "report must end with ones");
+            }
+        }
+    }
+
+    #[test]
+    fn controller_strobe_held_across_put_is_sampled() {
+        let mut bus = build_bus();
+        // First write on get, then leave it high for the following put.
+        if bus.clock.cpu_cycles() & 1 != 0 {
+            bus.read(0);
+        }
+        bus.controllers[0].buttons = 0x96;
+        bus.write(0x4016, 1);
+        bus.read(0);
+        bus.write(0x4016, 0);
+        bus.read(0);
+        assert_eq!(bus.controllers[0].shifter, 0x96);
+        assert!(!bus.controllers[0].strobe);
+    }
+
+    #[test]
+    fn pending_controller_strobe_survives_restore() {
+        let mut bus = build_bus();
+        if bus.clock.cpu_cycles() & 1 != 0 {
+            bus.read(0);
+        }
+        bus.controllers[0].buttons = 0x96;
+        bus.write(0x4016, 1); // On get: pending high, actual OUT0 still low.
+        assert!(!bus.controllers[0].strobe);
+        let mut restored = build_bus();
+        restored.save_state_apply(bus.save_state_capture());
+        restored.read(0); // Following put commits the saved pending level.
+        assert!(restored.controllers[0].strobe);
+        assert_eq!(restored.controllers[0].shifter, 0x96);
     }
 
     #[test]
