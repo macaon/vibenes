@@ -14,6 +14,7 @@ pub struct FrameEvent {
     pub quarter: bool,
     pub half: bool,
     pub set_frame_irq: bool,
+    pub clear_frame_irq: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +80,9 @@ impl FrameCounter {
     }
 
     pub fn write_4017(&mut self, value: u8, cycle: u64, parity_odd: bool) {
+        // Inhibition takes effect on the register write, independently
+        // of the delayed divider reset and mode change.
+        self.irq_inhibit = (value & 0x40) != 0;
         // Mesen2's 2-way parity split. Mesen starts counting after the
         // write, so "4 CPU cycles" there means apply on the 4th tick
         // counting from the one immediately after the write. We record
@@ -89,6 +93,10 @@ impl FrameCounter {
             value,
             apply_at: cycle.wrapping_add(delay),
         });
+    }
+
+    pub fn irq_inhibited(&self) -> bool {
+        self.irq_inhibit
     }
 
     /// Advance one CPU cycle. Apply any pending `$4017` reset first, then
@@ -102,7 +110,6 @@ impl FrameCounter {
                 } else {
                     Mode::FourStep
                 };
-                self.irq_inhibit = (pending.value & 0x40) != 0;
                 self.counter = 0;
                 self.block_ticks_until = cycle.wrapping_add(2);
                 if self.mode == Mode::FiveStep {
@@ -110,7 +117,7 @@ impl FrameCounter {
                     return FrameEvent {
                         quarter: true,
                         half: true,
-                        set_frame_irq: false,
+                        ..FrameEvent::default()
                     };
                 }
                 return FrameEvent::default();
@@ -125,8 +132,17 @@ impl FrameCounter {
         self.counter = self.counter.wrapping_add(1);
 
         let mut event = step_event(self.region, self.mode, self.counter);
-        if event.set_frame_irq && self.irq_inhibit {
-            event.set_frame_irq = false;
+        if self.irq_inhibit {
+            // The status latch is set during the first two cycles even
+            // while inhibited. On the final cycle, it takes !inhibit.
+            let final_cycle = match self.region {
+                Region::Ntsc => 29830,
+                Region::Pal => 33254,
+            };
+            if self.mode == Mode::FourStep && self.counter == final_cycle {
+                event.set_frame_irq = false;
+                event.clear_frame_irq = true;
+            }
         }
 
         let wrap = mode_period(self.region, self.mode);

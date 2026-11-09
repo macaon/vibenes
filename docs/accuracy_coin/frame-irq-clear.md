@@ -18,7 +18,7 @@ The bus decides DMA get/put from the completed-cycle count before
 starting a cycle. An even completed count starts get; the APU then
 increments its cycle count to odd before the bus access.
 
-## Results
+## Results after deferred clearing
 
 The matching ROM now reports **124 pass / 23 fail / 0 skip / 0 untouched**.
 The only changed results from the controller-fix baseline are:
@@ -45,3 +45,30 @@ See [the full results](results-2026-11-09-frame-irq.txt).
 - All 11 blargg_apu_2005.07.30 ROMs pass.
 - New tests cover consecutive CPU status reads on both alignments,
   simultaneous set/clear, pending-clear restore, and reset cancellation.
+
+## IRQ inhibition follow-up (2026-11-09)
+
+Frame Counter IRQ now passes in full. During the first two cycles of
+its IRQ window, the frame sequencer sets the status latch even when
+IRQ delivery is inhibited. On the third cycle, inhibition clears it.
+The CPU IRQ line is gated separately by inhibition; the independent
+DMC IRQ remains unaffected. `$4017` inhibition changes immediately on
+the write while mode changes and divider reset retain their delay.
+
+The inhibited-window behavior is specified in the matching
+AccuracyCoin source's `TEST_FrameCounterIRQ`, subtests I through M.
+The implementation retains the existing uninhibited IRQ assertion
+timing, verified by both AccuracyCoin and Blargg's IRQ timing test.
+
+The complete result is now **125 pass / 22 fail / 0 skip / 0 untouched**.
+The only result changed since the deferred-clear fix is Frame Counter
+IRQ: FAIL 13 -> PASS. See [the updated full results](results-2026-11-09-irq-inhibit.txt).
+
+New tests cover both NTSC and PAL status windows with and without
+inhibition, restoration of an inhibited status-only IRQ, immediate
+inhibition before divider reset, and an independent DMC IRQ. Existing
+snapshot fields already capture this state; the format remains v2.
+
+Follow-up validation: all 1,358 library tests, four save-state integration
+tests, the same 22 CPU/APU/reset/DMA regression ROMs listed above,
+and all 11 blargg_apu_2005.07.30 ROMs pass.

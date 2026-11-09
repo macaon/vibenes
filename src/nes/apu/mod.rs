@@ -54,6 +54,7 @@ pub struct Apu {
     triangle: Triangle,
     noise: Noise,
     dmc: Dmc,
+    // Status latch remains briefly visible even when CPU IRQs are inhibited.
     frame_irq: bool,
     frame_irq_clear_pending: bool,
     dmc_irq: bool,
@@ -106,7 +107,7 @@ impl Apu {
     }
 
     pub fn irq_line(&self) -> bool {
-        self.frame_irq || self.dmc_irq
+        (self.frame_irq && !self.frame_counter.irq_inhibited()) || self.dmc_irq
     }
 
     /// Test hook - force the frame IRQ flag so a unit test can drive
@@ -129,6 +130,9 @@ impl Apu {
             self.frame_irq_clear_pending = false;
         }
         let event = self.frame_counter.tick(self.cycle);
+        if event.clear_frame_irq {
+            self.frame_irq = false;
+        }
         if event.set_frame_irq {
             self.frame_irq = true;
         }
@@ -372,6 +376,68 @@ mod tests {
 
     fn ntsc() -> Apu {
         Apu::new(Region::Ntsc)
+    }
+
+    #[test]
+    fn frame_irq_status_window_and_cpu_line_are_independent() {
+        for (region, first_cycle) in [(Region::Ntsc, 29828), (Region::Pal, 33252)] {
+            for inhibited in [false, true] {
+                let mut apu = Apu::new(region);
+                let mut snap = apu.save_state_capture();
+                snap.cycle = 100;
+                snap.frame_counter.counter = first_cycle - 2;
+                snap.frame_counter.irq_inhibit = inhibited;
+                apu.save_state_apply(snap);
+                for offset in 0..5 {
+                    apu.tick_cpu_cycle();
+                    let status = offset >= 1 && (!inhibited || offset < 3);
+                    assert_eq!(
+                        apu.frame_irq, status,
+                        "{region:?}, inhibited={inhibited}, offset={offset}"
+                    );
+                    assert_eq!(
+                        apu.irq_line(), !inhibited && offset >= 1,
+                        "{region:?}, inhibited={inhibited}, offset={offset}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn status_only_frame_irq_survives_restore_without_asserting_cpu_irq() {
+        let mut apu = ntsc();
+        let mut snap = apu.save_state_capture();
+        snap.frame_counter.counter = 29827;
+        snap.frame_counter.irq_inhibit = true;
+        apu.save_state_apply(snap);
+        apu.tick_cpu_cycle();
+        assert!(apu.frame_irq);
+        assert!(!apu.irq_line());
+        let mut restored = ntsc();
+        restored.save_state_apply(apu.save_state_capture());
+        assert!(restored.frame_irq);
+        assert!(!restored.irq_line());
+        restored.tick_cpu_cycle();
+        assert!(restored.frame_irq);
+        assert!(!restored.irq_line());
+        restored.tick_cpu_cycle();
+        assert!(!restored.frame_irq);
+        assert!(!restored.irq_line());
+    }
+
+    #[test]
+    fn inhibit_write_clears_status_and_cpu_irq_before_divider_reset() {
+        let mut apu = ntsc();
+        apu.set_frame_irq_for_test(true);
+        apu.write_reg(0x4017, 0x40);
+        assert!(!apu.frame_irq);
+        assert!(!apu.irq_line());
+        assert!(apu.frame_counter.save_state_capture().irq_inhibit);
+        assert!(apu.frame_counter.save_state_capture().pending_write.is_some());
+        // Frame-counter inhibition must never mask the independent DMC IRQ.
+        apu.dmc_irq = true;
+        assert!(apu.irq_line());
     }
 
     #[test]
