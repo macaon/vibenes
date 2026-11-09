@@ -54,6 +54,8 @@ pub struct Bus {
     prev_nmi_flag: bool,
 
     open_bus: u8,
+    /// Internal CPU data latch, isolated from external data on $4015 reads.
+    internal_bus: u8,
 
     /// DMA state machine - Mesen2 port (`NesCpu.cpp:325-448`). Both
     /// DMC DMA and OAM (sprite) DMA flow through the same parity-gated
@@ -153,6 +155,7 @@ impl Bus {
             prev_nmi_pending: false,
             prev_nmi_flag: false,
             open_bus: 0,
+            internal_bus: 0,
             need_halt: false,
             need_dummy_read: false,
             dmc_dma_running: false,
@@ -211,6 +214,7 @@ impl Bus {
             prev_nmi_pending: self.prev_nmi_pending,
             prev_nmi_flag: self.prev_nmi_flag,
             open_bus: self.open_bus,
+            internal_bus: self.internal_bus,
             need_halt: self.need_halt,
             need_dummy_read: self.need_dummy_read,
             dmc_dma_running: self.dmc_dma_running,
@@ -239,6 +243,7 @@ impl Bus {
         self.prev_nmi_pending = snap.prev_nmi_pending;
         self.prev_nmi_flag = snap.prev_nmi_flag;
         self.open_bus = snap.open_bus;
+        self.internal_bus = snap.internal_bus;
         self.need_halt = snap.need_halt;
         self.need_dummy_read = snap.need_dummy_read;
         self.dmc_dma_running = snap.dmc_dma_running;
@@ -273,6 +278,7 @@ impl Bus {
         self.tick_pre_access(true);
         let value = self.ppu.cpu_read_dummy(addr, &mut *self.mapper);
         self.open_bus = value;
+        self.internal_bus = value;
         self.tick_post_access(true);
         value
     }
@@ -297,8 +303,9 @@ impl Bus {
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
-            // $4015 bit 5 reads as open bus; the APU drives bits 0-4 / 6-7.
-            0x4015 => (self.apu.read_status() & 0xDF) | (self.open_bus & 0x20),
+            // $4015 bit 5 retains internal bus state; the APU drives
+            // bits 0-4 / 6-7 without driving the external data pins.
+            0x4015 => (self.apu.read_status() & 0xDF) | (self.internal_bus & 0x20),
             // $4016/$4017: bit 0 = controller, bits 1-4 = 0.
             // Bits 5-7 are undriven and retain the CPU open-bus value.
             // Bit 6 is usually set by the operand fetch, but stack writes
@@ -320,6 +327,7 @@ impl Bus {
             0x6000..=0xFFFF => self.mapper.cpu_read(addr),
             _ => self.open_bus,
         };
+        self.internal_bus = value;
         if suppress_open_bus_update {
             self.open_bus = preserved_open_bus;
         } else {
@@ -342,6 +350,7 @@ impl Bus {
         // the standalone DMA case in `service_pending_dmc_dma` does
         // the right thing on the next read.
         self.open_bus = data;
+        self.internal_bus = data;
         if addr == 0x4010 {
             // The rate selector feeds a reload in this same CPU cycle.
             // Only stage rate bits here: IRQ/loop control retains the
@@ -643,6 +652,7 @@ impl Bus {
                     self.tick_pre_access(false);
                     self.ppu.cpu_write(0x2004, sprite_byte, &mut *self.mapper);
                     self.open_bus = sprite_byte;
+                    self.internal_bus = sprite_byte;
                     self.tick_post_access(false);
                     sprite_counter = sprite_counter.wrapping_add(1);
                     if sprite_counter >= 0x200 {
@@ -666,6 +676,7 @@ impl Bus {
 
     /// OAM memory read with register selection from the halted CPU.
     fn oam_bus_read(&mut self, addr: u16, halted_addr: u16) -> u8 {
+        let previous_internal = self.internal_bus;
         // External memory is selected by the actual DMA address. The
         // write-only/internal register window is otherwise open bus.
         let external = if (0x4000..=0x401F).contains(&addr) {
@@ -681,7 +692,9 @@ impl Bus {
                 0x15 => {
                     // Status drives the internal OAM input, not the
                     // external bus. The following OAM put will drive it.
-                    return (self.apu.read_status() & 0xDF) | (external & 0x20);
+                    let value = (self.apu.read_status() & 0xDF) | (previous_internal & 0x20);
+                    self.internal_bus = value;
+                    return value;
                 }
                 0x16 | 0x17 => {
                     let port = (addr & 1) as usize;
@@ -690,6 +703,7 @@ impl Bus {
                 _ => {}
             }
         }
+        self.internal_bus = self.open_bus;
         self.open_bus
     }
 
@@ -697,6 +711,8 @@ impl Bus {
     /// The cartridge sees the DMA address, but register selection keeps
     /// A5-A15 from the halted CPU and takes A0-A4 from the DMA unit.
     fn dmc_bus_read(&mut self, addr: u16, halted_addr: u16) -> u8 {
+        let previous_internal = self.internal_bus;
+        let mut isolated = false;
         let sample = self.mapper.cpu_read(addr);
         self.open_bus = sample;
         if self.clock.region() == Region::Ntsc && (halted_addr & 0xFFE0) == 0x4000 {
@@ -704,7 +720,8 @@ impl Bus {
                 0x15 => {
                     // Status is internal: its side effect still occurs,
                     // but it must not replace the external sample byte.
-                    self.apu.read_status();
+                    self.internal_bus = (self.apu.read_status() & 0xDF) | (previous_internal & 0x20);
+                    isolated = true;
                 }
                 0x16 | 0x17 => {
                     let port = (addr & 1) as usize;
@@ -712,6 +729,9 @@ impl Bus {
                 }
                 _ => {}
             }
+        }
+        if !isolated {
+            self.internal_bus = self.open_bus;
         }
         // The CPU-visible byte and DMC input are separate observations.
         // Keep the existing sample path here: electrical corruption of
@@ -728,7 +748,7 @@ impl Bus {
         let value = match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
-            0x4015 => (self.apu.read_status() & 0xDF) | (self.open_bus & 0x20),
+            0x4015 => (self.apu.read_status() & 0xDF) | (self.internal_bus & 0x20),
             0x4016 => (self.open_bus & 0xE0) | (self.controllers[0].read() & 1),
             0x4017 => (self.open_bus & 0xE0) | (self.controllers[1].read() & 1),
             0x4018..=0x401F => self.open_bus,
@@ -736,7 +756,10 @@ impl Bus {
             0x6000..=0xFFFF => self.mapper.cpu_read(addr),
             _ => self.open_bus,
         };
-        self.open_bus = value;
+        self.internal_bus = value;
+        if addr != 0x4015 {
+            self.open_bus = value;
+        }
         value
     }
 }
@@ -769,6 +792,69 @@ mod tests {
             fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), region, 0, 0)
+    }
+
+    #[test]
+    fn status_reads_update_internal_bus_without_driving_external_bus() {
+        let mut bus = build_bus();
+        bus.write(0, 0x20);
+        let mut snap = bus.apu.save_state_capture();
+        snap.dmc.bytes_remaining = 1;
+        snap.dmc.timer = 100;
+        bus.apu.save_state_apply(snap);
+        assert_eq!(bus.read(0x4015), 0x30);
+        assert_eq!(bus.internal_bus, 0x30);
+        assert_eq!(bus.open_bus, 0x20);
+        assert_eq!(bus.read(0x4000), 0x20);
+    }
+
+    #[test]
+    fn dmc_status_alias_isolates_internal_bit_five_from_sample_data() {
+        for seed in [0, 0x20] {
+            for dma_addr in [0xC014, 0xC015] {
+                let sample = seed ^ 0x20;
+                let mut bus = build_bus_with_sample(sample, Region::Ntsc);
+                bus.write(0, seed);
+                let mut snap = bus.apu.save_state_capture();
+                snap.dmc.bytes_remaining = 1;
+                snap.dmc.timer = 100;
+                bus.apu.save_state_apply(snap);
+                bus.dmc_dma_running = true;
+                bus.need_halt = true;
+                bus.need_dummy_read = true;
+                bus.dmc_dma_addr = dma_addr;
+                let expected = if dma_addr == 0xC015 { seed } else { sample };
+                assert_eq!(bus.read(0x4015) & 0x20, expected);
+                assert_eq!(bus.open_bus, sample);
+                assert_eq!(bus.read(0x4000), sample);
+                assert_eq!(bus.read(0x4015) & 0x20, sample);
+            }
+        }
+    }
+
+    #[test]
+    fn oam_and_halt_status_reads_preserve_bus_isolation() {
+        let mut bus = build_bus_with_sample(0, Region::Ntsc);
+        bus.write(0, 0x20);
+        assert_eq!(bus.oam_bus_read(0xC015, 0x4000), 0x20);
+        assert_eq!(bus.open_bus, 0);
+        assert_eq!(bus.dma_bus_read(0x4015), 0x20);
+        assert_eq!(bus.open_bus, 0);
+        assert_eq!(bus.read(0x4000), 0);
+    }
+
+    #[test]
+    fn distinct_internal_and_external_bus_values_survive_restore() {
+        let mut bus = build_bus_with_sample(0, Region::Ntsc);
+        bus.write(0, 0x20);
+        bus.dmc_bus_read(0xC015, 0x4015);
+        assert_eq!(bus.internal_bus & 0x20, 0x20);
+        assert_eq!(bus.open_bus, 0);
+        let mut restored = build_bus();
+        restored.save_state_apply(bus.save_state_capture());
+        restored.apu.save_state_apply(bus.apu.save_state_capture());
+        assert_eq!(restored.read(0x4015) & 0x20, 0x20);
+        assert_eq!(restored.read(0x4000), 0);
     }
 
     #[test]
@@ -1177,7 +1263,7 @@ mod tests {
         // $4015 supplies JSR ($20), retaining the external bus's $60.
         // P1 then supplies low operand $61. JSR pushes return address
         // $4017 before reading P2, so its high operand must be $00.
-        bus.open_bus = 0x60;
+        bus.write(0, 0x60);
         cpu.step(&mut bus).unwrap();
         assert_eq!(cpu.pc, 0x0061);
         assert_eq!(bus.ram[0x1FD], 0x40);
