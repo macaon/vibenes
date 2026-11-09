@@ -215,6 +215,7 @@ impl Bus {
             need_dummy_read: self.need_dummy_read,
             dmc_dma_running: self.dmc_dma_running,
             dmc_dma_addr: self.dmc_dma_addr,
+            dmc_abort: self.dmc_abort,
             sprite_dma_running: self.sprite_dma_running,
             sprite_dma_page: self.sprite_dma_page,
             in_dma_loop: self.in_dma_loop,
@@ -242,6 +243,7 @@ impl Bus {
         self.need_dummy_read = snap.need_dummy_read;
         self.dmc_dma_running = snap.dmc_dma_running;
         self.dmc_dma_addr = snap.dmc_dma_addr;
+        self.dmc_abort = snap.dmc_abort;
         self.sprite_dma_running = snap.sprite_dma_running;
         self.sprite_dma_page = snap.sprite_dma_page;
         self.in_dma_loop = snap.in_dma_loop;
@@ -547,25 +549,44 @@ impl Bus {
         let _ = self.dma_bus_read(pending_addr);
         self.tick_post_access(true);
 
+        // Cancellation detected during the halt can still release RDY
+        // after this single cycle. Later cancellations are observed by
+        // a DMA cycle already selected below, which must finish first.
+        if self.dmc_abort {
+            self.dmc_abort = false;
+            self.dmc_dma_running = false;
+            self.need_dummy_read = false;
+            self.need_halt = false;
+            if !self.sprite_dma_running {
+                self.in_dma_loop = false;
+                return;
+            }
+        }
+
         let mut sprite_counter: u16 = 0;
         let mut sprite_byte: u8 = 0;
 
         while self.dmc_dma_running || self.sprite_dma_running {
-            // Mesen2 `NesCpu.cpp:386-395`: drain a pending DMC abort
-            // *before* deciding what this cycle does. Latched by
-            // `tick_pre_access` when APU signalled disable-mid-DMA.
-            // Post-halt abort clears the running flag and the dummy
-            // read, letting OAM DMA continue if it's also active.
+            // A cancellation latched after the halt is observed by the
+            // next DMA phase. Without OAM, drain that phase as an idle
+            // read rather than removing a clock from the bus. With OAM,
+            // its next transfer provides that phase without extra delay.
             if self.dmc_abort {
                 self.dmc_abort = false;
                 self.dmc_dma_running = false;
                 self.need_dummy_read = false;
                 self.need_halt = false;
                 if !self.sprite_dma_running {
+                    self.tick_pre_access(true);
+                    if !skip_dummy_reads {
+                        let _ = self.dma_bus_read(pending_addr);
+                    }
+                    self.tick_post_access(true);
                     break;
                 }
                 continue;
             }
+
             let get_cycle = (self.clock.cpu_cycles() & 1) == 0;
             // Mesen's `processCycle` lambda - clear exactly one
             // pending flag (halt > dummy priority) per DMA cycle,
@@ -594,6 +615,7 @@ impl Bus {
                     self.tick_post_access(true);
                     self.apu.dmc_dma_complete(byte);
                     self.dmc_dma_running = false;
+                    self.dmc_abort = false;
                 } else if self.sprite_dma_running {
                     // Sprite DMA read - sprite_counter indexes bytes
                     // 0..255 (the read slot of each read/write pair).
@@ -747,6 +769,93 @@ mod tests {
             fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), region, 0, 0)
+    }
+
+    #[test]
+    fn write_delayed_dmc_abort_does_not_stall_the_following_read() {
+        let mut bus = build_bus_with_sample(0x7B, Region::Ntsc);
+        let mut snap = bus.apu.save_state_capture();
+        snap.dmc.disable_delay = 1;
+        snap.dmc.bytes_remaining = 1;
+        snap.dmc.timer = 100;
+        bus.apu.save_state_apply(snap);
+        bus.dmc_dma_running = true;
+        bus.need_halt = true;
+        bus.need_dummy_read = true;
+        bus.dmc_dma_addr = 0xC000;
+        bus.write(0, 0);
+        let before = bus.clock.cpu_cycles();
+        bus.read(0x8000);
+        assert_eq!(bus.clock.cpu_cycles().wrapping_sub(before), 1);
+        assert!(bus.apu.save_state_capture().dmc.buffer.is_none());
+        assert!(!bus.dmc_abort);
+    }
+
+    #[test]
+    fn dmc_abort_finishes_the_selected_cycle_on_both_alignments() {
+        for halt_on_get in [false, true] {
+            for abort_after in 1..=3 {
+                let mut bus = build_bus_with_sample(0x7B, Region::Ntsc);
+                if halt_on_get {
+                    bus.read(0);
+                }
+                let mut snap = bus.apu.save_state_capture();
+                snap.dmc.disable_delay = abort_after;
+                snap.dmc.bytes_remaining = 1;
+                snap.dmc.timer = 100;
+                bus.apu.save_state_apply(snap);
+                bus.dmc_dma_running = true;
+                bus.need_halt = true;
+                bus.need_dummy_read = true;
+                bus.dmc_dma_addr = 0xC000;
+                let before = bus.clock.cpu_cycles();
+                bus.read(0x8000);
+                let stall = bus.clock.cpu_cycles().wrapping_sub(before) - 1;
+                let expected = match (halt_on_get, abort_after) {
+                    (_, 1) => 1,
+                    (_, 2) | (true, 3) => 3,
+                    (false, 3) => 4,
+                    _ => unreachable!(),
+                };
+                assert_eq!(stall, expected,
+                    "halt_on_get={halt_on_get}, abort_after={abort_after}");
+                assert!(!bus.dmc_abort, "abort must not poison the next DMA");
+                assert!(!bus.dmc_dma_running);
+                let fetched = bus.apu.save_state_capture().dmc.buffer.is_some();
+                assert_eq!(fetched, halt_on_get && abort_after == 3);
+            }
+        }
+    }
+
+    #[test]
+    fn dmc_abort_latch_and_disable_countdown_survive_restore() {
+        for (latched, pending, delay, expected_cycles) in [
+            (true, false, 0, 2),
+            (false, false, 2, 4),
+            (false, true, 0, 2),
+        ] {
+            let mut bus = build_bus_with_sample(0x7B, Region::Ntsc);
+            bus.dmc_abort = latched;
+            bus.dmc_dma_running = true;
+            bus.need_halt = true;
+            bus.need_dummy_read = true;
+            bus.dmc_dma_addr = 0xC000;
+            let mut apu = bus.apu.save_state_capture();
+            apu.dmc.disable_delay = delay;
+            apu.dmc.abort_pending = pending;
+            apu.dmc.timer = 100;
+            bus.apu.save_state_apply(apu);
+            let mut restored = build_bus_with_sample(0x7B, Region::Ntsc);
+            restored.save_state_apply(bus.save_state_capture());
+            restored.apu.save_state_apply(bus.apu.save_state_capture());
+            for candidate in [&mut bus, &mut restored] {
+                let before = candidate.clock.cpu_cycles();
+                candidate.read(0x8000);
+                assert_eq!(candidate.clock.cpu_cycles().wrapping_sub(before), expected_cycles);
+                assert!(candidate.apu.save_state_capture().dmc.buffer.is_none());
+                assert!(!candidate.dmc_abort);
+            }
+        }
     }
 
     #[test]

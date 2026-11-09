@@ -410,6 +410,8 @@ impl Dmc {
             buffer: self.buffer,
             dma_pending: self.dma_pending,
             enable_dma_delay: self.enable_dma_delay,
+            disable_delay: self.disable_delay,
+            abort_pending: self.abort_pending,
             enable_dma_addr: self.enable_dma_addr,
             output: self.output,
             enabled: self.enabled,
@@ -431,6 +433,8 @@ impl Dmc {
         self.buffer = snap.buffer;
         self.dma_pending = snap.dma_pending;
         self.enable_dma_delay = snap.enable_dma_delay;
+        self.disable_delay = snap.disable_delay;
+        self.abort_pending = snap.abort_pending;
         self.enable_dma_addr = snap.enable_dma_addr;
         self.output = snap.output;
         self.enabled = snap.enabled;

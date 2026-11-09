@@ -107,6 +107,8 @@ pub struct DmcSnap {
     pub buffer: Option<u8>,
     pub dma_pending: Option<u16>,
     pub enable_dma_delay: u8,
+    pub disable_delay: u8,
+    pub abort_pending: bool,
     pub enable_dma_addr: u16,
     pub output: u8,
     pub enabled: bool,
