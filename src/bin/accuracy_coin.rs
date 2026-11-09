@@ -7,7 +7,7 @@
 //! ($0400-$0490) decoded as PASS / FAIL N / SKIP.
 //!
 //! Usage: `accuracy_coin <rom.nes>`. The ROM in this repo lives at
-//! `~/Git/nes-test-roms/AccuracyCoin.nes`.
+//! `~/Git/vibenes-tests/AccuracyCoin.nes`.
 //!
 //! Result-byte encoding (from `AccuracyCoin.asm` - `TEST_Fail` returns
 //! `(ErrorCode << 2) | 2`, primary pass returns `1`, behavior-pass
@@ -22,8 +22,9 @@
 //!   `ACC_BOOT_FRAMES`   frames to run before pressing Start (default 240)
 //!   `ACC_HOLD_FRAMES`   frames Start is held (default 8)
 //!   `ACC_RELEASE_FRAMES` frames after release before scoring (default 4)
-//!   `ACC_RUN_FRAMES`    frames to run after release (default 36000)
+//!   `ACC_RUN_FRAMES`    frames to run after release (default 12000)
 //!   `ACC_DUMP_NAMETABLE` set to 1 to also dump nametable A/B as ASCII
+//!   `ACC_TRACE_IDR`     set to enable verbose instruction diagnostics
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -37,90 +38,90 @@ const BUTTON_START: u8 = 0x08;
 /// (result_addr, page_label, test_name). Page labels match the
 /// AccuracyCoin README so failure lines map 1:1 onto its docs.
 const TESTS: &[(u16, &str, &str)] = &[
-    // Page 1 - CPU Behavior
-    (0x0405, "1",  "ROM is not writable"),
-    (0x0403, "1",  "RAM Mirroring"),
-    (0x044D, "1",  "PC Wraparound"),
-    (0x0474, "1",  "The Decimal Flag"),
-    (0x0475, "1",  "The B Flag"),
-    (0x0406, "1",  "Dummy read cycles"),
-    (0x0407, "1",  "Dummy write cycles"),
-    (0x0408, "1",  "Open Bus"),
-    (0x047D, "1",  "All NOP instructions"),
-    // Page 2 - Addressing Mode Wraparound
-    (0x046E, "2",  "Absolute Indexed"),
-    (0x046F, "2",  "Zero Page Indexed"),
-    (0x0470, "2",  "Indirect"),
-    (0x0471, "2",  "Indirect, X"),
-    (0x0472, "2",  "Indirect, Y"),
-    (0x0473, "2",  "Relative"),
-    // Page 3 - Unofficial: SLO
-    (0x0409, "3",  "$03   SLO indirect,X"),
-    (0x040A, "3",  "$07   SLO zeropage"),
-    (0x040B, "3",  "$0F   SLO absolute"),
-    (0x040C, "3",  "$13   SLO indirect,Y"),
-    (0x040D, "3",  "$17   SLO zeropage,X"),
-    (0x040E, "3",  "$1B   SLO absolute,Y"),
-    (0x040F, "3",  "$1F   SLO absolute,X"),
-    // Page 4 - Unofficial: RLA
-    (0x0419, "4",  "$23   RLA indirect,X"),
-    (0x041A, "4",  "$27   RLA zeropage"),
-    (0x041B, "4",  "$2F   RLA absolute"),
-    (0x041C, "4",  "$33   RLA indirect,Y"),
-    (0x041D, "4",  "$37   RLA zeropage,X"),
-    (0x041E, "4",  "$3B   RLA absolute,Y"),
-    (0x041F, "4",  "$3F   RLA absolute,X"),
-    // Page 5 - Unofficial: SRE  (note SRE_47 deliberately at $47F)
-    (0x0420, "5",  "$43   SRE indirect,X"),
-    (0x047F, "5",  "$47   SRE zeropage"),
-    (0x0422, "5",  "$4F   SRE absolute"),
-    (0x0423, "5",  "$53   SRE indirect,Y"),
-    (0x0424, "5",  "$57   SRE zeropage,X"),
-    (0x0425, "5",  "$5B   SRE absolute,Y"),
-    (0x0426, "5",  "$5F   SRE absolute,X"),
-    // Page 6 - Unofficial: RRA
-    (0x0427, "6",  "$63   RRA indirect,X"),
-    (0x0428, "6",  "$67   RRA zeropage"),
-    (0x0429, "6",  "$6F   RRA absolute"),
-    (0x042A, "6",  "$73   RRA indirect,Y"),
-    (0x042B, "6",  "$77   RRA zeropage,X"),
-    (0x042C, "6",  "$7B   RRA absolute,Y"),
-    (0x042D, "6",  "$7F   RRA absolute,X"),
-    // Page 7 - Unofficial: *AX
-    (0x042E, "7",  "$83   SAX indirect,X"),
-    (0x042F, "7",  "$87   SAX zeropage"),
-    (0x0430, "7",  "$8F   SAX absolute"),
-    (0x0431, "7",  "$97   SAX zeropage,Y"),
-    (0x0432, "7",  "$A3   LAX indirect,X"),
-    (0x0433, "7",  "$A7   LAX zeropage"),
-    (0x0434, "7",  "$AF   LAX absolute"),
-    (0x0435, "7",  "$B3   LAX indirect,Y"),
-    (0x0436, "7",  "$B7   LAX zeropage,Y"),
-    (0x0437, "7",  "$BF   LAX absolute,X"),
-    // Page 8 - Unofficial: DCP
-    (0x0438, "8",  "$C3   DCP indirect,X"),
-    (0x0439, "8",  "$C7   DCP zeropage"),
-    (0x043A, "8",  "$CF   DCP absolute"),
-    (0x043B, "8",  "$D3   DCP indirect,Y"),
-    (0x043C, "8",  "$D7   DCP zeropage,X"),
-    (0x043D, "8",  "$DB   DCP absolute,Y"),
-    (0x043E, "8",  "$DF   DCP absolute,X"),
-    // Page 9 - Unofficial: ISC
-    (0x043F, "9",  "$E3   ISC indirect,X"),
-    (0x0440, "9",  "$E7   ISC zeropage"),
-    (0x0441, "9",  "$EF   ISC absolute"),
-    (0x0442, "9",  "$F3   ISC indirect,Y"),
-    (0x0443, "9",  "$F7   ISC zeropage,X"),
-    (0x0444, "9",  "$FB   ISC absolute,Y"),
-    (0x0445, "9",  "$FF   ISC absolute,X"),
-    // Page 10 - Unofficial: SH*
+    // Page 1 - CPUBehavior
+    (0x0405, "1", "ROM is not writable"),
+    (0x0403, "1", "RAM Mirroring"),
+    (0x044D, "1", "PC Wraparound"),
+    (0x0474, "1", "The Decimal Flag"),
+    (0x0475, "1", "The B Flag"),
+    (0x0406, "1", "Dummy read cycles"),
+    (0x0407, "1", "Dummy write cycles"),
+    (0x0408, "1", "Open Bus"),
+    (0x047D, "1", "All NOP instructions"),
+    // Page 2 - CPUInstructions
+    (0x046E, "2", "Absolute Indexed"),
+    (0x046F, "2", "Zero Page Indexed"),
+    (0x0470, "2", "Indirect"),
+    (0x0471, "2", "Indirect, X"),
+    (0x0472, "2", "Indirect, Y"),
+    (0x0473, "2", "Relative"),
+    // Page 3 - UnofficialOps_SLO
+    (0x0409, "3", "$03   SLO indirect,X"),
+    (0x040A, "3", "$07   SLO zeropage"),
+    (0x040B, "3", "$0F   SLO absolute"),
+    (0x040C, "3", "$13   SLO indirect,Y"),
+    (0x040D, "3", "$17   SLO zeropage,X"),
+    (0x040E, "3", "$1B   SLO absolute,Y"),
+    (0x040F, "3", "$1F   SLO absolute,X"),
+    // Page 4 - UnofficialOps_RLA
+    (0x0419, "4", "$23   RLA indirect,X"),
+    (0x041A, "4", "$27   RLA zeropage"),
+    (0x041B, "4", "$2F   RLA absolute"),
+    (0x041C, "4", "$33   RLA indirect,Y"),
+    (0x041D, "4", "$37   RLA zeropage,X"),
+    (0x041E, "4", "$3B   RLA absolute,Y"),
+    (0x041F, "4", "$3F   RLA absolute,X"),
+    // Page 5 - UnofficialOps_SRE
+    (0x0420, "5", "$43   SRE indirect,X"),
+    (0x047F, "5", "$47   SRE zeropage"),
+    (0x0422, "5", "$4F   SRE absolute"),
+    (0x0423, "5", "$53   SRE indirect,Y"),
+    (0x0424, "5", "$57   SRE zeropage,X"),
+    (0x0425, "5", "$5B   SRE absolute,Y"),
+    (0x0426, "5", "$5F   SRE absolute,X"),
+    // Page 6 - UnofficialOps_RRA
+    (0x0427, "6", "$63   RRA indirect,X"),
+    (0x0428, "6", "$67   RRA zeropage"),
+    (0x0429, "6", "$6F   RRA absolute"),
+    (0x042A, "6", "$73   RRA indirect,Y"),
+    (0x042B, "6", "$77   RRA zeropage,X"),
+    (0x042C, "6", "$7B   RRA absolute,Y"),
+    (0x042D, "6", "$7F   RRA absolute,X"),
+    // Page 7 - UnofficialOps__AX
+    (0x042E, "7", "$83   SAX indirect,X"),
+    (0x042F, "7", "$87   SAX zeropage"),
+    (0x0430, "7", "$8F   SAX absolute"),
+    (0x0431, "7", "$97   SAX zeropage,Y"),
+    (0x0432, "7", "$A3   LAX indirect,X"),
+    (0x0433, "7", "$A7   LAX zeropage"),
+    (0x0434, "7", "$AF   LAX absolute"),
+    (0x0435, "7", "$B3   LAX indirect,Y"),
+    (0x0436, "7", "$B7   LAX zeropage,Y"),
+    (0x0437, "7", "$BF   LAX absolute,X"),
+    // Page 8 - UnofficialOps_DCP
+    (0x0438, "8", "$C3   DCP indirect,X"),
+    (0x0439, "8", "$C7   DCP zeropage"),
+    (0x043A, "8", "$CF   DCP absolute"),
+    (0x043B, "8", "$D3   DCP indirect,Y"),
+    (0x043C, "8", "$D7   DCP zeropage,X"),
+    (0x043D, "8", "$DB   DCP absolute,Y"),
+    (0x043E, "8", "$DF   DCP absolute,X"),
+    // Page 9 - UnofficialOps_ISC
+    (0x043F, "9", "$E3   ISC indirect,X"),
+    (0x0440, "9", "$E7   ISC zeropage"),
+    (0x0441, "9", "$EF   ISC absolute"),
+    (0x0442, "9", "$F3   ISC indirect,Y"),
+    (0x0443, "9", "$F7   ISC zeropage,X"),
+    (0x0444, "9", "$FB   ISC absolute,Y"),
+    (0x0445, "9", "$FF   ISC absolute,X"),
+    // Page 10 - UnofficialOps_SH_
     (0x0446, "10", "$93   SHA indirect,Y"),
     (0x0447, "10", "$9F   SHA absolute,Y"),
     (0x0448, "10", "$9B   SHS absolute,Y"),
     (0x0449, "10", "$9C   SHY absolute,X"),
     (0x044A, "10", "$9E   SHX absolute,Y"),
     (0x044B, "10", "$BB   LAE absolute,Y"),
-    // Page 11 - Unofficial Immediates
+    // Page 11 - UnofficialOps_Immediates
     (0x0410, "11", "$0B   ANC Immediate"),
     (0x0411, "11", "$2B   ANC Immediate"),
     (0x0412, "11", "$4B   ASR Immediate"),
@@ -129,11 +130,11 @@ const TESTS: &[(u16, &str, &str)] = &[
     (0x0415, "11", "$AB   LXA Immediate"),
     (0x0416, "11", "$CB   AXS Immediate"),
     (0x0417, "11", "$EB   SBC Immediate"),
-    // Page 12 - CPU Interrupts
+    // Page 12 - CPUInterrupts
     (0x0461, "12", "Interrupt flag latency"),
     (0x0462, "12", "NMI Overlap BRK"),
     (0x0463, "12", "NMI Overlap IRQ"),
-    // Page 13 - APU Registers and DMA
+    // Page 13 - DMATests
     (0x046C, "13", "DMA + Open Bus"),
     (0x0488, "13", "DMA + $2002 Read"),
     (0x044C, "13", "DMA + $2007 Read"),
@@ -144,7 +145,7 @@ const TESTS: &[(u16, &str, &str)] = &[
     (0x0477, "13", "DMC DMA + OAM DMA"),
     (0x0479, "13", "Explicit DMA Abort"),
     (0x0478, "13", "Implicit DMA Abort"),
-    // Page 14 - APU
+    // Page 14 - APUTiming
     (0x0465, "14", "APU Length Counter"),
     (0x0466, "14", "APU Length Table"),
     (0x0467, "14", "Frame Counter IRQ"),
@@ -154,51 +155,57 @@ const TESTS: &[(u16, &str, &str)] = &[
     (0x045C, "14", "APU Register Activation"),
     (0x045F, "14", "Controller Strobing"),
     (0x047A, "14", "Controller Clocking"),
-    // Page 15 - Power-on (page 3 results -> draw-only, omitted from runner table)
-    // Tests on page 15 use result_DrawTest = $03FF, which the auto-runner
-    // explicitly skips. We still surface that single byte for awareness.
-    (0x03FF, "15", "Power-On (last DRAW result)"),
-    // Page 16 - PPU Behavior
-    (0x0485, "16", "CHR ROM is not writable"),
-    (0x0404, "16", "PPU Register Mirroring"),
-    (0x044E, "16", "PPU Register Open Bus"),
-    (0x0476, "16", "PPU Read Buffer"),
-    (0x047E, "16", "Palette RAM Quirks"),
-    (0x0486, "16", "Rendering Flag Behavior"),
-    (0x048A, "16", "$2007 read w/ rendering"),
-    // Page 17 - PPU VBlank Timing
-    (0x0450, "17", "VBlank beginning"),
-    (0x0451, "17", "VBlank end"),
-    (0x0452, "17", "NMI Control"),
-    (0x0453, "17", "NMI Timing"),
-    (0x0454, "17", "NMI Suppression"),
-    (0x0455, "17", "NMI at VBlank end"),
-    (0x0456, "17", "NMI disabled at VBlank"),
-    // Page 18 - Sprite Evaluation
-    (0x0459, "18", "Sprite overflow behavior"),
-    (0x0457, "18", "Sprite 0 Hit behavior"),
-    (0x048D, "18", "$2002 flag timing"),
-    (0x0489, "18", "Suddenly Resize Sprite"),
-    (0x0458, "18", "Arbitrary Sprite zero"),
-    (0x045A, "18", "Misaligned OAM behavior"),
-    (0x045B, "18", "Address $2004 behavior"),
-    (0x047B, "18", "OAM Corruption"),
-    (0x0480, "18", "INC $4014"),
-    // Page 19 - PPU Misc
-    (0x0481, "19", "Attributes As Tiles"),
-    (0x0482, "19", "t Register Quirks"),
-    (0x0483, "19", "Stale BG Shift Registers"),
-    (0x048F, "19", "Stale Sprite Shift Regs"),
-    (0x0487, "19", "BG Serial In"),
-    (0x0484, "19", "Sprites On Scanline 0"),
-    (0x048C, "19", "$2004 Stress Test"),
-    (0x048E, "19", "$2007 Stress Test"),
-    // Page 20 - CPU Behavior 2
-    (0x0460, "20", "Instruction Timing"),
-    (0x046D, "20", "Implied Dummy Reads"),
-    (0x048B, "20", "Branch Dummy Reads"),
-    (0x047C, "20", "JSR Edge Cases"),
-    (0x0490, "20", "Internal Data Bus"),
+    // Page 15 - CPUBehavior2
+    (0x0460, "15", "Instruction Timing"),
+    (0x046D, "15", "Implied Dummy Reads"),
+    (0x048B, "15", "Branch Dummy Reads"),
+    (0x047C, "15", "JSR Edge Cases"),
+    (0x0490, "15", "Internal Data Bus"),
+    (0x0496, "15", "DMA Landing on Write"),
+    (0x0497, "15", "DMC Reload Timing"),
+    (0x0498, "15", "DMC Playback Rate"),
+    // Page 17 - PPUBehavior
+    (0x0485, "17", "CHR ROM is not writable"),
+    (0x0404, "17", "PPU Register Mirroring"),
+    (0x044E, "17", "PPU Register Open Bus"),
+    (0x0476, "17", "PPU Read Buffer"),
+    (0x047E, "17", "Palette RAM Quirks"),
+    // Page 18 - PPUTiming
+    (0x0450, "18", "VBlank beginning"),
+    (0x0451, "18", "VBlank end"),
+    (0x0452, "18", "NMI Control"),
+    (0x0453, "18", "NMI Timing"),
+    (0x0454, "18", "NMI Suppression"),
+    (0x0455, "18", "NMI at VBlank end"),
+    (0x0456, "18", "NMI disabled at VBlank"),
+    // Page 19 - SpriteZeroHits
+    (0x0459, "19", "Sprite overflow behavior"),
+    (0x0457, "19", "Sprite 0 Hit behavior"),
+    (0x048D, "19", "$2002 flag timing"),
+    (0x0489, "19", "Suddenly Resize Sprite"),
+    (0x0494, "19", "Misaligned OAM DMA"),
+    (0x0458, "19", "Arbitrary Sprite zero"),
+    (0x045A, "19", "Misaligned OAM behavior"),
+    (0x047B, "19", "OAM Corruption"),
+    // Page 20 - PPUMisc
+    (0x0482, "20", "t Register Quirks"),
+    (0x045B, "20", "Address $2004 behavior"),
+    (0x0480, "20", "INC $4014"),
+    (0x0486, "20", "Rendering Flag Behavior"),
+    (0x048A, "20", "$2007 read w/ rendering"),
+    (0x048C, "20", "$2004 Stress Test"),
+    (0x048E, "20", "$2007 Stress Test"),
+    // Page 21 - AdvancedBGEval
+    (0x0481, "21", "Attributes As Tiles"),
+    (0x0483, "21", "Stale BG Shift Registers"),
+    (0x0487, "21", "BG Serial In"),
+    (0x0491, "21", "ALE + Read"),
+    (0x0492, "21", "Hybrid Addresses"),
+    // Page 22 - AdvancedSpriteEval
+    (0x0484, "22", "Sprites On Scanline 0"),
+    (0x048F, "22", "Stale Sprite Shift Regs"),
+    (0x0493, "22", "Frozen OAM2 Increment"),
+    (0x0495, "22", "Misaligned OAM2 Address"),
 ];
 
 fn main() -> ExitCode {
@@ -215,7 +222,10 @@ fn main() -> ExitCode {
     match run(&rom_path) {
         Ok(report) => {
             println!("{}", report.text);
-            if report.failures > 0 {
+            if report.untouched > 0 {
+                eprintln!("INCOMPLETE: {} tests have no result", report.untouched);
+                ExitCode::from(2)
+            } else if report.failures > 0 {
                 ExitCode::from(1)
             } else {
                 ExitCode::from(0)
@@ -235,6 +245,7 @@ fn env_frames(name: &str, default: u32) -> u32 {
 struct Report {
     text: String,
     failures: u32,
+    untouched: u32,
 }
 
 fn run(rom_path: &PathBuf) -> Result<Report> {
@@ -253,7 +264,11 @@ fn run(rom_path: &PathBuf) -> Result<Report> {
     step_frames(&mut nes, hold, false)?;
     nes.bus.controllers[0].buttons = 0;
     step_frames(&mut nes, release, false)?;
-    step_frames(&mut nes, run_frames, true)?;
+    if let Err(error) = step_frames(&mut nes, run_frames, true) {
+        // A CPU jam must not discard the results from earlier tests.
+        println!("{}", format_report(&nes).text);
+        return Err(error);
+    }
 
     eprintln!(
         "post-run state: PC=${:04X} A=${:02X} X=${:02X} Y=${:02X} P=${:02X} SP=${:02X}",
@@ -276,16 +291,12 @@ fn run(rom_path: &PathBuf) -> Result<Report> {
     Ok(format_report(&nes))
 }
 
-fn step_frames(nes: &mut Nes, frames: u32, detect_trap: bool) -> Result<()> {
-    // The test ROM's "fail-and-trap" landing pad at $80DF is a tight
-    // self-loop reached from a few internal panic paths (notably the
-    // Implied Dummy Reads test, which currently hangs vibenes there).
-    // Once execution is parked at $80DF the rest of the suite is dead
-    // weight: every subsequent test slot stays untouched. Bail early so
-    // the report renders without burning the full 12k+ frame budget.
-    // See docs/accuracy_coin/idr_crash.md for the open investigation.
+fn step_frames(nes: &mut Nes, frames: u32, score_results: bool) -> Result<()> {
+    let trace_idr = std::env::var_os("ACC_TRACE_IDR").is_some();
+    // Legacy address used only by opt-in diagnostics. InfiniteLoop is
+    // a normal NMI wait, and its address varies between ROM versions;
+    // reaching it is not evidence of a trap or suite completion.
     const TRAP_PC: u16 = 0x80DF;
-    let mut trap_frames: u32 = 0;
     let mut first_trap_logged = false;
     // Trace each visit to PC=$400F (the IDR-loop "dance" entry point)
     // for the next ~32 instructions. The test JMPs here per loop
@@ -325,9 +336,8 @@ fn step_frames(nes: &mut Nes, frames: u32, detect_trap: bool) -> Result<()> {
                     .unwrap_or_else(|| "no reason".into())
             );
         }
-        if detect_trap {
+        if score_results {
             let start_frame = nes.bus.ppu.frame();
-            let mut visited_trap = false;
             while nes.bus.ppu.frame() == start_frame {
                 if nes.cpu.halted { break; }
                 // Ring-buffer the instruction boundary state BEFORE
@@ -350,7 +360,7 @@ fn step_frames(nes: &mut Nes, frames: u32, detect_trap: bool) -> Result<()> {
                     ring[ring_head] = entry;
                     ring_head = (ring_head + 1) % RING;
                 }
-                if dance_iteration == 13 && !compact_trace_active {
+                if trace_idr && dance_iteration == 13 && !compact_trace_active {
                     compact_trace_active = true;
                     eprintln!("--- compact PC trace enabled after iter 13 ---");
                 }
@@ -383,7 +393,7 @@ fn step_frames(nes: &mut Nes, frames: u32, detect_trap: bool) -> Result<()> {
                     }
                     last_compact_pc = pc;
                 }
-                if nes.cpu.pc == DANCE_PC && dance_trace_remaining == 0 {
+                if trace_idr && nes.cpu.pc == DANCE_PC && dance_trace_remaining == 0 {
                     dance_iteration += 1;
                     dance_trace_remaining = 24;
                     eprintln!(
@@ -419,8 +429,7 @@ fn step_frames(nes: &mut Nes, frames: u32, detect_trap: bool) -> Result<()> {
                     dance_trace_remaining -= 1;
                 }
                 if nes.cpu.pc == TRAP_PC {
-                    visited_trap = true;
-                    if !first_trap_logged {
+                    if trace_idr && !first_trap_logged {
                         first_trap_logged = true;
                         // Dump the ring in chronological order.
                         eprintln!("--- last {} instructions before first $80DF ---", ring.len());
@@ -465,46 +474,11 @@ fn step_frames(nes: &mut Nes, frames: u32, detect_trap: bool) -> Result<()> {
                 }
                 nes.step().map_err(anyhow::Error::msg)?;
             }
-            if visited_trap {
-                trap_frames += 1;
-                if trap_frames >= 32 {
-                    // Dump the zero-page and CPU register state at
-                    // the trap point. AccuracyCoin's IDR test stores
-                    // its progress in well-known zp slots:
-                    //   $10 = ErrorCode (0..N as the test advances)
-                    //   $19 = bitfield (bit 4 = "in failure handler")
-                    //   $60 = BRK-vs-RTI indicator (1 if BRK fired)
-                    //   $A4 = scratch (opcode setup)
-                    //   $A5 = opcode-under-test
-                    //   $FD = Copy_X (loop iteration index)
-                    // Knowing where in the loop we died narrows the
-                    // failing opcode / sub-test from "all of test 136"
-                    // to "opcode N of sub-test M". See
-                    // docs/accuracy_coin/idr_crash.md for the broader
-                    // context on this trap.
-                    eprintln!(
-                        "note: test ROM trapped at ${TRAP_PC:04X} (panic landing pad). \
-                         Aborting frame loop; report reflects state at trap entry.\n\
-                         IDR state: ErrorCode=${:02X} \
-                         bit_flags($19)=${:02X} BRK_indicator($60)=${:02X} \
-                         opcode_under_test($A5)=${:02X} \
-                         Copy_X($FD)=${:02X} A=${:02X} X=${:02X} Y=${:02X} \
-                         SP=${:02X} P=${:02X}",
-                        nes.bus.peek(0x10),
-                        nes.bus.peek(0x19),
-                        nes.bus.peek(0x60),
-                        nes.bus.peek(0xA5),
-                        nes.bus.peek(0xFD),
-                        nes.cpu.a,
-                        nes.cpu.x,
-                        nes.cpu.y,
-                        nes.cpu.sp,
-                        nes.cpu.p.to_u8(),
-                    );
-                    return Ok(());
-                }
-            } else {
-                trap_frames = 0;
+            // Stop when every scored result has been written. Otherwise
+            // exhaust the frame budget and report the remaining tests as
+            // incomplete, rather than guessing from a normal wait-loop PC.
+            if TESTS.iter().all(|&(addr, _, _)| nes.bus.peek(addr) != 0) {
+                return Ok(());
             }
         } else {
             nes.step_until_frame().map_err(anyhow::Error::msg)?;
@@ -559,6 +533,7 @@ fn format_report(nes: &Nes) -> Report {
     Report {
         text: buf,
         failures: counts.1,
+        untouched: counts.3,
     }
 }
 

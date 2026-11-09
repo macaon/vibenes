@@ -291,11 +291,12 @@ impl Bus {
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
             // $4015 bit 5 reads as open bus; the APU drives bits 0-4 / 6-7.
             0x4015 => (self.apu.read_status() & 0xDF) | (self.open_bus & 0x20),
-            // $4016/$4017: bit 0 = controller, bits 1-4 = 0, bit 6 = 1
-            // (A14-decode coupling on the data lines), bits 5 and 7 come
-            // from CPU open bus.
-            0x4016 => (self.open_bus & 0xA0) | 0x40 | (self.controllers[0].read() & 1),
-            0x4017 => (self.open_bus & 0xA0) | 0x40 | (self.controllers[1].read() & 1),
+            // $4016/$4017: bit 0 = controller, bits 1-4 = 0.
+            // Bits 5-7 are undriven and retain the CPU open-bus value.
+            // Bit 6 is usually set by the operand fetch, but stack writes
+            // during JSR can clear it before the second operand read.
+            0x4016 => (self.open_bus & 0xE0) | (self.controllers[0].read() & 1),
+            0x4017 => (self.open_bus & 0xE0) | (self.controllers[1].read() & 1),
             0x4018..=0x401F => self.open_bus,
             // $4020-$5FFF is cartridge-claimable expansion space. Most
             // mappers (NROM / MMC1 / UxROM / CNROM / AxROM / MMC3)
@@ -661,8 +662,8 @@ impl Bus {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => self.ppu.cpu_read(addr, &mut *self.mapper),
             0x4015 => (self.apu.read_status() & 0xDF) | (self.open_bus & 0x20),
-            0x4016 => (self.open_bus & 0xA0) | 0x40 | (self.controllers[0].read() & 1),
-            0x4017 => (self.open_bus & 0xA0) | 0x40 | (self.controllers[1].read() & 1),
+            0x4016 => (self.open_bus & 0xE0) | (self.controllers[0].read() & 1),
+            0x4017 => (self.open_bus & 0xE0) | (self.controllers[1].read() & 1),
             0x4018..=0x401F => self.open_bus,
             0x4020..=0x5FFF => self.mapper.cpu_read_ex(addr).unwrap_or(self.open_bus),
             0x6000..=0xFFFF => self.mapper.cpu_read(addr),
@@ -697,6 +698,39 @@ mod tests {
             fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0, 0)
+    }
+
+    #[test]
+    fn controller_cpu_and_dma_reads_preserve_all_three_open_bus_bits() {
+        let mut bus = build_bus();
+        for addr in [0x4016, 0x4017] {
+            for upper in (0..=0xE0).step_by(0x20) {
+                bus.open_bus = upper;
+                assert_eq!(bus.read(addr) & 0xFE, upper);
+                bus.open_bus = upper;
+                assert_eq!(bus.dma_bus_read(addr) & 0xFE, upper);
+            }
+        }
+    }
+
+    #[test]
+    fn jsr_through_apu_status_uses_stack_write_for_controller_operand() {
+        let mut bus = build_bus();
+        let mut cpu = crate::nes::cpu::Cpu::new();
+        cpu.pc = 0x4015;
+        cpu.sp = 0xFD;
+        // Clock P1 completely so its next serial bit is 1; leave P2 at 0.
+        for _ in 0..8 {
+            bus.controllers[0].read();
+        }
+        // $4015 supplies JSR ($20), retaining the external bus's $60.
+        // P1 then supplies low operand $61. JSR pushes return address
+        // $4017 before reading P2, so its high operand must be $00.
+        bus.open_bus = 0x60;
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.pc, 0x0061);
+        assert_eq!(bus.ram[0x1FD], 0x40);
+        assert_eq!(bus.ram[0x1FC], 0x17);
     }
 
     // The OAM DMA cycle-count convention is tuned by

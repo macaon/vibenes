@@ -1,6 +1,62 @@
-# AccuracyCoin "Implied Dummy Reads" trap (open)
+# AccuracyCoin "Implied Dummy Reads" trap (resolved)
 
-## Symptom
+
+## Resolution (2026-11-09)
+
+The controller register reads forced D6 high:
+`(open_bus & 0xA0) | 0x40 | controller_bit`. D5-D7 must all retain
+the previous external bus value, including D6:
+`(open_bus & 0xE0) | controller_bit`. Corrected both CPU and DMA reads.
+See [NESdev controller open-bus behavior](https://www.nesdev.org/wiki/Open_bus_behavior).
+
+An ordinary absolute controller read fetches `$40` as its high operand,
+which hides this error. When JSR executes at `$4015`, it reads its low
+operand from controller 1, pushes its return address, then reads its
+high operand from controller 2. The low return-address stack write
+clears D6 before that last read. Forcing D6 high redirects the JSR
+into `$40xx` instead of zero page, corrupting the open-bus program.
+A focused CPU regression checks this full sequence, in addition to
+checking all upper-bit combinations on both CPU and DMA read paths.
+
+The supplied ROM at `~/Git/vibenes-tests/AccuracyCoin.nes` matches
+upstream AccuracyCoin commit `14b978badcc98920844de046cede5dc4465db2d6`:
+SHA-256 `9332c3735dd7dea2f4711e670d6478d8b0085edeacdd4f9f300fb04a8bbe3f88`.
+The unmodified emulator jams at `$1345` on opcode `$02`. With only the
+controller correction, Implied Dummy Reads, Branch Dummy Reads, and
+JSR Edge Cases pass, and the remaining tests produce results. The
+updated runner reports **122 pass / 25 fail / 0 skip / 0 untouched**
+across **147 scored tests**. Its previous table omitted eight tests
+and incorrectly counted the draw-only power-on screen as a test.
+
+The runner now preserves partial results on CPU errors, returns exit
+code 2 for incomplete runs, gates verbose instruction diagnostics on
+`ACC_TRACE_IDR`, and uses result completion or the frame budget rather
+than visits to a hardcoded normal wait-loop address to stop.
+
+Validation: 1,351 library tests, four save-state integration tests,
+all five `cpu_interrupts_v2` singles, all eight `apu_test` singles,
+both `sprdma_and_dmc_dma` ROMs, and `instr_test-v5/official_only`
+(all 16 subtests) pass. A zero-run-frame invocation returns incomplete.
+
+The earlier five-cycle-early DMA explanation below was not established.
+In particular, a JSR opcode returned by `$4015` is not inherently wrong:
+the test deliberately supports that path and depends on its controller
+operands. No DMC timing changes were needed to unblock this ROM.
+The historical notes below remain as investigation history, not the
+current diagnosis. Their hardcoded PCs and page numbers may refer to
+an older ROM version.
+
+## Next accuracy work
+
+Prioritize APU IRQ flag clearing and DMA abort/reload behavior using the
+now-complete results, then sprite evaluation/OAM and background-fetch
+edge cases. Separately, save states omit the recently added DMC
+`disable_delay`, `abort_pending`, and bus `dmc_abort` state; add these
+with a format-version bump and a pending-disable restore regression.
+CPU and DMA `$4015` reads also differ in whether they update the bus
+latch; investigate this independently with a focused test.
+
+## Historical symptom
 
 Running `accuracy_coin` against `~/Git/nes-test-roms/AccuracyCoin.nes`
 gets stuck in the test ROM's "park" landing pad:
