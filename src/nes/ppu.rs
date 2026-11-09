@@ -550,6 +550,8 @@ impl Ppu {
             if self.dot >= 257 && self.dot <= 320 {
                 self.oam_addr = 0;
                 let slot = ((self.dot - 257) / 8) as usize;
+                let byte = ((self.dot - 257) % 8).min(3) as usize;
+                self.oam_copy_buffer = self.secondary_oam[slot * 4 + byte];
                 match (self.dot - 257) % 8 {
                     0 => {
                         // Garbage NT fetch - drives A12 low. Tagged
@@ -572,6 +574,9 @@ impl Ppu {
                     6 => self.fetch_sprite_pattern_slot(slot, true, mapper),
                     _ => {}
                 }
+            }
+            if (321..=340).contains(&self.dot) {
+                self.oam_copy_buffer = self.secondary_oam[0];
             }
             if is_pre && self.dot >= 280 && self.dot <= 304 {
                 // Vertical v ← t copy (fine Y + coarse Y + NT-select
@@ -915,7 +920,8 @@ impl Ppu {
             if dot == 65 {
                 self.sprite_eval_start();
             }
-            self.oam_copy_buffer = self.oam[self.oam_addr as usize];
+            let raw = self.oam[self.oam_addr as usize];
+            self.oam_copy_buffer = if self.oam_addr & 3 == 2 { raw & 0xE3 } else { raw };
             return;
         }
 
@@ -1158,6 +1164,22 @@ impl Ppu {
         (latched & !0x60) | sprites
     }
 
+    /// OAMDATA is live during rendering, rather than buffered at read
+    /// assertion. Only primary OAM attribute bytes have missing bits;
+    /// the clear value and secondary OAM data are full eight-bit values.
+    pub(crate) fn finish_oam_read(&mut self) -> u8 {
+        let on_render_line = self.scanline < FRAME_HEIGHT as i16
+            || self.scanline == self.region.pre_render_scanline();
+        let value = if self.mask & 0x18 != 0 && on_render_line {
+            self.oam_copy_buffer
+        } else {
+            let raw = self.oam[self.oam_addr as usize];
+            if self.oam_addr & 3 == 2 { raw & 0xE3 } else { raw }
+        };
+        self.refresh_open_bus_bits(0xFF, value);
+        value
+    }
+
     /// `cpu_read` variant that the bus calls for the page-cross dummy
     /// read emitted by `abs,X` / `abs,Y` / `(zp),Y`. For `$2007`, real
     /// hardware's aborted read doesn't advance the PPU's internal buffer
@@ -1212,20 +1234,7 @@ impl Ppu {
                 v
             }
             0x04 => {
-                // OAM read. Sprite attribute bytes (OAM[4n+2]) have
-                // bits 2-4 unimplemented in hardware and always read
-                // as 0; every other byte reads the stored value
-                // verbatim. The read refreshes all 8 bits of decay
-                // with the returned (masked) value - `ppu_open_bus`
-                // tests 10/11.
-                let raw = self.oam[self.oam_addr as usize];
-                let value = if self.oam_addr & 0x03 == 0x02 {
-                    raw & 0xE3
-                } else {
-                    raw
-                };
-                self.refresh_open_bus_bits(0xFF, value);
-                value
+                self.finish_oam_read()
             }
             0x07 if is_dummy => {
                 // Dummy read at $2007 mirror: return the current
@@ -1313,8 +1322,23 @@ impl Ppu {
                 self.oam_addr = data;
             }
             0x04 => {
-                self.oam[self.oam_addr as usize] = data;
-                self.oam_addr = self.oam_addr.wrapping_add(1);
+                let render_line = self.scanline < FRAME_HEIGHT as i16
+                    || self.scanline == self.region.pre_render_scanline();
+                if self.mask & 0x18 != 0 && render_line {
+                    self.oam_addr = self.oam_addr.wrapping_add(4);
+                    // Visual 2C02 confirms that during OAM clear/idle the
+                    // increment also clears the byte-within-sprite bits.
+                    // Do not extend that rule to active evaluation,
+                    // whose address increment has additional conditions.
+                    if self.region == Region::Ntsc && (self.dot <= 64 || self.dot >= 321) {
+                        self.oam_addr &= 0xFC;
+                    }
+                    self.sprite_addr_h = self.oam_addr >> 2;
+                    self.sprite_addr_l = self.oam_addr & 3;
+                } else {
+                    self.oam[self.oam_addr as usize] = data;
+                    self.oam_addr = self.oam_addr.wrapping_add(1);
+                }
             }
             0x05 => {
                 if !self.w_latch {

@@ -335,13 +335,17 @@ impl Bus {
         self.finish_read_cycle(addr, value)
     }
 
-    /// Sample live PPU status outputs at the end of a read while retaining
-    /// the VBlank value and side effects from read assertion. All mirrors
+    /// Sample live sprite status and OAM data at the end of a read while
+    /// retaining VBlank and side effects from read assertion. All mirrors
     /// and DMA reads use the same two edges; no extra PPU ticks are added.
     fn finish_read_cycle(&mut self, addr: u16, value: u8) -> u8 {
         self.tick_post_access(true);
-        if (0x2000..=0x3FFF).contains(&addr) && addr & 7 == 2 {
-            let value = self.ppu.finish_status_read(value);
+        if (0x2000..=0x3FFF).contains(&addr) && matches!(addr & 7, 2 | 4) {
+            let value = if addr & 7 == 2 {
+                self.ppu.finish_status_read(value)
+            } else {
+                self.ppu.finish_oam_read()
+            };
             self.open_bus = value;
             self.internal_bus = value;
             value
@@ -371,7 +375,11 @@ impl Bus {
             self.apu.prepare_dmc_rate_write(data);
         }
         self.tick_pre_access(false);
+        // OAMDATA's write/increment is latched when the register access
+        // ends. Crossing the end of sprite fetch must use that later phase.
+        let oam_write = (0x2000..=0x3FFF).contains(&addr) && addr & 7 == 4;
         match addr {
+            0x2000..=0x3FFF if oam_write => {}
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize] = data,
             0x2000..=0x3FFF => self.ppu.cpu_write(addr, data, &mut *self.mapper),
             0x4000..=0x4013 | 0x4015 | 0x4017 => self.apu.write_reg(addr, data),
@@ -390,6 +398,9 @@ impl Bus {
             0x4020..=0xFFFF => self.mapper.cpu_write(addr, data),
         }
         self.tick_post_access(false);
+        if oam_write {
+            self.ppu.cpu_write(addr, data, &mut *self.mapper);
+        }
     }
 
     /// Peek without ticking - for debuggers/tracers only. Does not have
@@ -667,10 +678,10 @@ impl Bus {
                     // Sprite write - commit the byte read last cycle
                     // to $2004.
                     self.tick_pre_access(false);
-                    self.ppu.cpu_write(0x2004, sprite_byte, &mut *self.mapper);
                     self.open_bus = sprite_byte;
                     self.internal_bus = sprite_byte;
                     self.tick_post_access(false);
+                    self.ppu.cpu_write(0x2004, sprite_byte, &mut *self.mapper);
                     sprite_counter = sprite_counter.wrapping_add(1);
                     if sprite_counter >= 0x200 {
                         self.sprite_dma_running = false;
@@ -811,6 +822,139 @@ mod tests {
             fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), region, 0, 0)
+    }
+
+    #[test]
+    fn oam_data_write_at_fetch_boundary_is_latched_after_the_final_ppu_tick() {
+        let mut bus = build_bus();
+        let mut clock = bus.clock.save_state_capture();
+        clock.master_cycles = 12;
+        clock.ppu_cycles = 2;
+        bus.clock.save_state_apply(clock);
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.scanline = 261;
+        ppu.dot = 318;
+        ppu.mask = 8;
+        ppu.oam.fill(0xA5);
+        bus.ppu.save_state_apply(ppu);
+        bus.write(0x2004, 0);
+        let after = bus.ppu.save_state_capture();
+        assert_eq!(after.dot, 321);
+        assert_eq!(after.oam_addr, 4);
+        assert!(after.oam.iter().all(|&byte| byte == 0xA5));
+    }
+
+    #[test]
+    fn oam_data_writes_during_rendering_skip_ram_and_increment_the_address() {
+        for (scanline, dot, mask, addr, expected, blocked) in [
+            (10, 40, 8, 0, 4, true),
+            (0, 23, 8, 1, 4, true),
+            (261, 324, 8, 1, 4, true),
+            (261, 324, 8, 3, 4, true),
+            (261, 324, 8, 5, 8, true),
+            (261, 324, 8, 255, 0, true),
+            (10, 40, 0, 1, 2, false),
+            (250, 40, 8, 1, 2, false),
+        ] {
+            let mut bus = build_bus();
+            let mut ppu = bus.ppu.save_state_capture();
+            ppu.scanline = scanline;
+            ppu.dot = dot;
+            ppu.mask = mask;
+            ppu.oam_addr = addr;
+            ppu.oam.fill(0xA5);
+            bus.ppu.save_state_apply(ppu);
+            bus.ppu.cpu_write(0x3FFC, 0x5A, &mut *bus.mapper);
+            let after = bus.ppu.save_state_capture();
+            assert_eq!(after.oam_addr, expected);
+            assert_eq!(after.oam[addr as usize], if blocked { 0xA5 } else { 0x5A });
+            assert_eq!(after.open_bus, 0x5A);
+        }
+    }
+
+    #[test]
+    fn oam_data_reads_sample_evaluation_at_the_end_of_the_cpu_read() {
+        for path in 0..4 {
+            let mut bus = build_bus();
+            let mut clock = bus.clock.save_state_capture();
+            clock.master_cycles = 12;
+            clock.ppu_cycles = 2;
+            bus.clock.save_state_apply(clock);
+            let mut ppu = bus.ppu.save_state_capture();
+            ppu.scanline = 10;
+            ppu.dot = 63;
+            ppu.mask = 8;
+            ppu.oam[0] = 0xA5;
+            bus.ppu.save_state_apply(ppu);
+            let addr = 0x3FFC; // OAMDATA mirror
+            let value = match path {
+                0 => bus.read(addr),
+                1 => bus.dummy_read(addr),
+                _ => {
+                    bus.tick_pre_access(true);
+                    let value = if path == 2 {
+                        bus.dma_bus_read(addr)
+                    } else {
+                        bus.oam_bus_read(addr, 0)
+                    };
+                    assert_eq!(value, 0xFF); // clear phase at assertion
+                    bus.finish_read_cycle(addr, value)
+                }
+            };
+            assert_eq!(value, 0xA5, "path={path}");
+            assert_eq!(bus.open_bus, value);
+            assert_eq!(bus.internal_bus, value);
+            assert_eq!(bus.ppu.save_state_capture().open_bus, value);
+            assert_eq!(bus.ppu.dot(), 66);
+        }
+    }
+
+    #[test]
+    fn oam_data_read_uses_full_clear_and_secondary_bytes_but_masks_primary_attributes() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.scanline = 10;
+        ppu.dot = 1;
+        ppu.mask = 8;
+        ppu.oam_addr = 2;
+        ppu.oam[2] = 0xFF;
+        bus.ppu.save_state_apply(ppu);
+        bus.ppu.tick(&mut *bus.mapper);
+        assert_eq!(bus.ppu.cpu_read(0x2004, &mut *bus.mapper), 0xFF);
+        bus.ppu.cpu_write(0x2001, 0, &mut *bus.mapper);
+        assert_eq!(bus.ppu.cpu_read(0x2004, &mut *bus.mapper), 0xE3);
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.dot = 65;
+        ppu.mask = 8;
+        ppu.oam_addr = 2;
+        bus.ppu.save_state_apply(ppu);
+        bus.ppu.tick(&mut *bus.mapper);
+        assert_eq!(bus.ppu.cpu_read(0x2004, &mut *bus.mapper), 0xE3);
+    }
+
+    #[test]
+    fn oam_data_read_exposes_each_secondary_fetch_byte_and_repeats_x() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.scanline = 10;
+        ppu.dot = 257;
+        ppu.mask = 8;
+        for (index, byte) in ppu.secondary_oam.iter_mut().enumerate() {
+            *byte = 0x80 + index as u8;
+        }
+        ppu.secondary_oam[2] = 0xFF; // secondary attributes have all bits
+        let secondary = ppu.secondary_oam;
+        bus.ppu.save_state_apply(ppu);
+        for dot in 257..=340 {
+            bus.ppu.tick(&mut *bus.mapper);
+            let expected = if dot <= 320 {
+                let phase = dot - 257;
+                secondary[(phase / 8 * 4 + (phase % 8).min(3)) as usize]
+            } else {
+                secondary[0]
+            };
+            assert_eq!(bus.ppu.cpu_read(0x2004, &mut *bus.mapper), expected, "dot={dot}");
+        }
     }
 
     #[test]
