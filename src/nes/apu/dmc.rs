@@ -260,24 +260,15 @@ impl Dmc {
             }
         }
 
-        // Mesen2 `DeltaModulationChannel.cpp:95-115`: when a DMA
-        // completes with sample length == 1 and no loop, real
-        // hardware has a glitch where, if the DMA ended on the APU
-        // cycle right before the bit counter resets, the DMC
-        // re-arms but is immediately aborted 3 CPU cycles later
-        // (causing one halted CPU cycle as side effect). This is
-        // the "AccuracyCoin Delta Modulation Channel test" hardware
-        // quirk. Without emulating it, the open-bus dance in the
-        // Implied Dummy Reads test sees the open-bus byte at a
-        // shifted cycle, derailing the stack-crafted return path.
+        // A non-looping one-byte load finishing just before the output
+        // boundary can re-arm a reload that is cancelled after its halt.
+        // Retain the fetched buffer until the output unit consumes it;
+        // that transition is what schedules the short aborted reload.
         if self.sample_length_cfg == 1
             && !self.loop_flag
             && self.bits_remaining == 1
             && self.timer < 2
         {
-            self.shift_reg = byte;
-            self.silence = false;
-            self.buffer = None;
             self.current_addr = self.sample_addr_start;
             self.bytes_remaining = self.sample_length_cfg;
             if self.disable_delay == 0 {
@@ -457,6 +448,56 @@ mod tests {
 
     fn ntsc() -> Dmc {
         Dmc::new(Region::Ntsc)
+    }
+
+    #[test]
+    fn implicit_abort_retains_sample_until_the_output_boundary() {
+        for timer in [0, 1] {
+            let mut d = ntsc();
+            d.bytes_remaining = 1;
+            d.bits_remaining = 1;
+            d.timer = timer;
+            d.shift_reg = 0xAA;
+            d.output = 64;
+            d.silence = false;
+            d.dma_complete(0xFF);
+            assert_eq!(d.buffer, Some(0xFF));
+            assert_eq!(d.shift_reg, 0xAA);
+            assert_eq!(d.output, 64);
+            for _ in 0..=timer {
+                d.tick_cpu();
+            }
+            assert_eq!(d.output, 62, "finish the old last bit first");
+            assert_eq!(d.shift_reg, 0xFF);
+            assert_eq!(d.buffer, None);
+            assert_eq!(d.take_dma_request().unwrap().addr, d.sample_addr_start);
+            while d.disable_delay > 0 {
+                d.tick_cpu();
+            }
+            assert!(d.take_abort_request());
+            assert_eq!(d.bytes_remaining, 0);
+        }
+    }
+
+    #[test]
+    fn implicit_abort_does_not_apply_outside_the_one_byte_stop_window() {
+        for (length, looping, bits, timer) in [
+            (17, false, 1, 1),
+            (1, true, 1, 1),
+            (1, false, 2, 1),
+            (1, false, 1, 2),
+        ] {
+            let mut d = ntsc();
+            d.sample_length_cfg = length;
+            d.loop_flag = looping;
+            d.bytes_remaining = 1;
+            d.bits_remaining = bits;
+            d.timer = timer;
+            d.dma_complete(0x7B);
+            assert_eq!(d.buffer, Some(0x7B));
+            assert_eq!(d.disable_delay, 0);
+            assert!(!d.abort_pending);
+        }
     }
 
     #[test]

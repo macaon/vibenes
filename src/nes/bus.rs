@@ -772,6 +772,33 @@ mod tests {
     }
 
     #[test]
+    fn implicit_abort_stalls_one_read_but_is_suppressed_by_a_write() {
+        for intervening_write in [false, true] {
+            let mut bus = build_bus_with_sample(0x7B, Region::Ntsc);
+            let mut snap = bus.apu.save_state_capture();
+            snap.dmc.bytes_remaining = 1;
+            snap.dmc.bits_remaining = 1;
+            snap.dmc.timer = 1;
+            bus.apu.save_state_apply(snap);
+            bus.apu.dmc_dma_complete(0x7B);
+            bus.read(0x8000);
+            bus.read(0x8000); // Consume buffer and request the aborted reload.
+            assert!(bus.need_halt);
+            if intervening_write {
+                bus.write(0, 0);
+            }
+            let before = bus.clock.cpu_cycles();
+            bus.read(0x8000);
+            assert_eq!(
+                bus.clock.cpu_cycles().wrapping_sub(before),
+                if intervening_write { 1 } else { 2 }
+            );
+            assert!(!bus.dmc_dma_running);
+            assert!(bus.apu.save_state_capture().dmc.buffer.is_none());
+        }
+    }
+
+    #[test]
     fn write_delayed_dmc_abort_does_not_stall_the_following_read() {
         let mut bus = build_bus_with_sample(0x7B, Region::Ntsc);
         let mut snap = bus.apu.save_state_capture();
