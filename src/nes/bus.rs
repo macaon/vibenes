@@ -607,18 +607,12 @@ impl Bus {
             };
             if get_cycle {
                 if self.dmc_dma_running && !clear_flag {
-                    // DMC fetch - uses `mapper.cpu_read` direct so
-                    // the PRG bus sees the DMC address, not
-                    // `pending_addr` (matches Mesen2 line 406:
-                    // `ProcessDmaRead(_apu->GetDmcReadAddress(), …)`).
-                    // The fetched byte also drives the CPU data bus -
-                    // AccuracyCoin's "DMA + Open Bus" pretest reads
-                    // `LDA $4000` immediately after a DMC fetch and
-                    // expects the sample byte (typically $00) on the
-                    // open-bus latch.
+                    // The cartridge sees the DMC address while register
+                    // activation also depends on the halted CPU address.
+                    // Keep that decoding in the fetch helper rather than
+                    // treating this as an ordinary CPU register read.
                     self.tick_pre_access(true);
-                    let byte = self.mapper.cpu_read(self.dmc_dma_addr);
-                    self.open_bus = byte;
+                    let byte = self.dmc_bus_read(self.dmc_dma_addr, pending_addr);
                     self.tick_post_access(true);
                     self.apu.dmc_dma_complete(byte);
                     self.dmc_dma_running = false;
@@ -670,6 +664,32 @@ impl Bus {
         self.in_dma_loop = false;
     }
 
+    /// DMC fetch with the 2A03's split register address decoder.
+    /// The cartridge sees the DMA address, but register selection keeps
+    /// A5-A15 from the halted CPU and takes A0-A4 from the DMA unit.
+    fn dmc_bus_read(&mut self, addr: u16, halted_addr: u16) -> u8 {
+        let sample = self.mapper.cpu_read(addr);
+        self.open_bus = sample;
+        if self.clock.region() == Region::Ntsc && (halted_addr & 0xFFE0) == 0x4000 {
+            match addr & 0x1F {
+                0x15 => {
+                    // Status is internal: its side effect still occurs,
+                    // but it must not replace the external sample byte.
+                    self.apu.read_status();
+                }
+                0x16 | 0x17 => {
+                    let port = (addr & 1) as usize;
+                    self.open_bus = (sample & 0xE0) | (self.controllers[port].read() & 1);
+                }
+                _ => {}
+            }
+        }
+        // The CPU-visible byte and DMC input are separate observations.
+        // Keep the existing sample path here: electrical corruption of
+        // the DMC byte during a controller conflict is not modeled yet.
+        sample
+    }
+
     /// Bus read as issued by the DMA unit (Mesen2 `ProcessDmaRead`,
     /// `NesCpu.cpp:450-467`). Performs the same side-effect match as
     /// [`Bus::read`] but without the `tick_pre_access` /
@@ -699,8 +719,12 @@ mod tests {
     use crate::nes::rom::{Cartridge, Mirroring, TvSystem};
 
     fn build_bus() -> Bus {
+        build_bus_with_sample(0, Region::Ntsc)
+    }
+
+    fn build_bus_with_sample(sample: u8, region: Region) -> Bus {
         let cart = Cartridge {
-            prg_rom: vec![0u8; 0x8000],
+            prg_rom: vec![sample; 0x8000],
             chr_rom: vec![0u8; 0x2000],
             chr_ram: false,
             mapper_id: 0,
@@ -715,7 +739,70 @@ mod tests {
             db_matched: false,
             fds_data: None,
         };
-        Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0, 0)
+        Bus::new(Box::new(Nrom::new(cart)), region, 0, 0)
+    }
+
+    #[test]
+    fn dmc_conflicts_use_halted_cpu_decode_and_dma_low_address_bits() {
+        for sample in [0, 0xFF] {
+            for halted_addr in [0x3FFF, 0x4000, 0x401F, 0x4020, 0x8000] {
+                for dma_addr in [0xC016, 0xFF16, 0xC017, 0xFF17] {
+                    let mut bus = build_bus_with_sample(sample, Region::Ntsc);
+                    bus.controllers[0].shifter = 0xA5;
+                    bus.controllers[1].shifter = 0x5A;
+                    let port = (dma_addr & 1) as usize;
+                    let before = bus.controllers.map(|pad| pad.shifter);
+                    let active = (0x4000..=0x401F).contains(&halted_addr);
+                    bus.dmc_bus_read(dma_addr, halted_addr);
+                    let expected = if active {
+                        (sample & 0xE0) | (before[port] & 1)
+                    } else {
+                        sample
+                    };
+                    assert_eq!(bus.open_bus, expected);
+                    for i in 0..2 {
+                        let expected_shift = if active && i == port {
+                            (before[i] >> 1) | 0x80
+                        } else {
+                            before[i]
+                        };
+                        assert_eq!(bus.controllers[i].shifter, expected_shift);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dmc_status_conflict_clears_irq_without_driving_external_bus() {
+        let mut bus = build_bus_with_sample(0xA5, Region::Ntsc);
+        bus.apu.set_frame_irq_for_test(true);
+        bus.dmc_bus_read(0xFF15, 0x4000);
+        assert_eq!(bus.open_bus, 0xA5);
+        assert!(bus.apu.irq_line(), "status read defers clearing until get");
+        bus.read(0);
+        bus.read(0);
+        assert!(!bus.apu.irq_line());
+    }
+
+    #[test]
+    fn dmc_fetch_populates_cpu_bus_with_controller_conflict_value() {
+        let mut bus = build_bus_with_sample(0xFF, Region::Ntsc);
+        bus.controllers[0].shifter = 0xFF;
+        bus.dmc_dma_running = true;
+        bus.need_halt = true;
+        bus.need_dummy_read = true;
+        bus.dmc_dma_addr = 0xC016;
+        assert_eq!(bus.read(0x4000), 0xE1);
+    }
+
+    #[test]
+    fn ntsc_dmc_controller_conflict_is_not_applied_to_pal() {
+        let mut bus = build_bus_with_sample(0xFF, Region::Pal);
+        bus.controllers[0].shifter = 0xA5;
+        bus.dmc_bus_read(0xC016, 0x4000);
+        assert_eq!(bus.open_bus, 0xFF);
+        assert_eq!(bus.controllers[0].shifter, 0xA5);
     }
 
     #[test]
