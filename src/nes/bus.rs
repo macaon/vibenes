@@ -352,36 +352,12 @@ impl Bus {
             0x2000..=0x3FFF => self.ppu.cpu_write(addr, data, &mut *self.mapper),
             0x4000..=0x4013 | 0x4015 | 0x4017 => self.apu.write_reg(addr, data),
             0x4014 => {
-                // STA $4014's final write cycle.
-                self.tick_post_access(false);
-                // Snapshot the CPU's penultimate-cycle interrupt samples
-                // so they survive OAM DMA's 513/514 cycles. Each DMA
-                // cycle's `tick_pre_access` overwrites `prev_irq_line`
-                // / `prev_nmi_pending`; without a save/restore, STA's
-                // end-of-step poll would see end-of-DMA state and
-                // mis-attribute any IRQ/NMI that asserted during the
-                // DMA window to STA itself. The next instruction's
-                // cycle-1 tick re-captures `bus.irq_line` (which stays
-                // live across DMA) so a DMA-window assertion still
-                // fires on the cycle after DMA releases - matches
-                // Mesen2's lazy-DMA-inside-MemoryRead model. Required
-                // by `cpu_interrupts_v2/4-irq_and_dma.nes`.
-                let saved_prev_irq = self.prev_irq_line;
-                let saved_prev_nmi = self.prev_nmi_pending;
-                // Arm OAM DMA and run the shared get/put loop. The
-                // pending-read address is $4014 itself (write-only, so
-                // reads during the loop's halt/align cycles return
-                // open bus without side effects). Mesen2 defers this
-                // to the next instruction's MemoryRead; we run it
-                // synchronously here for the same net effect - the
-                // CPU can't do anything else while halted anyway.
+                // RDY only halts reads. Consecutive writes (including
+                // the second write of INC $4014) can replace this page
+                // before the next CPU read supplies the frozen address.
                 self.sprite_dma_running = true;
                 self.sprite_dma_page = data;
                 self.need_halt = true;
-                self.process_pending_dma(0x4014);
-                self.prev_irq_line = saved_prev_irq;
-                self.prev_nmi_pending = saved_prev_nmi;
-                return;
             }
             0x4016 => {
                 self.controller_strobe_pending = data & 1 != 0;
@@ -455,7 +431,9 @@ impl Bus {
             if self.need_halt {
                 // Pre-halt: full cancel.
                 self.dmc_dma_running = false;
-                self.need_halt = false;
+                // OAM may be queued behind writes too; cancelling DMC
+                // must not withdraw the shared halt request for OAM.
+                self.need_halt = self.sprite_dma_running && !self.in_dma_loop;
                 self.need_dummy_read = false;
             } else if self.dmc_dma_running {
                 // Post-halt: late abort, drained inside the DMA loop.
@@ -622,7 +600,7 @@ impl Bus {
                     let sprite_addr =
                         ((self.sprite_dma_page as u16) << 8) | (sprite_counter >> 1);
                     self.tick_pre_access(true);
-                    sprite_byte = self.dma_bus_read(sprite_addr);
+                    sprite_byte = self.oam_bus_read(sprite_addr, pending_addr);
                     self.tick_post_access(true);
                     sprite_counter = sprite_counter.wrapping_add(1);
                 } else {
@@ -662,6 +640,35 @@ impl Bus {
         }
 
         self.in_dma_loop = false;
+    }
+
+    /// OAM memory read with register selection from the halted CPU.
+    fn oam_bus_read(&mut self, addr: u16, halted_addr: u16) -> u8 {
+        // External memory is selected by the actual DMA address. The
+        // write-only/internal register window is otherwise open bus.
+        let external = if (0x4000..=0x401F).contains(&addr) {
+            self.open_bus
+        } else {
+            self.dma_bus_read(addr)
+        };
+        self.open_bus = external;
+        let decode_source = self.clock.region() == Region::Ntsc
+            || (0x4000..=0x401F).contains(&addr);
+        if decode_source && (halted_addr & 0xFFE0) == 0x4000 {
+            match addr & 0x1F {
+                0x15 => {
+                    // Status drives the internal OAM input, not the
+                    // external bus. The following OAM put will drive it.
+                    return (self.apu.read_status() & 0xDF) | (external & 0x20);
+                }
+                0x16 | 0x17 => {
+                    let port = (addr & 1) as usize;
+                    self.open_bus = (external & 0xE0) | (self.controllers[port].read() & 1);
+                }
+                _ => {}
+            }
+        }
+        self.open_bus
     }
 
     /// DMC fetch with the 2A03's split register address decoder.
@@ -740,6 +747,79 @@ mod tests {
             fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), region, 0, 0)
+    }
+
+    #[test]
+    fn pal_oam_direct_status_read_still_requires_cpu_register_window() {
+        let mut bus = build_bus_with_sample(0, Region::Pal);
+        bus.apu.set_frame_irq_for_test(true);
+        bus.open_bus = 0;
+        assert_eq!(bus.oam_bus_read(0x4015, 0x8000), 0);
+        assert_eq!(bus.oam_bus_read(0x4015, 0x4000) & 0x40, 0x40);
+    }
+
+    #[test]
+    fn dmc_disable_does_not_cancel_a_queued_oam_halt() {
+        let mut bus = build_bus();
+        bus.ram[0x200] = 0x7B;
+        bus.write(0x4015, 0); // Delayed DMC cancellation.
+        bus.write(0x4014, 2);
+        bus.write(0, 0); // Cancellation occurs while OAM is waiting.
+        assert!(bus.need_halt);
+        bus.read(0x8000);
+        assert!(!bus.sprite_dma_running);
+        assert_eq!(bus.ppu.debug_oam()[0], 0x7B);
+    }
+
+    #[test]
+    fn queued_oam_dma_survives_restore_before_the_halting_read() {
+        let mut bus = build_bus();
+        bus.ram[0x200] = 0x7B;
+        bus.write(0x4014, 2);
+        let mut restored = build_bus();
+        restored.save_state_apply(bus.save_state_capture());
+        assert!(restored.sprite_dma_running);
+        restored.read(0x8000);
+        assert!(!restored.sprite_dma_running);
+        assert_eq!(restored.ppu.debug_oam()[0], 0x7B);
+    }
+
+    #[test]
+    fn oam_dma_waits_for_read_and_uses_the_last_written_page() {
+        let mut bus = build_bus();
+        bus.ram[0x200] = 0x7B;
+        let before = bus.clock.cpu_cycles();
+        bus.write(0x4014, 0);
+        bus.write(0x4014, 2);
+        assert_eq!(bus.clock.cpu_cycles().wrapping_sub(before), 2);
+        assert!(bus.sprite_dma_running);
+        bus.read(0x8000);
+        assert!(!bus.sprite_dma_running);
+        assert_eq!(bus.ppu.debug_oam()[0], 0x7B);
+    }
+
+    #[test]
+    fn oam_page_40_does_not_activate_registers_when_cpu_is_outside_window() {
+        let mut bus = build_bus();
+        bus.apu.set_frame_irq_for_test(true);
+        bus.controllers[0].shifter = 0xA5;
+        bus.controllers[1].shifter = 0x5A;
+        bus.write(0x4014, 0x40);
+        bus.read(0x8000);
+        assert!(bus.apu.irq_line());
+        assert_eq!(bus.controllers[0].shifter, 0xA5);
+        assert_eq!(bus.controllers[1].shifter, 0x5A);
+    }
+
+    #[test]
+    fn oam_register_decode_uses_cpu_window_and_dma_low_bits() {
+        let mut bus = build_bus_with_sample(0xFF, Region::Ntsc);
+        bus.apu.set_frame_irq_for_test(true);
+        assert_eq!(bus.oam_bus_read(0xC015, 0x4000) & 0x40, 0x40);
+        assert_eq!(bus.open_bus, 0xFF, "status must not drive external bus");
+        bus.controllers[0].shifter = 1;
+        assert_eq!(bus.oam_bus_read(0xC016, 0x4000), 0xE1);
+        assert_eq!(bus.oam_bus_read(0xC017, 0x4000), 0xE0);
     }
 
     #[test]
@@ -968,55 +1048,32 @@ mod tests {
         assert_eq!(bus.ram[0x1FC], 0x17);
     }
 
-    // The OAM DMA cycle-count convention is tuned by
-    // `cpu_interrupts_v2/4-irq_and_dma.nes`: we add the extra alignment
-    // idle when `cpu_cycles` at end-of-STA is EVEN (i.e. the halt cycle
-    // that follows lands on odd and needs to be aligned). Nesdev phrases
-    // this as "total DMA = 513 cycles, +1 if starting on a put cycle";
-    // the unit tests below pin the two branches so any future
-    // `extra_idle` tweak must deliberately update this contract.
-    //
-    // Note on initial parity: `cpu_cycles` is initialised to `u64::MAX`
-    // (= -1) by `MasterClock::new` to match Mesen2's `_state.CycleCount
-    // = (uint64_t)-1` so that 8 reset/warm-up reads land us at cycle 7
-    // for the first ROM instruction (NesCpu.cpp:138 + 160-164). For
-    // these tests that bypass reset, that means a fresh `build_bus()`
-    // bus enters STA with cpu_cycles = u64::MAX, the STA tick brings
-    // it to 0 (even), and the halt cycle that follows is on the
-    // even-cpu-cycle "put" branch (DMA = 514). The opposite-parity
-    // test does one extra read first to land on odd before STA.
-
+    // OAM DMA is armed by a write and serviced by the next read.
+    // The read takes 513 or 514 DMA cycles plus its own access cycle.
     #[test]
     fn oam_dma_halt_on_get_runs_513_beyond_sta() {
         let mut bus = build_bus();
-        // After one bus.read, cpu_cycles = 0. STA's tick_pre_access
-        // brings it to 1 (odd) for the match-arm parity check →
-        // extra_idle=false → DMA = 513 cycles beyond STA's own cycle.
-        // Total ticks in `write()` = 1 + 513 = 514.
         let _ = bus.read(0x0000);
-        let before = bus.clock.cpu_cycles();
         bus.write(0x4014, 0x00);
+        let before = bus.clock.cpu_cycles();
+        bus.read(0x8000);
         let dma_cycles = bus.clock.cpu_cycles() - before;
         assert_eq!(
             dma_cycles, 514,
-            "STA + 1 halt + 512 pairs = 514 ticks (513-cycle DMA branch)"
+            "resumed read + 1 halt + 512 pairs = 514 ticks (513-cycle DMA branch)"
         );
     }
 
     #[test]
     fn oam_dma_halt_on_put_runs_514_beyond_sta() {
         let mut bus = build_bus();
-        // Fresh bus: cpu_cycles = u64::MAX. STA's tick brings it to 0
-        // (even); the halt that follows lands on cycle 1 (odd get
-        // prereq with the parity flipped vs the get-branch test),
-        // requiring one align cycle → DMA = 514 cycles beyond STA's
-        // own cycle. Total ticks in `write()` = 1 + 514 = 515.
-        let before = bus.clock.cpu_cycles();
         bus.write(0x4014, 0x00);
+        let before = bus.clock.cpu_cycles();
+        bus.read(0x8000);
         let dma_cycles = bus.clock.cpu_cycles().wrapping_sub(before);
         assert_eq!(
             dma_cycles, 515,
-            "STA + 1 halt + 1 align + 512 pairs = 515 ticks (514-cycle DMA branch)"
+            "resumed read + 1 halt + 1 align + 512 pairs = 515 ticks (514-cycle DMA branch)"
         );
     }
 }
