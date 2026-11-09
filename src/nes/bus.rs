@@ -334,6 +334,12 @@ impl Bus {
         // the standalone DMA case in `service_pending_dmc_dma` does
         // the right thing on the next read.
         self.open_bus = data;
+        if addr == 0x4010 {
+            // The rate selector feeds a reload in this same CPU cycle.
+            // Only stage rate bits here: IRQ/loop control retains the
+            // normal register-write ordering below.
+            self.apu.prepare_dmc_rate_write(data);
+        }
         self.tick_pre_access(false);
         match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize] = data,
@@ -698,6 +704,43 @@ mod tests {
             fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), Region::Ntsc, 0, 0)
+    }
+
+    #[test]
+    fn dmc_rate_write_selects_reload_without_restarting_timer() {
+        for (old_period, new_rate, new_period) in [(53, 0, 427), (427, 15, 53)] {
+            // Sweep writes three cycles before expiry through two cycles
+            // after it, in both slow-to-fast and fast-to-slow directions.
+            for offset in -3i32..=2 {
+                let mut bus = build_bus();
+                let mut snap = bus.apu.save_state_capture();
+                snap.dmc.period = old_period;
+                snap.dmc.timer = (-offset).max(0) as u16;
+                snap.dmc.bits_remaining = 8;
+                bus.apu.save_state_apply(snap);
+                for _ in 0..offset.max(0) {
+                    bus.read(0);
+                }
+                bus.write(0x4010, new_rate);
+                let after = bus.apu.save_state_capture();
+                let expected_timer = if offset < 0 {
+                    (-offset - 1) as u16
+                } else if offset == 0 {
+                    new_period
+                } else {
+                    old_period - offset as u16
+                };
+                assert_eq!(
+                    after.dmc.timer, expected_timer,
+                    "old period={old_period}, offset={offset}"
+                );
+                assert_eq!(after.dmc.period, new_period);
+                assert_eq!(
+                    after.dmc.bits_remaining, if offset < 0 { 8 } else { 7 },
+                    "a rate write must not clock an extra output bit"
+                );
+            }
+        }
     }
 
     #[test]

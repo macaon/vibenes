@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Integration tests for `~/Git/nes-test-roms/dmc_dma_during_read4/*.nes`.
+//! Integration tests for `dmc_dma_during_read4/*.nes`.
+//! Set `NES_TEST_ROMS` to override `~/Git/vibenes-tests/nes-test-roms`.
 //!
 //! This suite exercises the DMC DMA interaction with CPU reads of
 //! `$2007` and `$4016`. Two of the five ROMs are "CPU/PPU-sync-
@@ -23,8 +24,13 @@ const POLL_INTERVAL_CYCLES: u64 = 10_000;
 const CYCLE_LIMIT: u64 = 200_000_000;
 
 fn rom_path(name: &str) -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME must be set to locate test ROMs");
-    PathBuf::from(home).join("Git/nes-test-roms/dmc_dma_during_read4").join(name)
+    let root = std::env::var_os("NES_TEST_ROMS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").expect("HOME must be set"))
+                .join("Git/vibenes-tests/nes-test-roms")
+        });
+    root.join("dmc_dma_during_read4").join(name)
 }
 
 /// Run the ROM until the CPU traps in a `forever:` loop and

@@ -217,6 +217,14 @@ impl Apu {
         status
     }
 
+    /// Select the DMC reload rate before clocking a CPU write cycle.
+    /// A rate write coinciding with timer expiry supplies the new reload
+    /// value; it must not restart a countdown that is still in progress.
+    /// Loop/IRQ control still takes effect at the regular bus-write phase.
+    pub(crate) fn prepare_dmc_rate_write(&mut self, data: u8) {
+        self.dmc.write_rate(data);
+    }
+
     /// `$4000-$4017` register write.
     pub fn write_reg(&mut self, addr: u16, data: u8) {
         match addr {

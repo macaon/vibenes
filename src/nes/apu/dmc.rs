@@ -208,6 +208,10 @@ impl Dmc {
     pub fn write_ctrl(&mut self, data: u8) {
         self.irq_enabled = (data & 0x80) != 0;
         self.loop_flag = (data & 0x40) != 0;
+        self.write_rate(data);
+    }
+
+    pub(super) fn write_rate(&mut self, data: u8) {
         let idx = (data & 0x0F) as usize;
         // See `new`: stored period is the published rate minus one.
         self.period = self.rates()[idx] - 1;

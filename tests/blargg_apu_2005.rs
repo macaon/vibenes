@@ -5,10 +5,7 @@
 //! `blargg_2005_report` binary involved. Keeps the regression gate
 //! self-contained.
 //!
-//! ROMs 01–07 currently pass our APU and are active tests. 08–11 fail
-//! and are marked `#[ignore]` until their respective Phase 3 fixes
-//! land (`cargo test --test blargg_apu_2005 -- --include-ignored`
-//! will run them to see the current failure mode).
+//! Set `NES_TEST_ROMS` to override `~/Git/vibenes-tests/nes-test-roms`.
 
 use std::path::PathBuf;
 
@@ -22,8 +19,13 @@ const POLL_INTERVAL_CYCLES: u64 = 10_000;
 const CYCLE_LIMIT: u64 = 200_000_000;
 
 fn rom_path(name: &str) -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME must be set to locate test ROMs");
-    PathBuf::from(home).join("Git/nes-test-roms/blargg_apu_2005.07.30").join(name)
+    let root = std::env::var_os("NES_TEST_ROMS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").expect("HOME must be set"))
+                .join("Git/vibenes-tests/nes-test-roms")
+        });
+    root.join("blargg_apu_2005.07.30").join(name)
 }
 
 fn run_rom(name: &str) -> (Option<u8>, String) {
