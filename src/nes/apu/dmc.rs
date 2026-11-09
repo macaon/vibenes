@@ -171,19 +171,16 @@ impl Dmc {
 
     /// Equivalent of `restart_sample` but arms the DMA with the
     /// Mesen2-style 2/3-cycle transfer-start delay instead of
-    /// pending-it-immediately. Used by the `$4015` enable path;
-    /// the buffer-refill path stays immediate (see `tick_cpu`).
+    /// pending-it-immediately. Refills remain gated until this delay
+    /// expires, even if a byte was buffered when `$4015` was written.
     fn restart_sample_pending(&mut self, cpu_cycle_odd: bool) {
         self.current_addr = self.sample_addr_start;
         self.bytes_remaining = self.sample_length_cfg;
-        if self.buffer.is_none() && self.dma_pending.is_none() && self.bytes_remaining > 0 {
-            // Mesen2 `DeltaModulationChannel.cpp:266-270`: even cycle
-            // → delay 2, odd cycle → delay 3. Our `tick_cpu`
-            // decrements once per CPU cycle so the pending fetch
-            // fires exactly N cycles after the enable.
-            self.enable_dma_delay = if cpu_cycle_odd { 3 } else { 2 };
-            self.enable_dma_addr = self.current_addr;
-        }
+        // The enable gate is armed even when a byte is buffered. If
+        // that byte is consumed before the gate opens, the refill must
+        // wait for the same delay as an initially empty buffer.
+        self.enable_dma_delay = if cpu_cycle_odd { 3 } else { 2 };
+        self.enable_dma_addr = self.current_addr;
     }
 
     /// Warm-reset: behaves like `set_enabled(false)` (channel silenced,
@@ -448,6 +445,62 @@ mod tests {
 
     fn ntsc() -> Dmc {
         Dmc::new(Region::Ntsc)
+    }
+
+    #[test]
+    fn enable_delay_gates_refills_even_when_a_byte_is_buffered() {
+        for odd in [false, true] {
+            let delay = if odd { 3 } else { 2 };
+            for buffered in [false, true] {
+                for timer in [0, 1, 2, 5] {
+                    let mut d = ntsc();
+                    d.buffer = if buffered { Some(0x7B) } else { None };
+                    d.bits_remaining = 1;
+                    d.timer = timer;
+                    d.set_enabled(true, odd);
+                    let request_at = if buffered { delay.max(timer + 1) } else { delay };
+                    for cycle in 1..=request_at {
+                        d.tick_cpu();
+                        let request = d.take_dma_request();
+                        assert_eq!(
+                            request.is_some(), cycle == request_at,
+                            "odd={odd}, buffered={buffered}, timer={timer}, cycle={cycle}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reenable_while_active_does_not_restart_the_dma_gate() {
+        let mut d = ntsc();
+        d.set_enabled(true, true);
+        d.tick_cpu();
+        d.set_enabled(true, false);
+        d.tick_cpu();
+        assert!(d.take_dma_request().is_none());
+        d.tick_cpu();
+        assert!(d.take_dma_request().is_some());
+    }
+
+    #[test]
+    fn drained_buffer_waiting_for_enable_gate_survives_restore() {
+        let mut d = ntsc();
+        d.buffer = Some(0x7B);
+        d.bits_remaining = 1;
+        d.timer = 0;
+        d.set_enabled(true, true);
+        d.tick_cpu();
+        assert!(d.buffer.is_none());
+        let mut restored = ntsc();
+        restored.save_state_apply(d.save_state_capture());
+        for candidate in [&mut d, &mut restored] {
+            candidate.tick_cpu();
+            assert!(candidate.take_dma_request().is_none());
+            candidate.tick_cpu();
+            assert_eq!(candidate.take_dma_request().unwrap().addr, 0xC000);
+        }
     }
 
     #[test]
