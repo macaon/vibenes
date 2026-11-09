@@ -814,6 +814,104 @@ mod tests {
     }
 
     #[test]
+    fn pre_render_oam_handoff_copies_all_nine_bytes_from_the_selected_row() {
+        for region in [Region::Ntsc, Region::Pal] {
+            for source in [0, 5] {
+                let mut bus = build_bus_with_sample(0, region);
+                let mut ppu = bus.ppu.save_state_capture();
+                ppu.scanline = region.pre_render_scanline();
+                ppu.dot = 0;
+                ppu.mask = 8;
+                ppu.rendering_enabled = true;
+                ppu.oam_rendering_enabled = true;
+                ppu.oam2_addr = 4;
+                ppu.oam_addr = source * 8 + 3;
+                ppu.oam.fill(0xFF);
+                ppu.secondary_oam.fill(0xAA);
+                for byte in 0..8 {
+                    ppu.oam[source as usize * 8 + byte] = 0x80 + byte as u8;
+                }
+                ppu.secondary_oam[source as usize] = 0x37;
+                let original = ppu.oam;
+                bus.ppu.save_state_apply(ppu);
+                bus.ppu.tick(&mut *bus.mapper);
+                let after = bus.ppu.save_state_capture();
+                let mut expected = original;
+                if region == Region::Ntsc {
+                    expected[32..40].copy_from_slice(
+                        &original[source as usize * 8..source as usize * 8 + 8],
+                    );
+                    assert_eq!(after.secondary_oam[4], 0x37);
+                } else {
+                    assert_eq!(after.secondary_oam[4], 0xAA);
+                }
+                assert_eq!(after.oam, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn oam_row_selector_freezes_after_disable_and_survives_vblank_restore() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.scanline = 0;
+        ppu.dot = 7;
+        ppu.mask = 8;
+        ppu.rendering_enabled = true;
+        ppu.oam_rendering_enabled = true;
+        ppu.oam.fill(0xFF);
+        ppu.oam[0] = 0;
+        bus.ppu.save_state_apply(ppu);
+        bus.ppu.cpu_write(0x2001, 0, &mut *bus.mapper);
+        for _ in 0..20 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        let mut frozen = bus.ppu.save_state_capture();
+        assert_eq!(frozen.oam2_addr, 4); // Independent M2 pulse probe.
+        assert!(!frozen.oam_rendering_enabled);
+        assert_eq!(frozen.oam[32], 0xFF);
+        frozen.scanline = 250;
+        frozen.dot = 0;
+        let encoded = bincode::serde::encode_to_vec(&frozen, bincode::config::standard()).unwrap();
+        let (frozen, _): (crate::save_state::PpuSnap, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        let mut restored = build_bus();
+        restored.ppu.save_state_apply(frozen);
+        restored.ppu.cpu_write(0x2001, 0x10, &mut *restored.mapper);
+        for _ in 0..20 {
+            restored.ppu.tick(&mut *restored.mapper);
+        }
+        let mut before = restored.ppu.save_state_capture();
+        assert_eq!(before.oam[32], 0xFF);
+        assert_eq!(before.oam2_addr, 4);
+        before.scanline = 261;
+        before.dot = 0;
+        restored.ppu.save_state_apply(before);
+        restored.ppu.tick(&mut *restored.mapper);
+        assert_eq!(restored.ppu.debug_oam()[32], 0);
+    }
+
+    #[test]
+    fn sprite_idle_leaves_a_safe_oam_row_and_one_rendering_component_keeps_clocking() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.scanline = 0;
+        ppu.dot = 317;
+        ppu.mask = 0x18;
+        ppu.rendering_enabled = true;
+        ppu.oam_rendering_enabled = true;
+        ppu.oam2_addr = 31;
+        bus.ppu.save_state_apply(ppu);
+        bus.ppu.cpu_write(0x2001, 8, &mut *bus.mapper);
+        for _ in 0..6 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        let after = bus.ppu.save_state_capture();
+        assert_eq!(after.oam2_addr, 0);
+        assert!(after.oam_rendering_enabled);
+    }
+
+    #[test]
     fn sprite_overflow_visibility_matches_visual_2c02() {
         // Chip probe: eight contiguous sprites do not overflow, nine
         // raise the flag at dot 131. A skipped candidate adds two dots.

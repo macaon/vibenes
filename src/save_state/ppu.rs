@@ -38,6 +38,8 @@ pub struct PpuSnap {
 
     pub skip_last_dot_latched: bool,
     pub rendering_enabled: bool,
+    pub oam_rendering_enabled: bool,
+    pub oam2_addr: u8,
 
     pub nmi_flag: bool,
     pub prevent_vbl: bool,
@@ -104,6 +106,8 @@ impl Default for PpuSnap {
             data_buffer: 0,
             skip_last_dot_latched: false,
             rendering_enabled: false,
+            oam_rendering_enabled: false,
+            oam2_addr: 0,
             nmi_flag: false,
             prevent_vbl: false,
             oam: [0; 256],

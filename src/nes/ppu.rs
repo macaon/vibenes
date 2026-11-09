@@ -94,6 +94,10 @@ pub struct Ppu {
     /// `$2001` write landing exactly at pre-render dot 339 must NOT
     /// influence that same dot's skip decision.
     rendering_enabled: bool,
+    /// Second rendering stage controlling the retained OAM row address.
+    oam_rendering_enabled: bool,
+    /// Physical secondary-OAM row selector, retained during forced blank.
+    oam2_addr: u8,
 
     /// Live NMI level signal. Mirrors Mesen2's `NmiFlag` on the CPU
     /// (see `NesPpu.cpp:547-549, 588, 891, 1257`). Set by the
@@ -229,6 +233,8 @@ impl Ppu {
             nmi_flag: false,
             skip_last_dot_latched: false,
             rendering_enabled: false,
+            oam_rendering_enabled: false,
+            oam2_addr: 0,
             prevent_vbl: false,
             oam: [0; 256],
             // Documented NES power-on palette pattern (nesdev wiki "PPU
@@ -309,6 +315,8 @@ impl Ppu {
     pub fn reset(&mut self) {
         self.sprite_zero_pending = false;
         self.sprite_overflow_pending = false;
+        self.oam_rendering_enabled = false;
+        self.rendering_enabled = false;
         self.ctrl = 0;
         self.mask = 0;
         self.w_latch = false;
@@ -374,6 +382,17 @@ impl Ppu {
         let rendering = (self.mask & 0x18) != 0;
         let visible = self.scanline >= 0 && self.scanline < FRAME_HEIGHT as i16;
         let is_pre = self.scanline == pre_render;
+
+        // At pre-render start the OAM address mux switches from OAM1
+        // to the retained OAM2 row without precharging the bitlines.
+        // The entire nine-byte physical row is copied on 2C02G: eight
+        // primary bytes plus the secondary byte sharing that row.
+        if self.region == Region::Ntsc && is_pre && self.dot == 0 && self.oam_rendering_enabled {
+            let source = (self.oam_addr >> 3) as usize;
+            let target = self.oam2_addr as usize;
+            self.oam.copy_within(source * 8..source * 8 + 8, target * 8);
+            self.secondary_oam[target] = self.secondary_oam[source];
+        }
 
         // Sprite-zero detection follows the pixel pipeline by one dot:
         // pixel x is evaluated at x+1 here, but hit is visible at x+2.
@@ -605,6 +624,24 @@ impl Ppu {
             }
         }
 
+        // The physical row selector has a different lifetime from the
+        // evaluation byte count: clear and fetch also advance it, and
+        // forced blank retains it until rendering next starts.
+        if self.oam_rendering_enabled && (visible || is_pre) {
+            match self.dot {
+                1..=64 => self.oam2_addr = ((self.dot / 2) & 31) as u8,
+                65..=256 => self.oam2_addr = self.sec_oam_addr & 31,
+                257..=320 => {
+                    let phase = self.dot - 257;
+                    self.oam2_addr = ((phase / 8) * 4 + (phase % 8 + 1).min(3)) as u8;
+                }
+                // The extra fetch-pointer increment leaves a safe row
+                // zero during sprite idle; see NESdev PPU signals.
+                321..=340 => self.oam2_addr = 0,
+                _ => {}
+            }
+        }
+
         self.master_ppu_cycle = self.master_ppu_cycle.wrapping_add(1);
         self.dot += 1;
         // NTSC odd-frame dot skip: when rendering is enabled at the
@@ -644,6 +681,7 @@ impl Ppu {
         // it makes) sees the new state - matching Mesen2's
         // `UpdateState` running at the end of each Exec cycle
         // (NesPpu.cpp:1361-1362, 1458-1461).
+        self.oam_rendering_enabled = self.rendering_enabled;
         self.rendering_enabled = (self.mask & 0x18) != 0;
     }
 
@@ -1456,6 +1494,8 @@ impl Ppu {
             data_buffer: self.data_buffer,
             skip_last_dot_latched: self.skip_last_dot_latched,
             rendering_enabled: self.rendering_enabled,
+            oam_rendering_enabled: self.oam_rendering_enabled,
+            oam2_addr: self.oam2_addr,
             nmi_flag: self.nmi_flag,
             prevent_vbl: self.prevent_vbl,
             oam: self.oam,
@@ -1508,6 +1548,8 @@ impl Ppu {
         self.data_buffer = snap.data_buffer;
         self.skip_last_dot_latched = snap.skip_last_dot_latched;
         self.rendering_enabled = snap.rendering_enabled;
+        self.oam_rendering_enabled = snap.oam_rendering_enabled;
+        self.oam2_addr = snap.oam2_addr;
         self.nmi_flag = snap.nmi_flag;
         self.prevent_vbl = snap.prevent_vbl;
         self.oam = snap.oam;
