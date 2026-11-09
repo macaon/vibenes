@@ -701,6 +701,25 @@ mod tests {
     }
 
     #[test]
+    fn frame_irq_status_double_reads_on_get_and_put() {
+        for first_read_on_get in [false, true] {
+            let mut bus = build_bus();
+            // DMA get cycles start with an even completed-cycle count.
+            if ((bus.clock.cpu_cycles() & 1) == 0) != first_read_on_get {
+                bus.read(0);
+            }
+            bus.apu.set_frame_irq_for_test(true);
+            assert_eq!(bus.read(0x4015) & 0x40, 0x40);
+            assert_eq!(
+                bus.read(0x4015) & 0x40,
+                if first_read_on_get { 0x40 } else { 0 },
+                "first read on get: {first_read_on_get}"
+            );
+            assert_eq!(bus.read(0x4015) & 0x40, 0);
+        }
+    }
+
+    #[test]
     fn controller_cpu_and_dma_reads_preserve_all_three_open_bus_bits() {
         let mut bus = build_bus();
         for addr in [0x4016, 0x4017] {

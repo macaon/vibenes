@@ -69,7 +69,7 @@ pub const MAGIC: [u8; 4] = *b"VNES";
 /// bincode's positional encoding). v1 makes no forward / backward
 /// compat promises - old states fail to load with
 /// [`SaveStateError::WrongVersion`].
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// File-extension prefix for slot files. Slot N writes to
 /// `<rom-stem>.state<N>` so `ls` groups slots together and the names
@@ -599,11 +599,9 @@ mod tests {
         // is right after the 4-byte magic.
         let s = header(0, 0, RegionTag::Ntsc);
         let mut bytes = encode(&s).unwrap();
-        // varint: low 7 bits + continuation bit. v1 → 0x01.
-        // Replace with 0xFE (high enough we won't bump there soon)
-        // via two-byte varint: 0xFE 0x01 = 254. We just want a
-        // value != FORMAT_VERSION.
-        assert_eq!(bytes[4], 0x01, "expected varint v1; bincode config changed?");
+        // Bincode encodes small u32 values as a single byte.
+        assert!(FORMAT_VERSION < 127);
+        assert_eq!(bytes[4], FORMAT_VERSION as u8);
         bytes[4] = 0x7F; // still single-byte varint, value 127
         match decode(&bytes) {
             Err(SaveStateError::WrongVersion { found, expected }) => {

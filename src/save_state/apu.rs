@@ -145,6 +145,7 @@ pub struct ApuSnap {
     pub noise: NoiseSnap,
     pub dmc: DmcSnap,
     pub frame_irq: bool,
+    pub frame_irq_clear_pending: bool,
     pub dmc_irq: bool,
 }
 

@@ -55,6 +55,7 @@ pub struct Apu {
     noise: Noise,
     dmc: Dmc,
     frame_irq: bool,
+    frame_irq_clear_pending: bool,
     dmc_irq: bool,
 }
 
@@ -70,6 +71,7 @@ impl Apu {
             noise: Noise::new(region),
             dmc: Dmc::new(region),
             frame_irq: false,
+            frame_irq_clear_pending: false,
             dmc_irq: false,
         }
     }
@@ -94,6 +96,7 @@ impl Apu {
         self.noise.on_warm_reset();
         self.dmc.on_warm_reset();
         self.frame_irq = false;
+        self.frame_irq_clear_pending = false;
         self.dmc_irq = false;
         self.frame_counter.reset_on_cpu_reset(self.cycle);
     }
@@ -114,8 +117,17 @@ impl Apu {
         self.frame_irq = v;
     }
 
-    /// Advance one CPU cycle. Must be called after every CPU bus access.
+    /// Advance one CPU cycle, before the CPU bus access.
     pub fn tick_cpu_cycle(&mut self) {
+        // The bus's get cycle begins with an even completed-cycle count;
+        // tick_cpu_cycle increments it to odd before the bus access.
+        // A $4015 read schedules its clear for this boundary, so a read
+        // on get remains visible to a consecutive read on put. Apply
+        // the clear before the sequencer event: a simultaneous set wins.
+        if self.frame_irq_clear_pending && self.cycle & 1 == 0 {
+            self.frame_irq = false;
+            self.frame_irq_clear_pending = false;
+        }
         let event = self.frame_counter.tick(self.cycle);
         if event.set_frame_irq {
             self.frame_irq = true;
@@ -170,19 +182,9 @@ impl Apu {
         self.noise.clock_half_frame();
     }
 
-    /// `$4015` read: returns channel-status bits, clears frame IRQ.
-    ///
-    /// Same-cycle race (nesdev "Frame IRQ flag"): if the frame counter
-    /// sets `frame_irq` on the same CPU cycle as a `$4015` read,
-    /// hardware must return the bit set and clear it after. `Bus::
-    /// tick_pre_access` advances the APU *before* the CPU's bus
-    /// access, so by the time `read_status` runs, any frame IRQ
-    /// event for the current cycle has already set `frame_irq` and
-    /// is observable here. `blargg_apu_2005.07.30/08.irq_timing`
-    /// relies on this ordering - the older post-access model
-    /// dispatched IRQ one cycle early because the CPU's
-    /// `prev_irq_line` snapshot saw the flag a cycle before the
-    /// `$4015` read could see it.
+    /// `$4015` read: returns channel status and schedules frame IRQ
+    /// clearing at the next get cycle. The APU ticks before the bus
+    /// access, so an IRQ set this cycle is visible in the returned byte.
     pub fn read_status(&mut self) -> u8 {
         let mut status = 0u8;
         if self.pulse1.length_nonzero() {
@@ -206,8 +208,8 @@ impl Apu {
         if self.dmc_irq {
             status |= 0x80;
         }
-        // Reading $4015 clears the frame IRQ (not the DMC IRQ).
-        self.frame_irq = false;
+        // DMC IRQ is unaffected by status reads.
+        self.frame_irq_clear_pending = true;
         status
     }
 
@@ -319,6 +321,7 @@ impl Apu {
             noise: self.noise.save_state_capture(),
             dmc: self.dmc.save_state_capture(),
             frame_irq: self.frame_irq,
+            frame_irq_clear_pending: self.frame_irq_clear_pending,
             dmc_irq: self.dmc_irq,
         }
     }
@@ -332,6 +335,7 @@ impl Apu {
         self.noise.save_state_apply(snap.noise);
         self.dmc.save_state_apply(snap.dmc);
         self.frame_irq = snap.frame_irq;
+        self.frame_irq_clear_pending = snap.frame_irq_clear_pending;
         self.dmc_irq = snap.dmc_irq;
     }
 }
@@ -371,6 +375,46 @@ mod tests {
     }
 
     #[test]
+    fn frame_irq_set_wins_over_pending_clear() {
+        let mut apu = ntsc();
+        let mut snap = apu.save_state_capture();
+        snap.cycle = 2; // Next tick starts get.
+        snap.frame_counter.counter = 29827;
+        snap.frame_irq_clear_pending = true;
+        apu.save_state_apply(snap);
+        apu.tick_cpu_cycle();
+        assert!(apu.frame_irq, "sequencer set wins over the pending clear");
+        assert!(!apu.frame_irq_clear_pending);
+        assert_eq!(apu.read_status() & 0x40, 0x40);
+    }
+
+    #[test]
+    fn pending_frame_irq_clear_survives_restore() {
+        let mut apu = ntsc();
+        apu.cycle = 1; // Status read on get; the next tick is put.
+        apu.frame_irq = true;
+        apu.read_status();
+        let snap = apu.save_state_capture();
+        let mut restored = ntsc();
+        restored.save_state_apply(snap);
+        for apu in [&mut apu, &mut restored] {
+            apu.tick_cpu_cycle();
+            assert!(apu.frame_irq);
+            apu.tick_cpu_cycle();
+            assert!(!apu.frame_irq);
+            assert!(!apu.frame_irq_clear_pending);
+        }
+    }
+
+    #[test]
+    fn reset_cancels_pending_frame_irq_clear() {
+        let mut apu = ntsc();
+        apu.read_status();
+        apu.reset();
+        assert!(!apu.frame_irq_clear_pending);
+    }
+
+    #[test]
     fn read_status_clears_frame_irq_not_dmc_irq() {
         let mut apu = ntsc();
         apu.frame_irq = true;
@@ -380,7 +424,12 @@ mod tests {
 
         assert_eq!(s & 0x40, 0x40, "frame IRQ bit must be set in returned value");
         assert_eq!(s & 0x80, 0x80, "DMC IRQ bit must be set in returned value");
-        assert!(!apu.frame_irq, "frame IRQ cleared after read");
+        assert!(apu.frame_irq, "read schedules rather than immediately clears IRQ");
+        // Power-on starts at u64::MAX: first tick is put, then get.
+        apu.tick_cpu_cycle();
+        assert!(apu.frame_irq, "IRQ survives the put cycle");
+        apu.tick_cpu_cycle();
+        assert!(!apu.frame_irq, "frame IRQ clears at the next get");
         assert!(apu.dmc_irq, "DMC IRQ preserved across $4015 read");
     }
 
