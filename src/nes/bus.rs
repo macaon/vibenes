@@ -814,6 +814,51 @@ mod tests {
     }
 
     #[test]
+    fn sprite_overflow_visibility_matches_visual_2c02() {
+        // Chip probe: eight contiguous sprites do not overflow, nine
+        // raise the flag at dot 131. A skipped candidate adds two dots.
+        for (count, gap, expected) in [(8, 0, None), (9, 0, Some(131)), (9, 1, Some(133))] {
+            let mut bus = build_bus();
+            let mut ppu = bus.ppu.save_state_capture();
+            ppu.scanline = 0;
+            ppu.dot = 1;
+            ppu.mask = 8;
+            ppu.oam.fill(0xFF);
+            for sprite in 0..8 {
+                ppu.oam[sprite * 4..sprite * 4 + 4].fill(0);
+            }
+            if count == 9 {
+                let start = (8 + gap) * 4;
+                ppu.oam[start..start + 4].fill(0);
+            }
+            bus.ppu.save_state_apply(ppu);
+            let mut first = None;
+            while bus.ppu.dot() <= 256 {
+                let dot = bus.ppu.dot();
+                bus.ppu.tick(&mut *bus.mapper);
+                if first.is_none() && bus.ppu.debug_status() & 0x20 != 0 {
+                    first = Some(dot);
+                }
+                if Some(dot + 1) == expected {
+                    // Persist a comparison that has completed but
+                    // has not yet reached the overflow output latch.
+                    let snap = bus.ppu.save_state_capture();
+                    assert!(snap.sprite_overflow_pending);
+                    let encoded =
+                        bincode::serde::encode_to_vec(&snap, bincode::config::standard()).unwrap();
+                    let (snap, _): (crate::save_state::PpuSnap, usize) =
+                        bincode::serde::decode_from_slice(&encoded, bincode::config::standard())
+                            .unwrap();
+                    let mut restored = build_bus();
+                    restored.ppu.save_state_apply(snap);
+                    bus = restored;
+                }
+            }
+            assert_eq!(first, expected, "count={count} gap={gap}");
+        }
+    }
+
+    #[test]
     fn sprite_zero_hit_is_visible_one_dot_after_pixel_detection() {
         for x in [0, 8, 128, 254, 255] {
             let mut bus = build_bus();
@@ -848,11 +893,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_sprite_zero_hit_does_not_survive_reset_or_pre_render_clear() {
+    fn pending_sprite_flags_do_not_survive_reset_or_pre_render_clear() {
         for reset in [false, true] {
             let mut bus = build_bus();
             let mut ppu = bus.ppu.save_state_capture();
             ppu.sprite_zero_pending = true;
+            ppu.sprite_overflow_pending = true;
             ppu.scanline = 261;
             ppu.dot = 1;
             bus.ppu.save_state_apply(ppu);
@@ -860,8 +906,9 @@ mod tests {
                 bus.ppu.reset();
             }
             bus.ppu.tick(&mut *bus.mapper);
-            assert_eq!(bus.ppu.debug_status() & 0x40, 0);
+            assert_eq!(bus.ppu.debug_status() & 0x60, 0);
             assert!(!bus.ppu.save_state_capture().sprite_zero_pending);
+            assert!(!bus.ppu.save_state_capture().sprite_overflow_pending);
         }
     }
 

@@ -68,6 +68,8 @@ pub struct Ppu {
     status: u8,
     /// Pixel collision awaiting the next dot of the hit pipeline.
     sprite_zero_pending: bool,
+    /// Overflow comparison result awaiting its next-dot output latch.
+    sprite_overflow_pending: bool,
     oam_addr: u8,
 
     w_latch: bool,
@@ -217,6 +219,7 @@ impl Ppu {
             mask: 0,
             status: 0,
             sprite_zero_pending: false,
+            sprite_overflow_pending: false,
             oam_addr: 0,
             w_latch: false,
             t: 0,
@@ -305,6 +308,7 @@ impl Ppu {
 
     pub fn reset(&mut self) {
         self.sprite_zero_pending = false;
+        self.sprite_overflow_pending = false;
         self.ctrl = 0;
         self.mask = 0;
         self.w_latch = false;
@@ -376,6 +380,15 @@ impl Ppu {
         if self.sprite_zero_pending {
             self.status |= 0x40;
             self.sprite_zero_pending = false;
+        }
+
+        // The ninth-sprite comparison is processed on an even dot,
+        // but its output latch sets overflow on the following dot.
+        // Visual 2C02: eight contiguous copies finish at dot 128;
+        // the ninth comparison at 130 raises spr_overflow at 131.
+        if self.sprite_overflow_pending {
+            self.status |= 0x20;
+            self.sprite_overflow_pending = false;
         }
 
         // VBlank / status flag edges.
@@ -960,7 +973,7 @@ impl Ppu {
                     self.sprite_addr_l = 0;
                 } else if self.sprite_in_range {
                     // 9th sprite is actually in range → real overflow.
-                    self.status |= 0x20;
+                    self.sprite_overflow_pending = true;
                     self.sprite_addr_l += 1;
                     if self.sprite_addr_l == 4 {
                         self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
@@ -1434,6 +1447,7 @@ impl Ppu {
             mask: self.mask,
             status: self.status,
             sprite_zero_pending: self.sprite_zero_pending,
+            sprite_overflow_pending: self.sprite_overflow_pending,
             oam_addr: self.oam_addr,
             w_latch: self.w_latch,
             t: self.t,
@@ -1485,6 +1499,7 @@ impl Ppu {
         self.mask = snap.mask;
         self.status = snap.status;
         self.sprite_zero_pending = snap.sprite_zero_pending;
+        self.sprite_overflow_pending = snap.sprite_overflow_pending;
         self.oam_addr = snap.oam_addr;
         self.w_latch = snap.w_latch;
         self.t = snap.t;

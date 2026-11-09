@@ -27,6 +27,7 @@ pub struct PpuSnap {
     pub mask: u8,
     pub status: u8,
     pub sprite_zero_pending: bool,
+    pub sprite_overflow_pending: bool,
     pub oam_addr: u8,
 
     pub w_latch: bool,
@@ -94,6 +95,7 @@ impl Default for PpuSnap {
             mask: 0,
             status: 0,
             sprite_zero_pending: false,
+            sprite_overflow_pending: false,
             oam_addr: 0,
             w_latch: false,
             t: 0,

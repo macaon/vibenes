@@ -69,7 +69,7 @@ pub const MAGIC: [u8; 4] = *b"VNES";
 /// bincode's positional encoding). v1 makes no forward / backward
 /// compat promises - old states fail to load with
 /// [`SaveStateError::WrongVersion`].
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 
 /// File-extension prefix for slot files. Slot N writes to
 /// `<rom-stem>.state<N>` so `ls` groups slots together and the names
