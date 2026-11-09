@@ -66,6 +66,8 @@ pub struct Ppu {
     ctrl: u8,
     mask: u8,
     status: u8,
+    /// Pixel collision awaiting the next dot of the hit pipeline.
+    sprite_zero_pending: bool,
     oam_addr: u8,
 
     w_latch: bool,
@@ -214,6 +216,7 @@ impl Ppu {
             ctrl: 0,
             mask: 0,
             status: 0,
+            sprite_zero_pending: false,
             oam_addr: 0,
             w_latch: false,
             t: 0,
@@ -301,6 +304,7 @@ impl Ppu {
     }
 
     pub fn reset(&mut self) {
+        self.sprite_zero_pending = false;
         self.ctrl = 0;
         self.mask = 0;
         self.w_latch = false;
@@ -366,6 +370,13 @@ impl Ppu {
         let rendering = (self.mask & 0x18) != 0;
         let visible = self.scanline >= 0 && self.scanline < FRAME_HEIGHT as i16;
         let is_pre = self.scanline == pre_render;
+
+        // Sprite-zero detection follows the pixel pipeline by one dot:
+        // pixel x is evaluated at x+1 here, but hit is visible at x+2.
+        if self.sprite_zero_pending {
+            self.status |= 0x40;
+            self.sprite_zero_pending = false;
+        }
 
         // VBlank / status flag edges.
         if self.scanline == VBLANK_SCANLINE && self.dot == 1 {
@@ -779,7 +790,7 @@ impl Ppu {
             let clip_any_left =
                 ((self.mask & 0x02) == 0 || (self.mask & 0x04) == 0) && x < 8;
             if !clip_any_left {
-                self.status |= 0x40;
+                self.sprite_zero_pending = true;
             }
         }
 
@@ -1422,6 +1433,7 @@ impl Ppu {
             ctrl: self.ctrl,
             mask: self.mask,
             status: self.status,
+            sprite_zero_pending: self.sprite_zero_pending,
             oam_addr: self.oam_addr,
             w_latch: self.w_latch,
             t: self.t,
@@ -1472,6 +1484,7 @@ impl Ppu {
         self.ctrl = snap.ctrl;
         self.mask = snap.mask;
         self.status = snap.status;
+        self.sprite_zero_pending = snap.sprite_zero_pending;
         self.oam_addr = snap.oam_addr;
         self.w_latch = snap.w_latch;
         self.t = snap.t;

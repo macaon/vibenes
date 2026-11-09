@@ -814,6 +814,58 @@ mod tests {
     }
 
     #[test]
+    fn sprite_zero_hit_is_visible_one_dot_after_pixel_detection() {
+        for x in [0, 8, 128, 254, 255] {
+            let mut bus = build_bus();
+            let mut ppu = bus.ppu.save_state_capture();
+            ppu.scanline = 1;
+            ppu.dot = x + 1;
+            ppu.mask = 0x1E;
+            ppu.bg_pat_lo = 0x8000;
+            ppu.sprite_count = 1;
+            ppu.sprite_x[0] = x as u8;
+            ppu.sprite_pat_lo[0] = 0x80;
+            ppu.sprite_is_zero[0] = true;
+            bus.ppu.save_state_apply(ppu);
+            bus.ppu.tick(&mut *bus.mapper);
+            assert_eq!(bus.ppu.debug_status() & 0x40, 0, "x={x}");
+            let pending = bus.ppu.save_state_capture();
+            assert_eq!(pending.sprite_zero_pending, x != 255, "x={x}");
+
+            // Restore between detection and visibility. Already-detected
+            // hits propagate even if rendering is disabled in between.
+            let mut restored = build_bus();
+            restored.ppu.save_state_apply(pending);
+            restored.ppu.cpu_write(0x2001, 0, &mut *restored.mapper);
+            restored.ppu.tick(&mut *restored.mapper);
+            assert_eq!(
+                restored.ppu.debug_status() & 0x40,
+                if x == 255 { 0 } else { 0x40 },
+                "x={x}",
+            );
+            assert!(!restored.ppu.save_state_capture().sprite_zero_pending);
+        }
+    }
+
+    #[test]
+    fn pending_sprite_zero_hit_does_not_survive_reset_or_pre_render_clear() {
+        for reset in [false, true] {
+            let mut bus = build_bus();
+            let mut ppu = bus.ppu.save_state_capture();
+            ppu.sprite_zero_pending = true;
+            ppu.scanline = 261;
+            ppu.dot = 1;
+            bus.ppu.save_state_apply(ppu);
+            if reset {
+                bus.ppu.reset();
+            }
+            bus.ppu.tick(&mut *bus.mapper);
+            assert_eq!(bus.ppu.debug_status() & 0x40, 0);
+            assert!(!bus.ppu.save_state_capture().sprite_zero_pending);
+        }
+    }
+
+    #[test]
     fn ppu_status_samples_live_sprite_flags_but_latches_vblank() {
         // At phase offset 1 a read advances two dots before assertion
         // and one afterward. Only the middle case straddles dot 1.
