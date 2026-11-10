@@ -939,15 +939,13 @@ impl Ppu {
         let y = self.oam_copy_buffer as i16;
 
         if self.oam_copy_done {
-            // Phase drained - still increment the primary-OAM high
-            // cursor so OAMADDR keeps advancing as on real HW. When
-            // secondary OAM is full, reads come from it instead (OAM
-            // write-disable turns writes into reads).
+            // Phase drained: primary reads keep advancing, but the
+            // even-cycle access is now a secondary read.
             self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
-            if self.sec_oam_addr >= 32 {
-                self.oam_copy_buffer =
-                    self.secondary_oam[(self.sec_oam_addr & 0x1F) as usize];
-            }
+            // Primary-address overflow also disables writes, even if
+            // secondary OAM is not full. A disabled write becomes a
+            // secondary read on every even evaluation cycle.
+            self.oam_copy_buffer = self.secondary_oam[(self.sec_oam_addr & 0x1F) as usize];
         } else {
             // Range check gated on `sprite_in_range` so we only latch
             // it on the Y byte of each sprite (the first byte fetched

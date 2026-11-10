@@ -825,6 +825,41 @@ mod tests {
     }
 
     #[test]
+    fn primary_oam_wrap_reads_partial_secondary_oam_on_even_dots() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.scanline = 0;
+        ppu.dot = 1;
+        ppu.mask = 8;
+        ppu.oam.fill(0xFF);
+        ppu.oam[..8].fill(0); // Exactly two in-range sprites.
+        ppu.oam[252] = 0xAA; // Last rejected Y remains in secondary[8].
+        bus.ppu.save_state_apply(ppu);
+        while bus.ppu.dot() <= 204 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        let wrapped = bus.ppu.save_state_capture();
+        assert!(wrapped.oam_copy_done);
+        assert_eq!(wrapped.sec_oam_addr, 8);
+        assert_eq!(wrapped.secondary_oam[8], 0xAA);
+        let secondary = wrapped.secondary_oam;
+        let encoded = bincode::serde::encode_to_vec(&wrapped, bincode::config::standard()).unwrap();
+        let (wrapped, _): (crate::save_state::PpuSnap, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        let mut restored = build_bus();
+        restored.ppu.save_state_apply(wrapped);
+        for (dot, expected) in [
+            (205, 0), (206, 0xAA), (207, 0), (208, 0xAA), (209, 0xFF), (210, 0xAA),
+        ] {
+            restored.ppu.tick(&mut *restored.mapper);
+            assert_eq!(
+                restored.ppu.cpu_read(0x2004, &mut *restored.mapper), expected, "dot={dot}",
+            );
+            assert_eq!(restored.ppu.save_state_capture().secondary_oam, secondary);
+        }
+    }
+
+    #[test]
     fn oam_data_write_at_fetch_boundary_is_latched_after_the_final_ppu_tick() {
         let mut bus = build_bus();
         let mut clock = bus.clock.save_state_capture();
