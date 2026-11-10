@@ -77,6 +77,16 @@ pub struct Ppu {
     v: u16,
     fine_x: u8,
     data_buffer: u8,
+    /// Delayed external read: captured blanking address and remaining
+    /// PPU dots, armed only after CPU read select has been released.
+    read_buffer_addr: u16,
+    read_buffer_delay: u8,
+    read_buffer_waiting: bool,
+    ppu_bus_data: u8,
+    write_buffer_waiting: bool,
+    write_buffer_delay: u8,
+    write_buffer_data: u8,
+    write_buffer_addr: u16,
 
     /// Latched by the pre-render dot-339 tick on odd NTSC frames
     /// when rendering was enabled at entry, consumed at end-of-tick
@@ -230,6 +240,14 @@ impl Ppu {
             v: 0,
             fine_x: 0,
             data_buffer: 0,
+            read_buffer_addr: 0,
+            read_buffer_delay: 0,
+            read_buffer_waiting: false,
+            ppu_bus_data: 0,
+            write_buffer_waiting: false,
+            write_buffer_delay: 0,
+            write_buffer_data: 0,
+            write_buffer_addr: 0,
             nmi_flag: false,
             skip_last_dot_latched: false,
             rendering_enabled: false,
@@ -321,6 +339,10 @@ impl Ppu {
         self.mask = 0;
         self.w_latch = false;
         self.data_buffer = 0;
+        self.read_buffer_delay = 0;
+        self.read_buffer_waiting = false;
+        self.write_buffer_delay = 0;
+        self.write_buffer_waiting = false;
         self.odd_frame = false;
         self.scanline = 0;
         self.dot = 0;
@@ -524,16 +546,12 @@ impl Ppu {
             if self.dot == 256 {
                 self.inc_y();
             }
-            if self.dot == 257 {
-                // Horizontal v ← t copy (coarse X + NT-select bit 10).
-                self.v = (self.v & !0x041F) | (self.t & 0x041F);
-            }
             // Sprite pattern fetch across dots 257–320 in eight 8-dot
             // slots, one per sprite. Per Mesen2 (NesPpu.cpp:899–933)
             // and nesdev, each slot issues four 2-cycle memory
             // accesses; the FIRST cycle of each access is when the
             // address goes on the bus (and A12 transitions). Slot 0
-            // issues: garbage NT at dot 257, garbage AT at dot 259,
+            // issues: garbage NT at dot 257, garbage NT at dot 259,
             // sprite pat-lo at dot 261, sprite pat-hi at dot 263.
             //
             // The exact dots matter for MMC3 A12 counter filtering -
@@ -562,18 +580,18 @@ impl Ppu {
                         let _ = self.ppu_bus_read(addr, PpuFetchKind::SpriteNametable, mapper);
                     }
                     2 => {
-                        // Garbage AT fetch - drives A12 low.
-                        let at_addr = 0x23C0
-                            | (self.v & 0x0C00)
-                            | ((self.v >> 4) & 0x38)
-                            | ((self.v >> 2) & 0x07);
-                        let _ =
-                            self.ppu_bus_read(at_addr, PpuFetchKind::SpriteAttribute, mapper);
+                        // Second garbage nametable fetch - drives A12 low.
+                        let addr = 0x2000 | (self.v & 0x0FFF);
+                        let _ = self.ppu_bus_read(addr, PpuFetchKind::SpriteNametable, mapper);
                     }
                     4 => self.fetch_sprite_pattern_slot(slot, false, mapper),
                     6 => self.fetch_sprite_pattern_slot(slot, true, mapper),
                     _ => {}
                 }
+            }
+            if self.dot == 257 {
+                // Horizontal v ← t copy (coarse X + NT-select bit 10).
+                self.v = (self.v & !0x041F) | (self.t & 0x041F);
             }
             if (321..=340).contains(&self.dot) {
                 self.oam_copy_buffer = self.secondary_oam[0];
@@ -626,6 +644,41 @@ impl Ppu {
                 || (self.dot >= 322 && self.dot <= 336);
             if shift_now {
                 self.shift_bg();
+            }
+        }
+
+        if self.read_buffer_delay > 0 && !self.read_buffer_waiting {
+            self.read_buffer_delay -= 1;
+            if self.read_buffer_delay == 2 {
+                let addr = self.v & 0x3FFF;
+                self.read_buffer_addr = if addr >= 0x3F00 { addr - 0x1000 } else { addr };
+            }
+            if self.read_buffer_delay == 0 {
+                self.data_buffer = if rendering && (visible || is_pre) {
+                    // Rendering owns the external address mux. A stable
+                    // refill shares the rendering fetch already on it.
+                    self.ppu_bus_data
+                } else {
+                    self.ppu_bus_read(self.read_buffer_addr, PpuFetchKind::Idle, mapper)
+                };
+                self.increment_v();
+                if !rendering || !(visible || is_pre) {
+                    mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
+                }
+            }
+        }
+
+        if self.write_buffer_delay > 0 && !self.write_buffer_waiting {
+            self.write_buffer_delay -= 1;
+            if self.write_buffer_delay == 2 {
+                self.write_buffer_addr = self.v & 0x3FFF;
+            }
+            if self.write_buffer_delay == 0 {
+                self.ppu_bus_write(self.write_buffer_addr, self.write_buffer_data, PpuFetchKind::Idle, mapper);
+                self.increment_v();
+                if !rendering || !(visible || is_pre) {
+                    mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
+                }
             }
         }
 
@@ -1151,7 +1204,7 @@ impl Ppu {
     }
 
     pub fn cpu_read(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
-        self.cpu_read_inner(addr, mapper, false)
+        self.cpu_read_inner(addr, mapper)
     }
 
     /// Finish a status read at the CPU sampling edge. VBlank is buffered
@@ -1160,6 +1213,16 @@ impl Ppu {
         let sprites = self.status & 0x60;
         self.refresh_open_bus_bits(0x60, sprites);
         (latched & !0x60) | sprites
+    }
+
+    /// The external PPUDATA state machine begins when CPU read select
+    /// is released. Indexed dummy reads use the same request gate.
+    pub(crate) fn finish_data_read(&mut self) {
+        self.read_buffer_waiting = false;
+    }
+
+    pub(crate) fn finish_data_write(&mut self) {
+        self.write_buffer_waiting = false;
     }
 
     /// OAMDATA is live during rendering, rather than buffered at read
@@ -1178,25 +1241,16 @@ impl Ppu {
         value
     }
 
-    /// `cpu_read` variant that the bus calls for the page-cross dummy
-    /// read emitted by `abs,X` / `abs,Y` / `(zp),Y`. For `$2007`, real
-    /// hardware's aborted read doesn't advance the PPU's internal buffer
-    /// state cleanly - the CPU re-reads before the PPU has a chance to
-    /// refill from VRAM. Blargg's `dmc_dma_during_read4/double_2007_read`
-    /// accepts any of four buckets; returning the current buffer
-    /// without advancing `v` / refilling lands us in the `22 33 44 55 66
-    /// / 22 33 44 55 66` bucket (CRC `F018C287`). For every other
-    /// register, the dummy read has the same side effects as a real
-    /// read (`$4016` still shifts; `$2002` still clears VBL/w).
+    /// Indexed dummy reads assert the same register select as ordinary
+    /// reads. The PPUDATA request gate handles overlapping accesses.
     pub fn cpu_read_dummy(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
-        self.cpu_read_inner(addr, mapper, true)
+        self.cpu_read_inner(addr, mapper)
     }
 
     fn cpu_read_inner(
         &mut self,
         addr: u16,
-        mapper: &mut dyn Mapper,
-        is_dummy: bool,
+        _mapper: &mut dyn Mapper,
     ) -> u8 {
         let reg = addr & 0x0007;
         match reg {
@@ -1234,28 +1288,17 @@ impl Ppu {
             0x04 => {
                 self.finish_oam_read()
             }
-            0x07 if is_dummy => {
-                // Dummy read at $2007 mirror: return the current
-                // buffer without advancing v or refilling (see
-                // `cpu_read_dummy`). Refresh decay with the returned
-                // value anyway - matches the read's observable
-                // effect on the I/O bus.
-                let v = self.data_buffer;
-                self.refresh_open_bus_bits(0xFF, v);
-                v
-            }
             0x07 => {
                 let vram_addr = self.v & 0x3FFF;
                 let (returned, refresh_mask) = if vram_addr >= 0x3F00 {
                     // Palette read: low 6 bits come from palette,
-                    // high 2 bits keep decaying. Buffer refills from
-                    // the mirrored nametable byte behind palette RAM.
+                    // high 2 bits keep decaying. The pending external
+                    // refill uses the mirrored nametable behind palette.
                     // When $2001 bit 0 (greyscale) is set, the PPU
                     // masks the lower 4 bits of the returned palette
                     // value to zero - AccuracyCoin "Palette RAM
                     // Quirks" #6. Writes are not masked (#7).
-                    self.data_buffer =
-                        self.ppu_bus_read(vram_addr.wrapping_sub(0x1000), PpuFetchKind::Idle, mapper);
+
                     let mut palette = self.read_palette(vram_addr) & 0x3F;
                     if self.mask & 0x01 != 0 {
                         palette &= 0x30;
@@ -1263,19 +1306,23 @@ impl Ppu {
                     let bus_high = self.open_bus_decayed() & 0xC0;
                     (palette | bus_high, 0x3Fu8)
                 } else {
-                    // Non-palette read: return buffered byte, refill
-                    // buffer from current v. All 8 bits of decay
-                    // refreshed with the returned value.
+                    // Return the previous buffer now. Its replacement
+                    // arrives later from the external bus. Refresh all
+                    // eight I/O latch bits with the returned value.
                     let buffered = self.data_buffer;
-                    self.data_buffer = self.ppu_bus_read(vram_addr, PpuFetchKind::Idle, mapper);
+
                     (buffered, 0xFFu8)
                 };
                 self.refresh_open_bus_bits(refresh_mask, returned);
-                self.increment_v();
-                // Post-increment v appears on the PPU address bus
-                // outside rendering - gives MMC3's A12 watcher
-                // another edge to observe.
-                mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
+                if self.read_buffer_delay == 0 {
+                    self.read_buffer_addr = if vram_addr >= 0x3F00 {
+                        vram_addr - 0x1000
+                    } else {
+                        vram_addr
+                    };
+                    self.read_buffer_delay = 4;
+                    self.read_buffer_waiting = true;
+                }
                 returned
             }
             // Write-only registers ($2000, $2001, $2003, $2005, $2006).
@@ -1368,13 +1415,11 @@ impl Ppu {
                 self.w_latch = !self.w_latch;
             }
             0x07 => {
-                let addr = self.v & 0x3FFF;
-                self.ppu_bus_write(addr, data, PpuFetchKind::Idle, mapper);
-                self.increment_v();
-                // Post-increment `v` is placed on the address bus
-                // outside rendering - another A12 opportunity for
-                // MMC3 (Mesen2 NesPpu.cpp ProcessPpuDataAccess).
-                mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
+                if self.write_buffer_delay == 0 {
+                    self.write_buffer_data = data;
+                    self.write_buffer_delay = 4;
+                    self.write_buffer_waiting = true;
+                }
             }
             _ => {}
         }
@@ -1407,7 +1452,7 @@ impl Ppu {
         // sprite CHR bank sets and to detect scanlines via the
         // 3-consecutive-NT-fetch signature.
         mapper.on_ppu_addr(addr, self.master_ppu_cycle, kind);
-        match addr {
+        let value = match addr {
             0x0000..=0x1FFF => mapper.ppu_read(addr),
             0x2000..=0x3EFF => {
                 // Give the mapper first dibs on the nametable byte -
@@ -1429,7 +1474,9 @@ impl Ppu {
             }
             0x3F00..=0x3FFF => self.read_palette(addr),
             _ => 0,
-        }
+        };
+        self.ppu_bus_data = value;
+        value
     }
 
     fn ppu_bus_write(&mut self, addr: u16, data: u8, kind: PpuFetchKind, mapper: &mut dyn Mapper) {
@@ -1514,6 +1561,14 @@ impl Ppu {
             v: self.v,
             fine_x: self.fine_x,
             data_buffer: self.data_buffer,
+            ppu_bus_data: self.ppu_bus_data,
+            write_buffer_waiting: self.write_buffer_waiting,
+            write_buffer_delay: self.write_buffer_delay,
+            write_buffer_data: self.write_buffer_data,
+            write_buffer_addr: self.write_buffer_addr,
+            read_buffer_waiting: self.read_buffer_waiting,
+            read_buffer_delay: self.read_buffer_delay,
+            read_buffer_addr: self.read_buffer_addr,
             skip_last_dot_latched: self.skip_last_dot_latched,
             rendering_enabled: self.rendering_enabled,
             oam_rendering_enabled: self.oam_rendering_enabled,
@@ -1568,6 +1623,14 @@ impl Ppu {
         self.v = snap.v;
         self.fine_x = snap.fine_x;
         self.data_buffer = snap.data_buffer;
+        self.ppu_bus_data = snap.ppu_bus_data;
+        self.write_buffer_waiting = snap.write_buffer_waiting;
+        self.write_buffer_delay = snap.write_buffer_delay;
+        self.write_buffer_data = snap.write_buffer_data;
+        self.write_buffer_addr = snap.write_buffer_addr;
+        self.read_buffer_waiting = snap.read_buffer_waiting;
+        self.read_buffer_delay = snap.read_buffer_delay;
+        self.read_buffer_addr = snap.read_buffer_addr;
         self.skip_last_dot_latched = snap.skip_last_dot_latched;
         self.rendering_enabled = snap.rendering_enabled;
         self.oam_rendering_enabled = snap.oam_rendering_enabled;

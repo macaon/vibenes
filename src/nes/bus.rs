@@ -262,12 +262,9 @@ impl Bus {
     /// inserted, the DMC fetches its sample byte, and only then does the
     /// CPU's read complete. DMA does not start during writes - a request
     /// raised during a write cycle waits for the next read.
-    /// CPU bus read variant for the page-cross dummy read emitted by
-    /// `abs,X` / `abs,Y` / `(zp),Y` indexed loads. Routes `$2007` to
-    /// the PPU's `cpu_read_dummy` so the aborted read doesn't advance
-    /// the internal buffer twice (see `blargg_apu_2005/...
-    /// double_2007_read` and `Ppu::cpu_read_dummy`). Every other
-    /// address behaves exactly like a normal `read`.
+    /// CPU bus read variant for indexed dummy accesses. Register reads
+    /// retain normal side effects; overlapping PPUDATA requests are
+    /// suppressed by the PPU's external-access gate.
     pub fn dummy_read(&mut self, addr: u16) -> u8 {
         if !matches!(addr, 0x2000..=0x3FFF) {
             return self.read(addr);
@@ -340,6 +337,9 @@ impl Bus {
     /// and DMA reads use the same two edges; no extra PPU ticks are added.
     fn finish_read_cycle(&mut self, addr: u16, value: u8) -> u8 {
         self.tick_post_access(true);
+        if (0x2000..=0x3FFF).contains(&addr) && addr & 7 == 7 {
+            self.ppu.finish_data_read();
+        }
         if (0x2000..=0x3FFF).contains(&addr) && matches!(addr & 7, 2 | 4) {
             let value = if addr & 7 == 2 {
                 self.ppu.finish_status_read(value)
@@ -400,6 +400,8 @@ impl Bus {
         self.tick_post_access(false);
         if oam_write {
             self.ppu.cpu_write(addr, data, &mut *self.mapper);
+        } else if (0x2000..=0x3FFF).contains(&addr) && addr & 7 == 7 {
+            self.ppu.finish_data_write();
         }
     }
 
@@ -822,6 +824,174 @@ mod tests {
             fds_data: None,
         };
         Bus::new(Box::new(Nrom::new(cart)), region, 0, 0)
+    }
+
+    #[test]
+    fn ppudata_read_then_write_uses_the_incremented_address_after_restore() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.v = 0x2000;
+        ppu.vram[0] = 0xA5;
+        ppu.data_buffer = 0x55;
+        bus.ppu.save_state_apply(ppu);
+        assert_eq!(bus.ppu.cpu_read_dummy(0x2007, &mut *bus.mapper), 0x55);
+        bus.ppu.finish_data_read();
+        for _ in 0..3 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        bus.ppu.cpu_write(0x2007, 9, &mut *bus.mapper);
+        bus.ppu.finish_data_write();
+        bus.ppu.tick(&mut *bus.mapper);
+        let pending = bus.ppu.save_state_capture();
+        assert_eq!(pending.v, 0x2001);
+        assert_eq!(pending.data_buffer, 0xA5);
+        assert_eq!(pending.write_buffer_delay, 3);
+        assert_eq!(pending.vram[1], 0);
+        let encoded = bincode::serde::encode_to_vec(&pending, bincode::config::standard()).unwrap();
+        let (pending, _): (crate::save_state::PpuSnap, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        let mut restored = build_bus();
+        restored.ppu.save_state_apply(pending);
+        for _ in 0..3 {
+            restored.ppu.tick(&mut *restored.mapper);
+        }
+        let done = restored.ppu.save_state_capture();
+        assert_eq!(done.vram[0], 0xA5);
+        assert_eq!(done.vram[1], 9);
+        assert_eq!(done.v, 0x2002);
+        assert_eq!(done.data_buffer, 0xA5);
+    }
+
+    #[test]
+    fn ppudata_refill_waits_for_read_release_and_survives_restore() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.v = 0x2000;
+        ppu.vram[0] = 0xA5;
+        ppu.data_buffer = 0x55;
+        bus.ppu.save_state_apply(ppu);
+        assert_eq!(bus.ppu.cpu_read(0x2007, &mut *bus.mapper), 0x55);
+        for _ in 0..3 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        let pending = bus.ppu.save_state_capture();
+        assert_eq!(pending.read_buffer_delay, 4);
+        assert_eq!(pending.data_buffer, 0x55);
+        assert_eq!(pending.v, 0x2000);
+        bus.ppu.finish_data_read();
+        for _ in 0..2 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        let pending = bus.ppu.save_state_capture();
+        let encoded = bincode::serde::encode_to_vec(&pending, bincode::config::standard()).unwrap();
+        let (pending, _): (crate::save_state::PpuSnap, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        let mut restored = build_bus();
+        restored.ppu.save_state_apply(pending);
+        restored.ppu.tick(&mut *restored.mapper);
+        assert_eq!(restored.ppu.save_state_capture().data_buffer, 0x55);
+        restored.ppu.tick(&mut *restored.mapper);
+        let done = restored.ppu.save_state_capture();
+        assert_eq!(done.data_buffer, 0xA5);
+        assert_eq!(done.v, 0x2001);
+        assert_eq!(done.read_buffer_delay, 0);
+    }
+
+    #[test]
+    fn rendering_refill_samples_the_fetch_bus_without_continuously_refilling() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.mask = 8;
+        ppu.dot = 1;
+        ppu.v = 0x2000;
+        ppu.vram[0] = 0x12;
+        ppu.vram[0x3C0] = 0x34;
+        ppu.data_buffer = 0x55;
+        bus.ppu.save_state_apply(ppu);
+        assert_eq!(bus.ppu.cpu_read(0x2007, &mut *bus.mapper), 0x55);
+        bus.ppu.finish_data_read();
+        for _ in 0..3 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        let pending = bus.ppu.save_state_capture();
+        assert_eq!(pending.ppu_bus_data, 0x34);
+        assert_eq!(pending.read_buffer_delay, 1);
+        let encoded = bincode::serde::encode_to_vec(&pending, bincode::config::standard()).unwrap();
+        let (pending, _): (crate::save_state::PpuSnap, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        let mut restored = build_bus();
+        restored.ppu.save_state_apply(pending);
+        bus = restored;
+        bus.ppu.tick(&mut *bus.mapper); // no new fetch on dot 4
+        assert_eq!(bus.ppu.save_state_capture().data_buffer, 0x34);
+        for _ in 0..12 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        assert_eq!(bus.ppu.save_state_capture().data_buffer, 0x34);
+    }
+
+    #[test]
+    fn overlapping_ppudata_reads_do_not_restart_the_external_request() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.v = 0x2000;
+        ppu.vram[0] = 0xA5;
+        ppu.data_buffer = 0x55;
+        bus.ppu.save_state_apply(ppu);
+        bus.ppu.cpu_read(0x2007, &mut *bus.mapper);
+        bus.ppu.finish_data_read();
+        bus.ppu.tick(&mut *bus.mapper);
+        assert_eq!(bus.ppu.cpu_read(0x2007, &mut *bus.mapper), 0x55);
+        assert_eq!(bus.ppu.cpu_read_dummy(0x2007, &mut *bus.mapper), 0x55);
+        bus.ppu.finish_data_read();
+        assert_eq!(bus.ppu.save_state_capture().read_buffer_delay, 3);
+        for _ in 0..3 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        let done = bus.ppu.save_state_capture();
+        assert_eq!(done.data_buffer, 0xA5);
+        assert_eq!(done.v, 0x2001);
+    }
+
+    #[test]
+    fn palette_return_is_immediate_while_shadow_refill_is_delayed() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.v = 0x3F10;
+        ppu.mask = 1;
+        ppu.open_bus = 0xC0;
+        ppu.palette[0] = 0x3E;
+        ppu.vram[0x710] = 0xA5;
+        ppu.data_buffer = 0x55;
+        bus.ppu.save_state_apply(ppu);
+        assert_eq!(bus.ppu.cpu_read(0x2007, &mut *bus.mapper), 0xF0);
+        assert_eq!(bus.ppu.save_state_capture().data_buffer, 0x55);
+        bus.ppu.finish_data_read();
+        for _ in 0..4 {
+            bus.ppu.tick(&mut *bus.mapper);
+        }
+        assert_eq!(bus.ppu.save_state_capture().data_buffer, 0xA5);
+    }
+
+    #[test]
+    fn sprite_garbage_fetches_use_nametables_before_and_after_horizontal_reset() {
+        let mut bus = build_bus();
+        let mut ppu = bus.ppu.save_state_capture();
+        ppu.scanline = 10;
+        ppu.dot = 257;
+        ppu.mask = 8;
+        ppu.v = 0x2C02;
+        ppu.t = 0x2C00;
+        ppu.vram[0x402] = 0x12;
+        ppu.vram[0x400] = 0x34;
+        ppu.vram[0x7C0] = 0x56;
+        bus.ppu.save_state_apply(ppu);
+        bus.ppu.tick(&mut *bus.mapper);
+        assert_eq!(bus.ppu.save_state_capture().ppu_bus_data, 0x12);
+        assert_eq!(bus.ppu.debug_scroll().0 & 0x041F, 0x0400);
+        bus.ppu.tick(&mut *bus.mapper);
+        bus.ppu.tick(&mut *bus.mapper);
+        assert_eq!(bus.ppu.save_state_capture().ppu_bus_data, 0x34);
     }
 
     #[test]
