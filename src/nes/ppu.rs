@@ -570,8 +570,7 @@ impl Ppu {
                     self.sprite_is_zero[0] = self.sprite_zero_added;
                 }
                 let slot = ((self.dot - 257) / 8) as usize;
-                let byte = ((self.dot - 257) % 8).min(3) as usize;
-                self.oam_copy_buffer = self.secondary_oam[self.sprite_fetch_oam_index(slot, byte)];
+                self.oam_copy_buffer = self.secondary_oam[self.oam2_addr as usize];
                 match (self.dot - 257) % 8 {
                     0 => {
                         // Garbage NT fetch - drives A12 low. Tagged
@@ -596,7 +595,7 @@ impl Ppu {
                 self.v = (self.v & !0x041F) | (self.t & 0x041F);
             }
             if (321..=340).contains(&self.dot) {
-                self.oam_copy_buffer = self.secondary_oam[0];
+                self.oam_copy_buffer = self.secondary_oam[self.oam2_addr as usize];
             }
             if is_pre && self.dot >= 280 && self.dot <= 304 {
                 // Vertical v ← t copy (fine Y + coarse Y + NT-select
@@ -725,33 +724,23 @@ impl Ppu {
             }
         }
 
-        // OAM2 carry inhibits address increments until the next reset
-        // pulse. Forced blank can suppress the pulse between phases.
+        // The physical OAM2 address advances on fetch pulses and holds
+        // during forced blank. A carry inhibits increments until reset.
         if self.oam_rendering_enabled && (visible || is_pre) {
             match self.dot {
-                64 | 256 | 340 => self.oam2_increment_frozen = false,
-                320 => self.oam2_increment_frozen = true,
-                _ => {}
-            }
-        }
-
-        // The physical row selector has a different lifetime from the
-        // evaluation byte count: clear and fetch also advance it, and
-        // forced blank retains it until rendering next starts.
-        if self.oam_rendering_enabled && (visible || is_pre) {
-            match self.dot {
-                1..=64 => self.oam2_addr = ((self.dot / 2) & 31) as u8,
-                65..=256 => self.oam2_addr = self.sec_oam_addr & 31,
-                257..=320 => {
-                    let phase = self.dot - 257;
-                    self.oam2_addr = self.sprite_fetch_oam_index(
-                        (phase / 8) as usize,
-                        (phase % 8 + 1).min(3) as usize,
-                    ) as u8;
+                64 | 256 | 340 => {
+                    self.oam2_addr = 0;
+                    self.oam2_increment_frozen = false;
                 }
-                // The extra fetch-pointer increment leaves a safe row
-                // zero during sprite idle; see NESdev PPU signals.
-                321..=340 => self.oam2_addr = 0,
+                1..=63 => self.oam2_addr = ((self.dot / 2) & 31) as u8,
+                65..=255 => self.oam2_addr = self.sec_oam_addr & 31,
+                257..=320
+                    if !self.oam2_increment_frozen
+                        && matches!((self.dot - 257) % 8, 0 | 1 | 2 | 7) =>
+                {
+                    self.oam2_addr = (self.oam2_addr + 1) & 31;
+                    self.oam2_increment_frozen = self.oam2_addr == 0;
+                }
                 _ => {}
             }
         }

@@ -1144,6 +1144,9 @@ mod tests {
         ppu.scanline = 10;
         ppu.dot = 257;
         ppu.mask = 8;
+        // Rendering was already active before this mid-scanline snapshot.
+        ppu.rendering_enabled = true;
+        ppu.oam_rendering_enabled = true;
         for (index, byte) in ppu.secondary_oam.iter_mut().enumerate() {
             *byte = 0x80 + index as u8;
         }
