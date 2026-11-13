@@ -653,16 +653,11 @@ impl Ppu {
             self.sprite_eval_end();
         }
 
-        // --- (3) Shift. Per-dot shift-by-1 during rendering dots
-        // 1..=256 and pre-fetch dots 322..=336. NOT at dot 337:
-        // shifting there would run 9 bits between the dot-329 reload
-        // and dot-1 render of the next scanline, dropping the MSB of
-        // every "tile 0" and producing a thin vertical line at x=7.
-        // Mesen2 uses two shift-by-8 bursts at dots 328/336 for the
-        // same 16-bit net advance across the prefetch window.
+        // Shift eight times per fetch group. During prefetch, the first
+        // tile loads at dot 328 and advances to the high byte by dot 336.
         if rendering && (visible || is_pre) {
             let shift_now = (self.dot >= 1 && self.dot <= 256)
-                || (self.dot >= 322 && self.dot <= 336);
+                || (self.dot >= 321 && self.dot <= 336);
             if shift_now {
                 self.shift_bg();
             }
@@ -673,7 +668,7 @@ impl Ppu {
         // the fetch address mux, so a brief blank can suppress just the load.
         if self.oam_rendering_enabled
             && (visible || is_pre)
-            && ((8..=256).contains(&self.dot) || (320..=328).contains(&self.dot))
+            && ((8..=256).contains(&self.dot) || (328..=336).contains(&self.dot))
             && self.dot % 8 == 0
         {
             self.reload_bg_shifters();
