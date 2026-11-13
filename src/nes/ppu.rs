@@ -162,6 +162,8 @@ pub struct Ppu {
     sprite_pat_hi: [u8; 8],
     sprite_attr: [u8; 8],
     sprite_x: [u8; 8],
+    sprite_column: [u8; 8],
+    sprite_counters_enabled: bool,
     sprite_is_zero: [bool; 8],
     // --- Sprite evaluation state machine (dots 1–256 of every
     // rendering scanline). Matches Mesen2 NesPpu.cpp:1004–1130 including
@@ -284,6 +286,8 @@ impl Ppu {
             sprite_pat_hi: [0; 8],
             sprite_attr: [0; 8],
             sprite_x: [0; 8],
+            sprite_column: [0; 8],
+            sprite_counters_enabled: false,
             sprite_is_zero: [false; 8],
             oam_copy_buffer: 0xFF,
             sec_oam_addr: 0,
@@ -590,6 +594,7 @@ impl Ppu {
                 }
             }
             if self.dot == 257 {
+                self.reload_bg_shifters();
                 // Horizontal v ← t copy (coarse X + NT-select bit 10).
                 self.v = (self.v & !0x041F) | (self.t & 0x041F);
             }
@@ -614,8 +619,20 @@ impl Ppu {
         // --- (2) Pixel output. Uses the shifter state AFTER the
         // reload at match-arm 0 so the freshly-loaded tile's first
         // pixel sits at bit 15 by dot 9 (after 8 shifts from dot 1).
+        // The dot-339 rendering pulse arms the X counters for the next line.
+        // Without it, the pattern registers can shift immediately on resume.
+        if (visible || is_pre) && self.dot == 339 {
+            self.sprite_counters_enabled = rendering;
+        }
         if visible && self.dot >= 1 && self.dot <= 256 {
             self.render_pixel(rendering);
+            for slot in 0..self.sprite_count as usize {
+                if self.sprite_counters_enabled && self.sprite_x[slot] != 0 {
+                    self.sprite_x[slot] -= 1;
+                } else if rendering && self.sprite_column[slot] < 8 {
+                    self.sprite_column[slot] += 1;
+                }
+            }
         }
 
         // Sprite-eval finalize. Runs AFTER `render_pixel` so the
@@ -855,12 +872,10 @@ impl Ppu {
         if sp_enabled {
             let clip_sp_left = (self.mask & 0x04) == 0 && x < 8;
             if !clip_sp_left {
-                let px = x as i16;
                 let mut picked = false;
                 for i in 0..self.sprite_count as usize {
-                    let sx = self.sprite_x[i] as i16;
-                    if px >= sx && px < sx + 8 {
-                        let col = (px - sx) as u8;
+                    let col = self.sprite_column[i];
+                    if col < 8 && (!self.sprite_counters_enabled || self.sprite_x[i] == 0) {
                         let hflip = (self.sprite_attr[i] & 0x40) != 0;
                         let bit = if hflip { col } else { 7 - col };
                         let p0 = (self.sprite_pat_lo[i] >> bit) & 1;
@@ -1199,6 +1214,7 @@ impl Ppu {
                 // Latch attr/x on the first fetch of each slot.
                 self.sprite_attr[slot] = attr;
                 self.sprite_x[slot] = x;
+                self.sprite_column[slot] = 0;
             }
         }
     }
@@ -1592,6 +1608,8 @@ impl Ppu {
             sprite_pat_hi: self.sprite_pat_hi,
             sprite_attr: self.sprite_attr,
             sprite_x: self.sprite_x,
+            sprite_column: self.sprite_column,
+            sprite_counters_enabled: self.sprite_counters_enabled,
             sprite_is_zero: self.sprite_is_zero,
             oam_copy_buffer: self.oam_copy_buffer,
             sec_oam_addr: self.sec_oam_addr,
@@ -1654,6 +1672,8 @@ impl Ppu {
         self.sprite_pat_hi = snap.sprite_pat_hi;
         self.sprite_attr = snap.sprite_attr;
         self.sprite_x = snap.sprite_x;
+        self.sprite_column = snap.sprite_column;
+        self.sprite_counters_enabled = snap.sprite_counters_enabled;
         self.sprite_is_zero = snap.sprite_is_zero;
         self.oam_copy_buffer = snap.oam_copy_buffer;
         self.sec_oam_addr = snap.sec_oam_addr;

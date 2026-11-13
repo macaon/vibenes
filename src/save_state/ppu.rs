@@ -77,6 +77,8 @@ pub struct PpuSnap {
     pub sprite_pat_hi: [u8; 8],
     pub sprite_attr: [u8; 8],
     pub sprite_x: [u8; 8],
+    pub sprite_column: [u8; 8],
+    pub sprite_counters_enabled: bool,
     pub sprite_is_zero: [bool; 8],
 
     // Sprite eval state machine.
@@ -143,6 +145,8 @@ impl Default for PpuSnap {
             sprite_pat_hi: [0; 8],
             sprite_attr: [0; 8],
             sprite_x: [0; 8],
+            sprite_column: [0; 8],
+            sprite_counters_enabled: false,
             sprite_is_zero: [false; 8],
             oam_copy_buffer: 0,
             sec_oam_addr: 0,
