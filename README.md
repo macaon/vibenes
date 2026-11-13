@@ -4,10 +4,10 @@ A cycle-accurate NES emulator in Rust.
 
 ## Release
 
-VibeNES v0.1.1 passes all 147 AccuracyCoin tests on the emulated NTSC NES.
+VibeNES v0.1.2 passes all 147 AccuracyCoin tests on the emulated NTSC NES.
 Save states use format v13.
 
-[Gitea release](https://git.home.arpa/marcus/vibenes/releases/tag/v0.1.1) ·
+[Gitea release](https://git.home.arpa/marcus/vibenes/releases/tag/v0.1.2) ·
 [GitHub releases](https://github.com/macaon/vibenes/releases)
 
 ## About this project
