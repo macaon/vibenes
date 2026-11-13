@@ -2,51 +2,30 @@
 
 A cycle-accurate NES emulator in Rust.
 
+## Release
+
+VibeNES v0.1.1 passes all 147 AccuracyCoin tests on the emulated NTSC NES.
+Save states use format v13.
+
+[Gitea release](https://git.home.arpa/marcus/vibenes/releases/tag/v0.1.1) ·
+[GitHub releases](https://github.com/macaon/vibenes/releases)
+
 ## About this project
 
-The goal was simple: find out whether a maintainable, cycle-accurate
-NES emulator could be built with AI as the coding assistant, without
-directly porting code from existing emulators. Every subsystem had to
-land with a passing suite of hardware test ROMs before the next one
-started.
+VibeNES is an AI-assisted personal project exploring whether a
+maintainable NES emulator can be built and validated with hardware test
+ROMs. Early builds ran games but had timing issues, especially in the
+APU. A master-clock rewrite improved timing and began passing Blargg's
+tests.
 
-Initially the assistant was allowed to work only with a skill trained
-on hardware specs and material available on https://www.nesdev.org.
-Getting a working emulator going was done quickly, but the assistant
-had no grasp of how accuracy should be achieved, and while it ran roms
-mostly fine, There were noticable timing issues (with the APU in
-particular).
-With a tighter direction on the 3rd rewrite from scratch, the master
-clock variant came to be and the emulator was mostly accurate, and
-started passing Blargg tests. NMI was a bigger challenge though,
-and I started allowing the assistant access to the source code from
-Mesen2, puNES and Nestopia to use as reference material, with a "no
-copy or port" rule. The material was used by the agent to understand
-the math.
+The CPU, PPU, APU, bus, DMA, and early mappers were implemented using
+hardware documentation and behavioral references. Later work ported
+parts of the FDS and VRC6 audio and FDS disk-image rebuild from Mesen2
+under GPL-3.0-or-later. Those ports are credited in the source and commit
+history.
 
-The strict "no copying" rule held for the CPU, PPU, APU, bus, DMA, and
-the first batch of mappers. Later, some well-trodden corners (FDS
-audio synth, VRC6 audio, FDS disk-image rebuild) were ported directly
-from Mesen2 under GPL-3.0-or-later compatibility rather than
-reinventing well-understood math. Those ports are attributed in the
-commit history and in the source files.
-
-This is an AI-assisted re-implementation that used Mesen2, puNES, and
-Nestopia as behavioral references, with a handful of direct ports
-where GPL compatibility allowed it and reinvention offered no benefit.
-
-### So what's next?
-
-I will continue developing this emulator using AI as a personal project.
-Usability and accuracy will continue to be the most important goals,
-and if you'd like to test a Rust based NES emulator, feel free to
-clone this and give it a whirl.
-
-To be clear, vibenes would NOT be accurate to the level it is today
-without the hard work that went into Mesen2, Nestopia and puNES,
-along with all the research material from NesDev. This AI assisted
-project does not aim to or claim to be surpassing these products or
-developers in any way.
+The project draws on the hardware research and emulator work of
+[NESdev](https://www.nesdev.org/), Mesen2, Nestopia, and puNES.
 
 ## Status
 
@@ -321,11 +300,8 @@ TC0190, Mapper 037, FDS (incl. RP2C33 audio + disk-side state). VRC7 OPLL state 
 register-file shadow so the chip is fully restored without
 freezing the format around the C struct.
 
-What's not in scope: rewind buffers, runahead, mid-instruction or
-mid-DMA snapshots, screenshot thumbnails embedded in slot files,
-and migration between save-state format versions. The current
-format version is `1`; loading a future-version state into an
-older build fails cleanly rather than silently corrupting.
+Save states from other format versions require a build that supports
+their format.
 
 ## Settings
 
@@ -350,6 +326,8 @@ grammar.
 ```
 # Unit tests + integration suites
 cargo test --release
+
+cargo run --release --bin accuracy_coin -- /path/to/AccuracyCoin.nes
 
 # Headless blargg runners (for ROMs not in the integration suites)
 ./target/release/test_runner ROM.nes          # $6000/DE-B0-61 protocol
