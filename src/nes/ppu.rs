@@ -164,6 +164,7 @@ pub struct Ppu {
     sprite_x: [u8; 8],
     sprite_column: [u8; 8],
     sprite_counters_enabled: bool,
+    sprite_counter_start_late: bool,
     sprite_is_zero: [bool; 8],
     // --- Sprite evaluation state machine (dots 1–256 of every
     // rendering scanline). Matches Mesen2 NesPpu.cpp:1004–1130 including
@@ -288,6 +289,7 @@ impl Ppu {
             sprite_x: [0; 8],
             sprite_column: [0; 8],
             sprite_counters_enabled: false,
+            sprite_counter_start_late: false,
             sprite_is_zero: [false; 8],
             oam_copy_buffer: 0xFF,
             sec_oam_addr: 0,
@@ -408,6 +410,7 @@ impl Ppu {
         let rendering = (self.mask & 0x18) != 0;
         let visible = self.scanline >= 0 && self.scanline < FRAME_HEIGHT as i16;
         let is_pre = self.scanline == pre_render;
+        let reuse_secondary_oam = is_pre && self.region == Region::Ntsc;
 
         // At pre-render start the OAM address mux switches from OAM1
         // to the retained OAM2 row without precharging the bitlines.
@@ -539,12 +542,13 @@ impl Ppu {
                 }
             }
 
+            // NTSC pre-render leaves secondary OAM intact for sprite fetch.
             // Per-dot sprite evaluation state machine (dots 1–256).
             // Dots 1–64: clear secondary OAM. Dots 65–256: scan
             // primary OAM for up to 8 in-range sprites for the next
             // scanline, with the 2C02 diagonal-sweep overflow bug on
             // the 9th+ in-range sprite.
-            if self.dot >= 1 && self.dot <= 256 {
+            if !reuse_secondary_oam && (1..=256).contains(&self.dot) {
                 self.sprite_eval_tick();
             }
             if self.dot == 256 {
@@ -571,6 +575,10 @@ impl Ppu {
             // OAMADDR is held at 0 throughout this window (nesdev).
             if self.dot >= 257 && self.dot <= 320 {
                 self.oam_addr = 0;
+                if reuse_secondary_oam && self.dot == 257 {
+                    self.sprite_count = 8;
+                    self.sprite_is_zero[0] = self.sprite_zero_added;
+                }
                 let slot = ((self.dot - 257) / 8) as usize;
                 let byte = ((self.dot - 257) % 8).min(3) as usize;
                 self.oam_copy_buffer = self.secondary_oam[slot * 4 + byte];
@@ -624,7 +632,11 @@ impl Ppu {
         // so a PPUMASK write on dot 339 takes effect after the latch.
         // Without the pulse, patterns can shift immediately on resume.
         if (visible || is_pre) && self.dot == 339 {
-            self.sprite_counters_enabled = self.rendering_enabled;
+            // Skipping dot 340 leaves the counter start pulse in flight
+            // until after the first visible pixel of the next line.
+            self.sprite_counter_start_late = self.skip_last_dot_latched;
+            self.sprite_counters_enabled =
+                self.rendering_enabled && !self.sprite_counter_start_late;
         }
         if visible && self.dot >= 1 && self.dot <= 256 {
             self.render_pixel(rendering);
@@ -634,6 +646,10 @@ impl Ppu {
                 } else if rendering && self.sprite_column[slot] < 8 {
                     self.sprite_column[slot] += 1;
                 }
+            }
+            if self.sprite_counter_start_late {
+                self.sprite_counters_enabled = true;
+                self.sprite_counter_start_late = false;
             }
         }
 
@@ -647,7 +663,7 @@ impl Ppu {
         // X >= 248 that depended on a slot index >= the new count.
         // Reproduced as a flickering pixel at the right edge in
         // Goemon Gaiden 2's name-entry screen.
-        if rendering && (visible || is_pre) && self.dot == 256 {
+        if rendering && (visible || (is_pre && !reuse_secondary_oam)) && self.dot == 256 {
             self.sprite_eval_end();
         }
 
@@ -1175,7 +1191,21 @@ impl Ppu {
             (0xFFu8, 0u8, 0u8, (next - 1) as i16)
         };
 
-        let row = (next - 1 - y).clamp(0, height - 1);
+        // The 2C02 fetch comparator uses the low eight scanline bits.
+        // On pre-render it examines retained secondary OAM as line 5.
+        let pre_render = self.region == Region::Ntsc && self.scanline == self.region.pre_render_scanline();
+        let scanline = if pre_render {
+            self.scanline & 0xFF
+        } else {
+            self.scanline
+        };
+        let row = scanline - y;
+        let in_range = !pre_render || (0..height).contains(&row);
+        let row = if pre_render {
+            row & (height - 1)
+        } else {
+            row.clamp(0, height - 1)
+        };
         let vflip = (attr & 0x80) != 0;
         let fine_y: u16 = if vflip {
             (height - 1 - row) as u16
@@ -1208,6 +1238,7 @@ impl Ppu {
             PpuFetchKind::BgPattern
         };
         let byte = self.ppu_bus_read(addr, kind, mapper);
+        let byte = if in_range { byte } else { 0 };
         if slot < self.sprite_count as usize {
             if high {
                 self.sprite_pat_hi[slot] = byte;
@@ -1612,6 +1643,7 @@ impl Ppu {
             sprite_x: self.sprite_x,
             sprite_column: self.sprite_column,
             sprite_counters_enabled: self.sprite_counters_enabled,
+            sprite_counter_start_late: self.sprite_counter_start_late,
             sprite_is_zero: self.sprite_is_zero,
             oam_copy_buffer: self.oam_copy_buffer,
             sec_oam_addr: self.sec_oam_addr,
@@ -1676,6 +1708,7 @@ impl Ppu {
         self.sprite_x = snap.sprite_x;
         self.sprite_column = snap.sprite_column;
         self.sprite_counters_enabled = snap.sprite_counters_enabled;
+        self.sprite_counter_start_late = snap.sprite_counter_start_late;
         self.sprite_is_zero = snap.sprite_is_zero;
         self.oam_copy_buffer = snap.oam_copy_buffer;
         self.sec_oam_addr = snap.sec_oam_addr;
