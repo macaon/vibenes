@@ -1487,7 +1487,16 @@ impl Ppu {
     }
 
     fn ppu_bus_read(&mut self, addr: u16, kind: PpuFetchKind, mapper: &mut dyn Mapper) -> u8 {
-        let addr = addr & 0x3FFF;
+        let mut addr = addr & 0x3FFF;
+        // When PPUDATA asserts /RD during a rendering address phase,
+        // the multiplexed pins are driven by memory. The transparent
+        // external latch can feed that byte into the next fetch address.
+        // Use the preceding bus byte as the starting value at dot
+        // granularity. This models the stable overlap without resolving
+        // analog feedback when memory drives a changing value.
+        if kind != PpuFetchKind::Idle && self.read_buffer_delay == 1 && !self.read_buffer_waiting {
+            addr = (addr & 0x3F00) | u16::from(self.ppu_bus_data);
+        }
         // Every address the PPU drives on its bus is a chance for an
         // A12-sensitive mapper (MMC3, MMC5) to count the edge. MMC5
         // also uses the fetch `kind` to route between its BG and
