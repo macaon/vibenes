@@ -75,6 +75,7 @@ pub struct Ppu {
     w_latch: bool,
     t: u16,
     v: u16,
+    v_reload_delay: u8,
     fine_x: u8,
     data_buffer: u8,
     /// Delayed external read: captured blanking address and remaining
@@ -241,6 +242,7 @@ impl Ppu {
             w_latch: false,
             t: 0,
             v: 0,
+            v_reload_delay: 0,
             fine_x: 0,
             data_buffer: 0,
             read_buffer_addr: 0,
@@ -345,6 +347,7 @@ impl Ppu {
         self.mask = 0;
         self.w_latch = false;
         self.data_buffer = 0;
+        self.v_reload_delay = 0;
         self.read_buffer_delay = 0;
         self.read_buffer_waiting = false;
         self.write_buffer_delay = 0;
@@ -672,6 +675,16 @@ impl Ppu {
             && self.dot % 8 == 0
         {
             self.reload_bg_shifters();
+        }
+
+        if self.v_reload_delay != 0 {
+            self.v_reload_delay -= 1;
+            if self.v_reload_delay == 0 {
+                self.v = self.t;
+                if !rendering || !(visible || is_pre) {
+                    mapper.on_ppu_addr(self.v & 0x3FFF, self.master_ppu_cycle, PpuFetchKind::Idle);
+                }
+            }
         }
 
         if self.read_buffer_delay > 0 && !self.read_buffer_waiting {
@@ -1442,17 +1455,7 @@ impl Ppu {
                     self.t = (self.t & 0x00FF) | (((data as u16) & 0x3F) << 8);
                 } else {
                     self.t = (self.t & 0xFF00) | (data as u16);
-                    self.v = self.t;
-                    // Real hardware reflects the new `v` on the PPU
-                    // address bus for a cycle after the second $2006
-                    // write, so A12-sensitive mappers (MMC3) observe
-                    // the bit-12 toggle. Without this notification the
-                    // mmc3_test "clocked via PPUADDR" gate fails.
-                    mapper.on_ppu_addr(
-                        self.v & 0x3FFF,
-                        self.master_ppu_cycle,
-                        PpuFetchKind::Idle,
-                    );
+                    self.v_reload_delay = 3;
                 }
                 self.w_latch = !self.w_latch;
             }
@@ -1496,6 +1499,11 @@ impl Ppu {
         // analog feedback when memory drives a changing value.
         if kind != PpuFetchKind::Idle && self.read_buffer_delay == 1 && !self.read_buffer_waiting {
             addr = (addr & 0x3F00) | u16::from(self.ppu_bus_data);
+        }
+        // ALE has already latched the low byte when the delayed PPUADDR
+        // transfer changes the high pins before the memory read.
+        if self.v_reload_delay == 1 && kind == PpuFetchKind::BgNametable {
+            addr = (addr & 0x00FF) | (0x2000 | (self.t & 0x0F00));
         }
         // Every address the PPU drives on its bus is a chance for an
         // A12-sensitive mapper (MMC3, MMC5) to count the edge. MMC5
@@ -1610,6 +1618,7 @@ impl Ppu {
             w_latch: self.w_latch,
             t: self.t,
             v: self.v,
+            v_reload_delay: self.v_reload_delay,
             fine_x: self.fine_x,
             data_buffer: self.data_buffer,
             ppu_bus_data: self.ppu_bus_data,
@@ -1675,6 +1684,7 @@ impl Ppu {
         self.w_latch = snap.w_latch;
         self.t = snap.t;
         self.v = snap.v;
+        self.v_reload_delay = snap.v_reload_delay;
         self.fine_x = snap.fine_x;
         self.data_buffer = snap.data_buffer;
         self.ppu_bus_data = snap.ppu_bus_data;
