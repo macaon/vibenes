@@ -485,29 +485,13 @@ impl Ppu {
             self.skip_last_dot_latched = true;
         }
 
-        // Order per dot on real hardware (Mesen2 NesPpu.cpp:867–957):
-        //   1. LoadTileInfo (includes BG shifter reload at case 1).
-        //   2. DrawPixel.
-        //   3. ShiftTileRegisters.
-        // Reload-before-draw is critical: at dot 1 the newly-loaded
-        // tile must sit in bits 7–0 before the 8 subsequent shifts
-        // walk it into bits 15–8 by dot 9. With reload-after-draw the
-        // shifter accumulates only 7 shifts before dot 9 reads bit 15,
-        // producing the "1-pixel right shift" seen as a thin vertical
-        // line at tile boundaries.
-
         if rendering && (visible || is_pre) {
-            // --- (1) BG fetch / shifter reload / increments ---
+            // --- (1) BG fetch and scroll increments ---
             let fetch_region = (self.dot >= 1 && self.dot <= 256)
                 || (self.dot >= 321 && self.dot <= 336);
             if fetch_region {
                 match (self.dot - 1) % 8 {
                     0 => {
-                        // Reload shifter's low byte with the pat data
-                        // fetched during the previous 8-cycle group.
-                        // After 8 prior shifts the low byte is 0, so
-                        // MASK+OR here is equivalent to Mesen2's `|=`.
-                        self.reload_bg_shifters();
                         let addr = 0x2000 | (self.v & 0x0FFF);
                         self.bg_next_nt =
                             self.ppu_bus_read(addr, PpuFetchKind::BgNametable, mapper);
@@ -602,7 +586,6 @@ impl Ppu {
                 }
             }
             if self.dot == 257 {
-                self.reload_bg_shifters();
                 // Horizontal v ← t copy (coarse X + NT-select bit 10).
                 self.v = (self.v & !0x041F) | (self.t & 0x041F);
             }
@@ -624,9 +607,7 @@ impl Ppu {
             }
         }
 
-        // --- (2) Pixel output. Uses the shifter state AFTER the
-        // reload at match-arm 0 so the freshly-loaded tile's first
-        // pixel sits at bit 15 by dot 9 (after 8 shifts from dot 1).
+        // --- (2) Pixel output samples the shifters before this dot advances them.
         // The dot-339 pulse arms the X counters for the next line. Like
         // the odd-frame skip, it samples the delayed rendering signal
         // so a PPUMASK write on dot 339 takes effect after the latch.
@@ -680,6 +661,17 @@ impl Ppu {
             if shift_now {
                 self.shift_bg();
             }
+        }
+
+        // The parallel load follows the last shift of the fetch group.
+        // Its strobe samples the delayed rendering state independently of
+        // the fetch address mux, so a brief blank can suppress just the load.
+        if self.oam_rendering_enabled
+            && (visible || is_pre)
+            && ((8..=256).contains(&self.dot) || (320..=328).contains(&self.dot))
+            && self.dot % 8 == 0
+        {
+            self.reload_bg_shifters();
         }
 
         if self.read_buffer_delay > 0 && !self.read_buffer_waiting {
@@ -787,7 +779,8 @@ impl Ppu {
 
     fn shift_bg(&mut self) {
         self.bg_pat_lo <<= 1;
-        self.bg_pat_hi <<= 1;
+        // The 2C02 high pattern plane shifts in ones between parallel loads.
+        self.bg_pat_hi = (self.bg_pat_hi << 1) | 1;
         self.bg_attr_lo <<= 1;
         self.bg_attr_hi <<= 1;
     }
