@@ -163,7 +163,7 @@ jobs:
           files: ${{ steps.stage.outputs.tarball }}
           fail_on_unmatched_files: true
           generate_release_notes: true
-          draft: true
+          draft: ${{ github.ref_name != 'v0.1.1' }}
           prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
             ## vibenes ${{ steps.stage.outputs.version }} - Linux x86_64
