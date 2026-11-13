@@ -109,6 +109,7 @@ pub struct Ppu {
     oam_rendering_enabled: bool,
     /// Physical secondary-OAM row selector, retained during forced blank.
     oam2_addr: u8,
+    oam2_increment_frozen: bool,
 
     /// Live NMI level signal. Mirrors Mesen2's `NmiFlag` on the CPU
     /// (see `NesPpu.cpp:547-549, 588, 891, 1257`). Set by the
@@ -258,6 +259,7 @@ impl Ppu {
             rendering_enabled: false,
             oam_rendering_enabled: false,
             oam2_addr: 0,
+            oam2_increment_frozen: false,
             prevent_vbl: false,
             oam: [0; 256],
             // Documented NES power-on palette pattern (nesdev wiki "PPU
@@ -538,7 +540,8 @@ impl Ppu {
             if !reuse_secondary_oam && (1..=256).contains(&self.dot) {
                 self.sprite_eval_tick();
             }
-            if self.dot == 256 {
+            // The vertical increment uses the delayed rendering gate.
+            if self.dot == 256 && self.oam_rendering_enabled {
                 self.inc_y();
             }
             // Sprite pattern fetch across dots 257–320 in eight 8-dot
@@ -568,7 +571,7 @@ impl Ppu {
                 }
                 let slot = ((self.dot - 257) / 8) as usize;
                 let byte = ((self.dot - 257) % 8).min(3) as usize;
-                self.oam_copy_buffer = self.secondary_oam[slot * 4 + byte];
+                self.oam_copy_buffer = self.secondary_oam[self.sprite_fetch_oam_index(slot, byte)];
                 match (self.dot - 257) % 8 {
                     0 => {
                         // Garbage NT fetch - drives A12 low. Tagged
@@ -722,6 +725,16 @@ impl Ppu {
             }
         }
 
+        // OAM2 carry inhibits address increments until the next reset
+        // pulse. Forced blank can suppress the pulse between phases.
+        if self.oam_rendering_enabled && (visible || is_pre) {
+            match self.dot {
+                64 | 256 | 340 => self.oam2_increment_frozen = false,
+                320 => self.oam2_increment_frozen = true,
+                _ => {}
+            }
+        }
+
         // The physical row selector has a different lifetime from the
         // evaluation byte count: clear and fetch also advance it, and
         // forced blank retains it until rendering next starts.
@@ -731,7 +744,10 @@ impl Ppu {
                 65..=256 => self.oam2_addr = self.sec_oam_addr & 31,
                 257..=320 => {
                     let phase = self.dot - 257;
-                    self.oam2_addr = ((phase / 8) * 4 + (phase % 8 + 1).min(3)) as u8;
+                    self.oam2_addr = self.sprite_fetch_oam_index(
+                        (phase / 8) as usize,
+                        (phase % 8 + 1).min(3) as usize,
+                    ) as u8;
                 }
                 // The extra fetch-pointer increment leaves a safe row
                 // zero during sprite idle; see NESdev PPU signals.
@@ -1061,6 +1077,7 @@ impl Ppu {
                     }
                     self.sprite_addr_l += 1;
                     self.sec_oam_addr += 1;
+                    self.oam2_increment_frozen |= self.sec_oam_addr == 32;
 
                     if self.sprite_addr_l >= 4 {
                         self.sprite_addr_h = (self.sprite_addr_h + 1) & 0x3F;
@@ -1173,6 +1190,14 @@ impl Ppu {
         }
     }
 
+    fn sprite_fetch_oam_index(&self, slot: usize, byte: usize) -> usize {
+        if self.oam2_increment_frozen {
+            0
+        } else {
+            slot * 4 + byte
+        }
+    }
+
     /// Fetch one sprite slot's pattern byte (low plane when
     /// `high = false`, high plane otherwise). Called at dots 5 and 7
     /// of each 8-dot slot in the 257–320 sprite-fetch window.
@@ -1184,12 +1209,12 @@ impl Ppu {
     fn fetch_sprite_pattern_slot(&mut self, slot: usize, high: bool, mapper: &mut dyn Mapper) {
         let next = self.scanline + 1;
         let height: i16 = if (self.ctrl & 0x20) != 0 { 16 } else { 8 };
-        let (tile, attr, x, y) = if slot < self.sprite_count as usize {
+        let (tile, attr, x, y) = if slot < self.sprite_count as usize || self.oam2_increment_frozen {
             (
-                self.secondary_oam[slot * 4 + 1],
-                self.secondary_oam[slot * 4 + 2],
-                self.secondary_oam[slot * 4 + 3],
-                self.secondary_oam[slot * 4] as i16,
+                self.secondary_oam[self.sprite_fetch_oam_index(slot, 1)],
+                self.secondary_oam[self.sprite_fetch_oam_index(slot, 2)],
+                self.secondary_oam[self.sprite_fetch_oam_index(slot, 3)],
+                self.secondary_oam[self.sprite_fetch_oam_index(slot, 0)] as i16,
             )
         } else {
             // Dummy fetch for empty slots - tile $FF, Y at next scanline
@@ -1245,7 +1270,7 @@ impl Ppu {
         };
         let byte = self.ppu_bus_read(addr, kind, mapper);
         let byte = if in_range { byte } else { 0 };
-        if slot < self.sprite_count as usize {
+        if slot < self.sprite_count as usize || self.oam2_increment_frozen {
             if high {
                 self.sprite_pat_hi[slot] = byte;
             } else {
@@ -1633,6 +1658,7 @@ impl Ppu {
             rendering_enabled: self.rendering_enabled,
             oam_rendering_enabled: self.oam_rendering_enabled,
             oam2_addr: self.oam2_addr,
+            oam2_increment_frozen: self.oam2_increment_frozen,
             nmi_flag: self.nmi_flag,
             prevent_vbl: self.prevent_vbl,
             oam: self.oam,
@@ -1699,6 +1725,7 @@ impl Ppu {
         self.rendering_enabled = snap.rendering_enabled;
         self.oam_rendering_enabled = snap.oam_rendering_enabled;
         self.oam2_addr = snap.oam2_addr;
+        self.oam2_increment_frozen = snap.oam2_increment_frozen;
         self.nmi_flag = snap.nmi_flag;
         self.prevent_vbl = snap.prevent_vbl;
         self.oam = snap.oam;
