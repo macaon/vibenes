@@ -619,10 +619,12 @@ impl Ppu {
         // --- (2) Pixel output. Uses the shifter state AFTER the
         // reload at match-arm 0 so the freshly-loaded tile's first
         // pixel sits at bit 15 by dot 9 (after 8 shifts from dot 1).
-        // The dot-339 rendering pulse arms the X counters for the next line.
-        // Without it, the pattern registers can shift immediately on resume.
+        // The dot-339 pulse arms the X counters for the next line. Like
+        // the odd-frame skip, it samples the delayed rendering signal
+        // so a PPUMASK write on dot 339 takes effect after the latch.
+        // Without the pulse, patterns can shift immediately on resume.
         if (visible || is_pre) && self.dot == 339 {
-            self.sprite_counters_enabled = rendering;
+            self.sprite_counters_enabled = self.rendering_enabled;
         }
         if visible && self.dot >= 1 && self.dot <= 256 {
             self.render_pixel(rendering);
