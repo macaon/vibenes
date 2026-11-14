@@ -1,193 +1,17 @@
-# vibenes
+# VibeNES
 
-A cycle-accurate NES emulator in Rust.
+VibeNES is a desktop Nintendo Entertainment System and Famicom emulator
+written in Rust. It supports NTSC and PAL games, two-player input, save
+states, and CRT shaders and video filters.
 
-## Release
+[Download VibeNES from GitHub Releases](https://github.com/macaon/vibenes/releases)
 
-VibeNES v0.1.2 passes all 147 AccuracyCoin tests on the emulated NTSC NES.
-Save states use format v13.
+## Getting started
 
-[Gitea release](https://git.home.arpa/marcus/vibenes/releases/tag/v0.1.2) ·
-[GitHub releases](https://github.com/macaon/vibenes/releases)
+Launch VibeNES, press `F1`, and choose **Load ROM** to open a `.nes` file.
+You can also pass the ROM path on the command line.
 
-## About this project
-
-VibeNES is an AI-assisted personal project exploring whether a
-maintainable NES emulator can be built and validated with hardware test
-ROMs. Early builds ran games but had timing issues, especially in the
-APU. A master-clock rewrite improved timing and began passing Blargg's
-tests.
-
-The CPU, PPU, APU, bus, DMA, and early mappers were implemented using
-hardware documentation and behavioral references. Later work ported
-parts of the FDS and VRC6 audio and FDS disk-image rebuild from Mesen2
-under GPL-3.0-or-later. Those ports are credited in the source and commit
-history.
-
-The project draws on the hardware research and emulator work of
-[NESdev](https://www.nesdev.org/), Mesen2, Nestopia, and puNES.
-
-## Status
-
-### Subsystems
-
-- iNES 1.0 / NES 2.0 loader with CRC32-keyed game DB
-- 6502 CPU core, all 256 opcodes, cycle-accurate interrupts
-- Master clock + bus with unified parity-gated DMC + OAM DMA loop
-- PPU with full render pipeline, pixel-precise sprite-0 hit,
-  odd-frame dot skip, open-bus decay
-- APU with 5 channels (pulse 1+2, triangle, noise, DMC), frame
-  counter, IRQ, DMC DMA
-- Expansion audio via bus-level mixer with per-chip pre-scaled blend
-- Host audio via cpal + blip_buf
-- Windowed runtime on wgpu, NTSC/PAL-paced
-- Input: P1 keyboard + first-detected gamepad, P2 second-detected
-  gamepad, sticky-by-detection-order with hot-plug
-  reconciliation; bindings live in `~/.config/vibenes/input.toml`
-  and support standard gilrs buttons, axes, and raw HID codes for
-  pads with no SDL game-controller-DB mapping (Buffalo
-  BGC-FC801, Famicom clones, etc.)
-- Overlay UI (egui, F1)
-- Battery-backed saves with atomic writes and flush-on-quit/swap,
-  protected by a 48-byte self-validating header (refuses cross-cart,
-  cross-mapper, cross-region applies)
-- PRG-flash saves for mapper 30 sub 1 (UNROM-512 / SST39SF040)
-  and other future flash carts, IPS-encoded against the pristine
-  ROM
-- Save states: 10 slots, F2/F3 hotkeys, in-memory backup-on-load
-  rollback, region/CRC-tagged file paths so renames and patches
-  don't collide
-- Famicom Disk System (mapper 20) with BIOS, disk swap, IPS sidecar
-  saves, RP2C33 audio
-
-### Supported mappers
-
-Coverage focuses on licensed carts plus the well-known
-commercial-but-unlicensed boards (Color Dreams / Wisdom Tree,
-Codemasters / Camerica, AVE). Pirate-only multicart hardware is
-out of scope.
-
-| # | Name | Status |
-|---|---|---|
-| 0 | NROM | done |
-| 1 | MMC1 / SxROM | done |
-| 2 | UxROM | done |
-| 3 | CNROM | done |
-| 4 | MMC3 / MMC6 (TxROM / HKROM) | done (Rev A + Rev B) |
-| 5 | MMC5 / ExROM | done |
-| 7 | AxROM | done |
-| 9 | MMC2 / PxROM | done |
-| 10 | MMC4 / FxROM | done |
-| 11 | Color Dreams 74'377 (Wisdom Tree, Color Dreams library) | done |
-| 13 | NES-CPROM (Videomation) | done |
-| 16 | Bandai FCG-1/2 / LZ93D50 | done |
-| 18 | Jaleco SS88006 | done |
-| 19 / 210 | Namco 163 / 175 / 340 (incl. N163 wavetable audio) | done |
-| 20 | Famicom Disk System | done |
-| 21 / 22 / 23 / 25 | Konami VRC2a / VRC2b / VRC2c / VRC4a-f | done |
-| 24 | Konami VRC6a | done |
-| 26 | Konami VRC6b | done |
-| 30 | UNROM-512 (Sealie Computing / RetroUSB; modern homebrew flagship; SST39SF040 flash on sub 1) | done |
-| 32 | Irem G-101 | done |
-| 33 | Taito TC0190 / TC0350 | done |
-| 34 | BNROM + NINA-001 | done |
-| 37 | Nintendo SMB + Tetris + World Cup multicart | done |
-| 47 | Nintendo NES-QJ multicart | done |
-| 48 | Taito TC0690 | done |
-| 64 | Tengen RAMBO-1 | done |
-| 65 | Irem H3001 | done |
-| 66 | GxROM / MHROM | done |
-| 67 | Sunsoft-3 | done |
-| 68 | Sunsoft-4 | done |
-| 69 | Sunsoft FME-7 / 5A / 5B (incl. 5B audio) | done |
-| 70 | Bandai 74*161/161/32 | done |
-| 71 | Codemasters / Camerica BF909x (incl. Fire Hawk BF9097) | done |
-| 72 | Jaleco JF-17 | done |
-| 73 | Konami VRC3 | done |
-| 75 | Konami VRC1 | done |
-| 76 | Namco 109 / NAMCOT-3446 | done |
-| 77 | Irem-LROG017 | done |
-| 78 | Irem 74*161 / Jaleco JF-16 | done |
-| 79 | AVE NINA-03/06 | done |
-| 80 | Taito X1-005 | done |
-| 82 | Taito X1-017 | done |
-| 85 | Konami VRC7 (incl. OPLL FM audio) | done |
-| 86 | Jaleco JF-13 | done |
-| 87 | Jaleco JF-05/06/07/08/09/10/11 | done |
-| 88 | Namcot Type C | done |
-| 89 | Sunsoft-2 (single-screen mirror) | done |
-| 92 | Jaleco JF-19 | done |
-| 93 | Sunsoft-3R / Sunsoft-2 IC variant | done |
-| 94 | HVC-UN1ROM | done |
-| 95 | Namco 118 / Dragon Buster | done |
-| 96 | Bandai Oeka Kids | done |
-| 97 | Irem TAM-S1 | done |
-| 101 | Jaleco JF-10 | done |
-| 105 | NES-EVENT (Nintendo World Championships 1990) | done |
-| 118 | Nintendo TxSROM / TLSROM / TKSROM | done |
-| 119 | Nintendo TQROM | done |
-| 140 | Jaleco JF-11 / JF-14 | done |
-| 152 | Bandai 74*161/161/32 (single-screen variant) | done |
-| 153 | Bandai LZ93D50 + 8 KiB battery SRAM | done |
-| 154 | Namco 118 / Devil World JP | done |
-| 155 | MMC1A / NES-SAROM | done |
-| 157 | Bandai Datach Joint ROM System | done (barcode stub) |
-| 159 | Bandai LZ93D50 + 24C01 | done |
-| 180 | UNROM-flip / Crazy Climber wiring | done |
-| 184 | Sunsoft-1 | done |
-| 185 | CNROM with diode-array security | done |
-| 188 | Bandai Karaoke Studio | done (mic stub) |
-| 189 | Taito TC-110 | done |
-| 206 | Namco 118 / Mimic-1 | done |
-| 207 | Taito X1-005 alt-mirroring variant | done |
-| 232 | Codemasters / Camerica BF9096 (incl. Aladdin Deck Enhancer) | done |
-
-### Test-ROM coverage
-
-All ROMs in these suites pass:
-
-| Category | Suite | Result |
-|---|---|---|
-| CPU | `instr_test-v5`, `instr_test-v3`, `instr_misc`, `instr_timing`, `nes_instr_test`, `cpu_dummy_reads`, `cpu_dummy_writes`, `cpu_exec_space`, `cpu_reset`, `blargg_nes_cpu_test5`, `cpu_interrupts_v2`, `cpu_timing_test6`, `branch_timing_tests` | pass |
-| APU | `apu_test` (8/8), `apu_reset` (6/6), `blargg_apu_2005` (11/11), `dmc_dma_during_read4` (5/5, strict pattern), `sprdma_and_dmc_dma{,_512}` (2/2) | pass |
-| PPU | `sprite_hit_tests_2005` (11/11), `sprite_overflow_tests` (5/5), `ppu_vbl_nmi` (10/10), `oam_read`, `oam_stress`, `ppu_read_buffer`, `ppu_open_bus`, `blargg_ppu_tests_2005.09.15b` (4/5, see below) | pass |
-| MMC3 | `mmc3_test` (6/6), `mmc3_test_2` (6/6), `mmc3_irq_tests` (6/6) | pass |
-| Save state | unit + frame-level integration: capture/apply round-trip, encode + decode + apply to fresh Nes, run-after-restore byte-equal, framebuffer byte-equal 30 frames past round-trip, mapper-variant rollback | pass |
-
-### Known gaps
-
-- **In-app rebinding UI.** Bindings work today via direct edits
-  to `~/.config/vibenes/input.toml`; the egui-based settings
-  window with click-to-rebind is the next phase. The data model
-  it'll consume already supports keyboard, standard gamepad
-  buttons, analog axes, and raw HID codes.
-- **`blargg_ppu_tests_2005.09.15b/power_up_palette`.** Won't fix.
-  Compares the power-on palette byte-for-byte against values captured
-  from blargg's specific NES unit; passing requires hardcoding that
-  unit's power-on contents, which isn't hardware behavior worth
-  reproducing.
-
-## Building and running
-
-Build prerequisites:
-
-- A Rust toolchain (stable).
-- A C++ compiler. The vendored `librashader-runtime-wgpu` (under
-  `vendor/`) pulls in `spirv-cross2`, a Rust binding around the
-  SPIRV-Cross C++ library, which translates SPIR-V into WGSL for the
-  shader runtime. On Fedora: `sudo dnf install gcc-c++`. On
-  Debian/Ubuntu: `sudo apt install g++`. macOS ships clang++ with
-  Xcode CLT. See `vendor/README.md` for why librashader is vendored.
-
-```
-cargo build --release
-./target/release/vibenes [path/to/rom.nes]
-```
-
-The binary can launch without a ROM; use the overlay's File menu to
-load one. Current region (NTSC/PAL) is detected from the iNES header
-and the built-in CRC32 game DB, and the host audio sample rate is
-matched to it.
+## Controls
 
 **Keys** (defaults; rebindable via `~/.config/vibenes/input.toml`):
 `Z`=B, `X`=A, `Enter`=Start, `RShift`=Select, arrows=D-pad,
@@ -214,6 +38,23 @@ The overlay menu (F1) pauses the emulator and shows a centered modal
 over a darkened freeze-frame: Scale (1x-6x), Aspect (Auto / 1:1 / 5:4
 / 8:7 NTSC / 11:8 PAL), Recent ROMs, Load ROM, Reset, Quit. Navigate
 with arrows / Enter / Esc or the mouse.
+
+## Building from source
+
+Build prerequisites:
+
+- A Rust toolchain (stable).
+- A C++ compiler. The vendored `librashader-runtime-wgpu` (under
+  `vendor/`) pulls in `spirv-cross2`, a Rust binding around the
+  SPIRV-Cross C++ library, which translates SPIR-V into WGSL for the
+  shader runtime. On Fedora: `sudo dnf install gcc-c++`. On
+  Debian/Ubuntu: `sudo apt install g++`. macOS ships clang++ with
+  Xcode CLT. See `vendor/README.md` for why librashader is vendored.
+
+```sh
+cargo build --release
+./target/release/vibenes /path/to/game.nes
+```
 
 ## Saves
 
@@ -300,8 +141,8 @@ TC0190, Mapper 037, FDS (incl. RP2C33 audio + disk-side state). VRC7 OPLL state 
 register-file shadow so the chip is fully restored without
 freezing the format around the C struct.
 
-Save states from other format versions require a build that supports
-their format.
+VibeNES v0.1.2 writes save-state format v13. Loading a save state
+requires a build that supports its format.
 
 ## Settings
 
@@ -310,18 +151,119 @@ Rust defaults. The user-tunable subset that the in-game overlay
 already exposes is persisted across launches in
 `~/.config/vibenes/settings.kv` (respects `$XDG_CONFIG_HOME`), a
 tiny `key=value` file managed by [`src/settings.rs`](src/settings.rs).
-Today the integer scale and the active save-state slot survive a
-restart; more fields move out of `config.rs` and into the
-persisted file as the settings UI grows.
+The integer scale and the active save-state slot survive a restart.
 
 Input bindings are persisted separately in
 `~/.config/vibenes/input.toml`, a human-editable TOML file written
 eagerly on first run with the defaults. Hand-edit it to remap keys
-or gamepad buttons until the in-app rebinding UI lands; see
-[`src/input.rs`](src/input.rs) module docs for the source-string
-grammar.
+or gamepad buttons. The module docs describe the binding syntax.
+[`src/input.rs`](src/input.rs)
 
-## Testing
+## Supported mappers
+
+Coverage focuses on licensed carts plus the well-known
+commercial-but-unlicensed boards (Color Dreams / Wisdom Tree,
+Codemasters / Camerica, AVE). Pirate-only multicart hardware is
+out of scope.
+
+| # | Name | Status |
+|---|---|---|
+| 0 | NROM | done |
+| 1 | MMC1 / SxROM | done |
+| 2 | UxROM | done |
+| 3 | CNROM | done |
+| 4 | MMC3 / MMC6 (TxROM / HKROM) | done (Rev A + Rev B) |
+| 5 | MMC5 / ExROM | done |
+| 7 | AxROM | done |
+| 9 | MMC2 / PxROM | done |
+| 10 | MMC4 / FxROM | done |
+| 11 | Color Dreams 74'377 (Wisdom Tree, Color Dreams library) | done |
+| 13 | NES-CPROM (Videomation) | done |
+| 16 | Bandai FCG-1/2 / LZ93D50 | done |
+| 18 | Jaleco SS88006 | done |
+| 19 / 210 | Namco 163 / 175 / 340 (incl. N163 wavetable audio) | done |
+| 20 | Famicom Disk System | done |
+| 21 / 22 / 23 / 25 | Konami VRC2a / VRC2b / VRC2c / VRC4a-f | done |
+| 24 | Konami VRC6a | done |
+| 26 | Konami VRC6b | done |
+| 30 | UNROM-512 (Sealie Computing / RetroUSB; modern homebrew flagship; SST39SF040 flash on sub 1) | done |
+| 32 | Irem G-101 | done |
+| 33 | Taito TC0190 / TC0350 | done |
+| 34 | BNROM + NINA-001 | done |
+| 37 | Nintendo SMB + Tetris + World Cup multicart | done |
+| 47 | Nintendo NES-QJ multicart | done |
+| 48 | Taito TC0690 | done |
+| 64 | Tengen RAMBO-1 | done |
+| 65 | Irem H3001 | done |
+| 66 | GxROM / MHROM | done |
+| 67 | Sunsoft-3 | done |
+| 68 | Sunsoft-4 | done |
+| 69 | Sunsoft FME-7 / 5A / 5B (incl. 5B audio) | done |
+| 70 | Bandai 74*161/161/32 | done |
+| 71 | Codemasters / Camerica BF909x (incl. Fire Hawk BF9097) | done |
+| 72 | Jaleco JF-17 | done |
+| 73 | Konami VRC3 | done |
+| 75 | Konami VRC1 | done |
+| 76 | Namco 109 / NAMCOT-3446 | done |
+| 77 | Irem-LROG017 | done |
+| 78 | Irem 74*161 / Jaleco JF-16 | done |
+| 79 | AVE NINA-03/06 | done |
+| 80 | Taito X1-005 | done |
+| 82 | Taito X1-017 | done |
+| 85 | Konami VRC7 (incl. OPLL FM audio) | done |
+| 86 | Jaleco JF-13 | done |
+| 87 | Jaleco JF-05/06/07/08/09/10/11 | done |
+| 88 | Namcot Type C | done |
+| 89 | Sunsoft-2 (single-screen mirror) | done |
+| 92 | Jaleco JF-19 | done |
+| 93 | Sunsoft-3R / Sunsoft-2 IC variant | done |
+| 94 | HVC-UN1ROM | done |
+| 95 | Namco 118 / Dragon Buster | done |
+| 96 | Bandai Oeka Kids | done |
+| 97 | Irem TAM-S1 | done |
+| 101 | Jaleco JF-10 | done |
+| 105 | NES-EVENT (Nintendo World Championships 1990) | done |
+| 118 | Nintendo TxSROM / TLSROM / TKSROM | done |
+| 119 | Nintendo TQROM | done |
+| 140 | Jaleco JF-11 / JF-14 | done |
+| 152 | Bandai 74*161/161/32 (single-screen variant) | done |
+| 153 | Bandai LZ93D50 + 8 KiB battery SRAM | done |
+| 154 | Namco 118 / Devil World JP | done |
+| 155 | MMC1A / NES-SAROM | done |
+| 157 | Bandai Datach Joint ROM System | done (barcode stub) |
+| 159 | Bandai LZ93D50 + 24C01 | done |
+| 180 | UNROM-flip / Crazy Climber wiring | done |
+| 184 | Sunsoft-1 | done |
+| 185 | CNROM with diode-array security | done |
+| 188 | Bandai Karaoke Studio | done (mic stub) |
+| 189 | Taito TC-110 | done |
+| 206 | Namco 118 / Mimic-1 | done |
+| 207 | Taito X1-005 alt-mirroring variant | done |
+| 232 | Codemasters / Camerica BF9096 (incl. Aladdin Deck Enhancer) | done |
+
+## Emulation accuracy and testing
+
+VibeNES v0.1.2 passed all 147 AccuracyCoin tests on the emulated NTSC
+NES. The emulator uses a shared master clock for CPU, PPU, APU, and DMA
+timing.
+
+### Test-ROM coverage
+
+Results for the tested ROM suites are listed below.
+
+| Category | Suite | Result |
+|---|---|---|
+| CPU | `instr_test-v5`, `instr_test-v3`, `instr_misc`, `instr_timing`, `nes_instr_test`, `cpu_dummy_reads`, `cpu_dummy_writes`, `cpu_exec_space`, `cpu_reset`, `blargg_nes_cpu_test5`, `cpu_interrupts_v2`, `cpu_timing_test6`, `branch_timing_tests` | pass |
+| APU | `apu_test` (8/8), `apu_reset` (6/6), `blargg_apu_2005` (11/11), `dmc_dma_during_read4` (5/5, strict pattern), `sprdma_and_dmc_dma{,_512}` (2/2) | pass |
+| PPU | `sprite_hit_tests_2005` (11/11), `sprite_overflow_tests` (5/5), `ppu_vbl_nmi` (10/10), `oam_read`, `oam_stress`, `ppu_read_buffer`, `ppu_open_bus`, `blargg_ppu_tests_2005.09.15b` (4/5) | One power-on palette exception |
+| MMC3 | `mmc3_test` (6/6), `mmc3_test_2` (6/6), `mmc3_irq_tests` (6/6) | pass |
+| Save state | unit + frame-level integration: capture/apply round-trip, encode + decode + apply to fresh Nes, run-after-restore byte-equal, framebuffer byte-equal 30 frames past round-trip, mapper-variant rollback | pass |
+
+The `blargg_ppu_tests_2005.09.15b/power_up_palette` test compares
+the initial palette byte for byte against a capture from one NES unit.
+VibeNES leaves that unit's exact power-on palette unspecified.
+
+### Running the tests
 
 ```
 # Unit tests + integration suites
@@ -354,6 +296,13 @@ Integration test suites gate against curated ROM sets:
   is a no-op, encode + decode + apply to a fresh Nes is byte-equal
   to the source, run-after-restore matches a continuous run, and
   the framebuffer is byte-identical 30 frames past a round trip.
+
+## About the project
+
+VibeNES is an AI-assisted personal project that uses hardware
+documentation and test ROMs to develop and validate its emulation.
+The credits below list the reference emulators and third-party code
+used in the project.
 
 ## License
 
